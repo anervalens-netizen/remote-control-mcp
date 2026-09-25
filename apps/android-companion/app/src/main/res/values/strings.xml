@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">RC Android Companion</string>
+    <string name="accessibility_description">Read the current screen for owner-authorized Remote Control MCP actions</string>
+</resources>

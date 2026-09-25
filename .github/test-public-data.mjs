@@ -1,0 +1,12 @@
+import assert from 'node:assert/strict';
+import {inspectPublicFile} from './check-public-data.mjs';
+assert.equal(inspectPublicFile('src/example.ts','const contact="review@example.invalid";').length,0);
+assert.equal(inspectPublicFile('.env.example','TOKEN=replace-me').length,0);
+for(const path of ['resources/seed.json','resources/initial-users.json','.env.production','backup.sqlite','private/report.txt','public/products/item.png'])assert.ok(inspectPublicFile(path,'{}').length>0,path);
+const address=['person','gmail.com'].join('@');
+assert.ok(inspectPublicFile('src/contact.ts',address).some(x=>x.kind==='non-example-email'));
+const verifier=['scrypt','a'.repeat(32),'b'.repeat(64)].join(':');
+assert.ok(inspectPublicFile('src/config.ts',verifier).some(x=>x.kind==='password-verifier'));
+assert.ok(inspectPublicFile('src/config.ts',['','home','personal-user','config'].join('/')).some(x=>x.kind==='personal-home-directory'));
+assert.equal(inspectPublicFile('src/config.ts','/home/operator/config').length,0);
+console.log('PASS: public-data guard positive and negative cases.');

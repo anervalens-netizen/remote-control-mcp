@@ -1,0 +1,11 @@
+{
+  "host": "127.0.0.1",
+  "port": 45236,
+  "stateDir": "/absolute/private/path/rcmcp-android-state",
+  "devices": [
+    {
+      "name": "phone-example",
+      "token": "replace-with-a-random-token-at-least-32-characters"
+    }
+  ]
+}

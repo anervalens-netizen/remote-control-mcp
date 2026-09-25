@@ -1,0 +1,67 @@
+plugins {
+    id 'com.android.application'
+}
+
+def signingFile = System.getenv('RCMCP_ANDROID_SIGNING_FILE')
+def signingPassword = System.getenv('RCMCP_ANDROID_SIGNING_PASSWORD')
+def signingAlias = System.getenv('RCMCP_ANDROID_SIGNING_ALIAS')
+
+android {
+    namespace 'eu.astancu.rcmcp.android'
+    compileSdk 36
+
+    buildFeatures {
+        buildConfig true
+        aidl true
+    }
+
+    defaultConfig {
+        applicationId 'eu.astancu.rcmcp.android'
+        minSdk 30
+        targetSdk 36
+        versionCode 10
+        versionName '0.1.9-rc25-onboarding'
+
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_21
+        targetCompatibility JavaVersion.VERSION_21
+    }
+
+    lint {
+        abortOnError true
+        checkReleaseBuilds false
+    }
+
+    if (signingFile != null && signingPassword != null && signingAlias != null) {
+        signingConfigs {
+            create('ownerRelease') {
+                storeFile file(signingFile)
+                storePassword signingPassword
+                keyAlias signingAlias
+                keyPassword signingPassword
+            }
+        }
+        buildTypes {
+            release {
+                signingConfig signingConfigs.ownerRelease
+                minifyEnabled false
+            }
+        }
+    } else {
+        buildTypes {
+            release {
+                minifyEnabled false
+            }
+        }
+    }
+}
+
+dependencies {
+    implementation 'dev.rikka.shizuku:api:13.1.5'
+    implementation 'dev.rikka.shizuku:provider:13.1.5'
+    testImplementation 'junit:junit:4.13.2'
+    // Real JSON for JVM wire-contract tests; not shipped in the APK.
+    testImplementation 'org.json:json:20250517'
+}

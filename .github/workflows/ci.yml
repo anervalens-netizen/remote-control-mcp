@@ -1,0 +1,112 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      runner:
+        description: Execution host (auto uses RCMCP_CI_RUNNER; unset defaults to github)
+        type: choice
+        options: [auto, gaming, github]
+        default: auto
+
+# Stop obsolete runs on the same ref instead of accumulating queued work.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}-${{ inputs.runner || 'auto' }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+# Job-scoped Git behavior, without mutating the owner/runner's global config.
+env:
+  GIT_CONFIG_COUNT: '1'
+  GIT_CONFIG_KEY_0: core.autocrlf
+  GIT_CONFIG_VALUE_0: 'false'
+
+jobs:
+  check:
+    runs-on: ${{ (inputs.runner == 'gaming' || (inputs.runner != 'github' && vars.RCMCP_CI_RUNNER == 'gaming')) && fromJSON('["self-hosted","Linux","X64","gaming-ci","remote-control-mcp"]') || 'ubuntu-latest' }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24.21.0
+      - uses: actions/setup-go@v6
+        with:
+          go-version: 1.27.1
+          cache: false
+      - name: Install pnpm
+        run: |
+          npm install --global --prefix "$RUNNER_TEMP/rcmcp-pnpm" pnpm@10.29.3
+          echo "$RUNNER_TEMP/rcmcp-pnpm/bin" >> "$GITHUB_PATH"
+      - name: Install runtime tools (GitHub-hosted)
+        if: runner.environment == 'github-hosted'
+        run: sudo apt-get update && sudo apt-get install -y ripgrep
+      - name: Verify native runtime tools
+        run: rg --version && go version
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Install pinned browser and system dependencies (GitHub-hosted)
+        if: runner.environment == 'github-hosted'
+        run: pnpm exec playwright-core install --with-deps chromium
+      - name: Install pinned browser (Gaming)
+        if: runner.environment == 'self-hosted'
+        run: pnpm exec playwright-core install chromium
+      - name: Typecheck and test
+        run: pnpm typecheck && pnpm vitest run --maxWorkers=4
+
+  windows-native:
+    runs-on: ${{ (inputs.runner == 'gaming' || (inputs.runner != 'github' && vars.RCMCP_CI_RUNNER == 'gaming')) && fromJSON('["self-hosted","Windows","X64","gaming-ci","remote-control-mcp","gaming-native"]') || 'windows-latest' }}
+    env:
+      RCMCP_TEST_INTERACTIVE: ${{ (inputs.runner == 'gaming' || (inputs.runner != 'github' && vars.RCMCP_CI_RUNNER == 'gaming')) && '1' || '0' }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24.21.0
+      - uses: actions/setup-go@v6
+        with:
+          go-version: 1.27.1
+          cache: false
+      - name: Install pnpm
+        shell: powershell
+        run: |
+          $prefix = Join-Path $env:RUNNER_TEMP 'rcmcp-pnpm'
+          npm install --global --prefix $prefix pnpm@10.29.3
+          $prefix | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+      - name: Install ripgrep (GitHub-hosted Windows)
+        if: runner.environment == 'github-hosted'
+        shell: powershell
+        run: choco install ripgrep --no-progress --yes
+      - name: Verify native runtime tools
+        shell: powershell
+        run: |
+          rg --version
+          go version
+      - name: Install dependencies
+        shell: powershell
+        run: pnpm install --frozen-lockfile
+      - name: Install pinned browser
+        shell: powershell
+        run: pnpm exec playwright-core install chromium
+      - name: Typecheck and native Windows test
+        shell: powershell
+        run: |
+          pnpm typecheck
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          pnpm vitest run --maxWorkers=1 --no-file-parallelism
+          exit $LASTEXITCODE
+      - name: Report Windows coverage
+        if: always()
+        shell: powershell
+        run: |
+          if ($env:RCMCP_TEST_INTERACTIVE -eq '1') {
+            'Windows native + interactive UIA/desktop acceptance requested; suite serialized to avoid shared-desktop interference.' | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          } else {
+            'Hosted Windows fallback: native non-interactive verification. Interactive UIA/desktop tests explicitly skipped (not passed). Full interactive acceptance requires Gaming; this workflow has no Gaming dependency.' | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          }

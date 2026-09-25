@@ -1,0 +1,34 @@
+{
+  "name": "remote-control-mcp",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "packageManager": "pnpm@10.29.3",
+  "engines": {
+    "node": ">=24.12.0"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run",
+    "check": "pnpm check:privacy && pnpm typecheck && pnpm test",
+    "dev:agent": "node apps/agent/src/index.ts",
+    "dev:mcp": "node apps/mcp-server/src/index.ts",
+    "dev:mcp:stdio": "node apps/mcp-server/src/stdio.ts",
+    "check:privacy": "node .github/test-public-data.mjs && node .github/check-public-data.mjs",
+    "prepare": "node .github/install-hooks.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "cross-spawn": "7.0.6",
+    "fastify": "^5.12.5",
+    "node-pty": "1.1.0",
+    "playwright-core": "1.63.0",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@types/cross-spawn": "6.0.6",
+    "@types/node": "latest",
+    "typescript": "7.0.2",
+    "vitest": "^5.0.1"
+  }
+}

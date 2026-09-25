@@ -1,0 +1,22 @@
+{
+  "devices": [
+    {
+      "name": "server",
+      "url": "http://127.0.0.1:45231",
+      "userUrl": "http://127.0.0.1:45234",
+      "directUrl": "http://server:45231",
+      "userDirectUrl": "http://server:45234"
+    },
+    {
+      "name": "standby",
+      "url": "http://standby:45231",
+      "userUrl": "http://standby:45234"
+    },
+    {
+      "name": "Gaming",
+      "url": "http://gaming:45231",
+      "userUrl": "http://gaming:45232",
+      "desktopUrl": "http://gaming:45232"
+    }
+  ]
+}

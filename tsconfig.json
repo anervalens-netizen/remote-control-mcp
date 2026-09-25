@@ -1,0 +1,21 @@
+{
+  "compilerOptions": {
+    "target": "esnext",
+    "module": "nodenext",
+    "noEmit": true,
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "rewriteRelativeImportExtensions": true,
+    "erasableSyntaxOnly": true,
+    "verbatimModuleSyntax": true,
+    "allowImportingTsExtensions": true,
+    "types": [
+      "node"
+    ]
+  },
+  "include": [
+    "apps/**/*.ts",
+    "packages/**/*.ts",
+    "tests/**/*.ts"
+  ]
+}

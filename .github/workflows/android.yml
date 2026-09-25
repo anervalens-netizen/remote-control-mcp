@@ -1,0 +1,83 @@
+name: Android companion
+
+on:
+  pull_request:
+    paths:
+      - 'apps/android-companion/**'
+      - 'apps/mcp-server/src/android-*.ts'
+      - 'apps/mcp-server/src/index.ts'
+      - 'packages/protocol/src/android.ts'
+      - 'tests/android-*.test.ts'
+      - 'docs/android/PROTOCOL.md'
+      - '.github/workflows/android.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'apps/android-companion/**'
+      - 'apps/mcp-server/src/android-*.ts'
+      - 'apps/mcp-server/src/index.ts'
+      - 'packages/protocol/src/android.ts'
+      - 'tests/android-*.test.ts'
+      - 'docs/android/PROTOCOL.md'
+      - '.github/workflows/android.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: apps/android-companion
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: gradle
+          cache-dependency-path: |
+            apps/android-companion/**/*.gradle*
+            apps/android-companion/gradle/wrapper/gradle-wrapper.properties
+      - name: Install pinned SDK packages
+        shell: bash
+        run: |
+          set +o pipefail
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null
+          sdk_status=${PIPESTATUS[1]}
+          set -o pipefail
+          test "$sdk_status" -eq 0
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" 'platforms;android-36' 'build-tools;36.0.0'
+      - name: Build, lint and unit-test rootless probe
+        run: ./gradlew --no-daemon --max-workers=2 :app:assembleDebug :app:lintDebug :app:testDebugUnitTest
+      - name: Verify CI APK and distinguish signing scope
+        run: |
+          APK=app/build/outputs/apk/debug/app-debug.apk
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --print-certs "$APK" > app/build/outputs/apk/debug/CI-CERTIFICATE.txt
+          sha256sum "$APK" > app/build/outputs/apk/debug/SHA256SUMS
+          printf '%s\n' 'CI-only debug-signed APK. Not the persistent owner-signed phone installation artifact. No physical phone/Doze/mobile-only qualification is implied.' > app/build/outputs/apk/debug/CI-SCOPE.txt
+      - name: Save test and lint reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: android-reports-${{ github.sha }}
+          path: |
+            apps/android-companion/app/build/reports/
+            apps/android-companion/app/build/test-results/
+          retention-days: 7
+          if-no-files-found: warn
+      - name: Save verified CI-only APK
+        if: success()
+        uses: actions/upload-artifact@v7
+        with:
+          name: android-debug-ci-only-${{ github.sha }}
+          path: apps/android-companion/app/build/outputs/apk/debug/
+          retention-days: 7
+          if-no-files-found: error

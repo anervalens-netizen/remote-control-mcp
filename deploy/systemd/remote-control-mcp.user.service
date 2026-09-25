@@ -1,0 +1,15 @@
+[Unit]
+Description=Remote Control MCP server
+After=network-online.target remote-control-agent.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/work/remote-control-mcp
+EnvironmentFile=%h/work/remote-control-mcp/.env.mcp
+ExecStart=/home/operator/.local/opt/node-v24.21.0-linux-x64/bin/node %h/work/remote-control-mcp/apps/mcp-server/src/index.ts
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=default.target

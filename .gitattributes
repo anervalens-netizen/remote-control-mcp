@@ -1,0 +1,6 @@
+# Reproducible source fixtures on Linux and Windows; native scripts accept LF.
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.ico binary
+*.bundle binary

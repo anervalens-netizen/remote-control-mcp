@@ -1,0 +1,50 @@
+name: Audit39 native diagnostics
+# Qualification includes exact ACE preservation after native publication.
+on:
+  workflow_dispatch:
+  push:
+    branches: [audit39-final-review]
+    paths: [.github/workflows/audit39-native-diagnostic.yml]
+permissions:
+  contents: read
+jobs:
+  diagnose:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    env:
+      RCMCP_TEST_INTERACTIVE: '0'
+      RCMCP_METADATA_DIAGNOSTICS: '1'
+      GIT_CONFIG_COUNT: '1'
+      GIT_CONFIG_KEY_0: core.autocrlf
+      GIT_CONFIG_VALUE_0: 'false'
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24.21.0
+      - name: Install pinned dependencies
+        shell: powershell
+        run: |
+          npm install --global pnpm@10.29.3
+          pnpm install --frozen-lockfile
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Diagnose ACL inheritance without weakening assertions
+        shell: powershell
+        run: ./scripts/diagnose-windows-transfer-acl.ps1
+      - name: Independent native reproductions
+        shell: powershell
+        run: |
+          $failed = 0
+          $cases = @(
+            @('tests/direct-transfer.test.ts', 'incremental sync'),
+            @('tests/audit39-transfer-copy.test.ts', 'native Windows destination|previously private'),
+            @('tests/recovery.test.ts', 'keeps the PTY start pending'),
+            @('tests/recovery.test.ts', 'keeps PTY output on disk')
+          )
+          foreach ($case in $cases) {
+            Write-Output ('DIAGNOSTIC CASE: ' + $case[1])
+            pnpm vitest run $case[0] --maxWorkers=1 --no-file-parallelism -t $case[1]
+            if ($LASTEXITCODE -ne 0) { $failed++ }
+          }
+          Write-Output ('DIAGNOSTIC FAILURES: ' + $failed)
+          if ($failed -gt 0) { exit 1 }

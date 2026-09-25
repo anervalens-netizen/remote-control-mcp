@@ -1,0 +1,18 @@
+[Unit]
+Description=OpenAI Secure MCP Tunnel for Remote Control MCP
+After=network-online.target remote-control-mcp.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=%h/.config/remote-control-mcp/tunnel.env
+ExecStart=%h/.local/bin/tunnel-client run --control-plane.api-key file:%h/.config/remote-control-mcp/openai-tunnel-runtime.key
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=read-only
+ReadWritePaths=%h/.config/remote-control-mcp %h/.local/state/remote-control-mcp
+
+[Install]
+WantedBy=default.target

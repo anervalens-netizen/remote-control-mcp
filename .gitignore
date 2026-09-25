@@ -1,0 +1,30 @@
+node_modules
+.env
+.env.*
+!.env.example
+coverage/
+*.log
+.DS_Store
+config/devices.local.json
+
+# Runtime device registry may contain per-device credentials
+config/devices.json
+
+# Local recoverable registry snapshots can contain credentials.
+config/devices.json.before-*
+
+# Private operator and build material
+.private/
+private/
+.local/
+*.sqlite
+*.sqlite3
+*.db
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.pem
+.env.*
+!.env.example
