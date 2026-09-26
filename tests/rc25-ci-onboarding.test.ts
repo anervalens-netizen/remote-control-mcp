@@ -23,6 +23,7 @@ describe('public CI isolation and truthful platform coverage', () => {
   it('fetches complete history and tests the publication checker independently', () => {
     const boundary=readFileSync(new URL('../.github/workflows/public-source.yml',import.meta.url),'utf8');
     expect(boundary).toContain('fetch-depth: 0');
+    expect(boundary).toContain('github.event.pull_request.head.sha || github.sha');
     expect(boundary).toContain('persist-credentials: false');
     expect(boundary).toContain('node .github/test-public-history.mjs');
     expect(boundary).toContain('node .github/check-public-data.mjs --history HEAD');
