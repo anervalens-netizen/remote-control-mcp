@@ -43,8 +43,7 @@ it.runIf(process.platform==='win32')('resolves native drive-relative input witho
  expect(result.resolvedPath).toBe(path.join(await realpath(p),'missing'));
 });
 it.runIf(process.platform==='win32')('resolves native current-drive-root-relative input',async()=>{
- const p=await root();
- if(path.parse(p).root.toLowerCase()!==path.parse(process.cwd()).root.toLowerCase())throw new Error('Fixture must use current drive');
+ const p=await mkdtemp(path.join(process.cwd(),'.windows-root-path-fixture-'));roots.push(p);
  const input=p.slice(2)+path.sep+'missing';
  const result=await resolveProspectivePath(input);
  expect(result.resolvedPath).toBe(path.join(await realpath(p),'missing'));
