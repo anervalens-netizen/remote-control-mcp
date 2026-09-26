@@ -25,7 +25,7 @@ it('does not mistake a dangling link for a missing ordinary directory',async()=>
  const p=await root(),alias=path.join(p,'dangling');await symlink(path.join(p,'missing'),alias,process.platform==='win32'?'junction':'dir');await expect(resolveProspectivePath(path.join(alias,'child'))).rejects.toThrow('dangling');
 });
 it('resolves relative inputs using the agent working directory',async()=>{
- const p=await root();const relative=path.relative(process.cwd(),path.join(p,'missing','child'));const resolved=await resolveProspectivePath(relative);expect(resolved.resolvedPath).toBe(path.join(p,'missing','child'));
+ const p=await root();const relative=path.relative(process.cwd(),path.join(p,'missing','child'));const resolved=await resolveProspectivePath(relative);expect(resolved.resolvedPath).toBe(path.join(await realpath(p),'missing','child'));
 });
 
 it.each([['http://192.0.2.1:1234','http://192.0.2.2:1234'],['http://127.0.0.1:1234','http://127.0.0.1:5678']])('does not infer a shared filesystem from duplicate hostnames (%s, %s)',async(a,b)=>{
