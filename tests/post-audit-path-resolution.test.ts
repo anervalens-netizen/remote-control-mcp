@@ -22,3 +22,10 @@ it('does not mistake a dangling link for a missing ordinary directory',async()=>
 it('resolves relative inputs using the agent working directory',async()=>{
  const p=await root();const relative=path.relative(process.cwd(),path.join(p,'missing','child'));const resolved=await resolveProspectivePath(relative);expect(resolved.resolvedPath).toBe(path.join(p,'missing','child'));
 });
+
+it.each([['http://192.0.2.1:1234','http://192.0.2.2:1234'],['http://127.0.0.1:1234','http://127.0.0.1:5678']])('does not infer a shared filesystem from duplicate hostnames (%s, %s)',async(a,b)=>{
+ let calls=0;
+ const client={getDevice:(name:string)=>({name,url:name==='a'?a:b}),fsManage:async()=>{calls++;throw new Error('unrelated filesystem must not be resolved');}} as unknown as AgentClient;
+ await validateDirectorySeparation(client,{sourceDevice:'a',sourcePath:'/data',destinationDevice:'b',destinationPath:'/data'},{platform:'linux',hostname:'cloned-host'},{platform:'linux',hostname:'cloned-host'},'system','system',{});
+ expect(calls).toBe(0);
+});

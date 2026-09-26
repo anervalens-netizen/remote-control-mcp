@@ -15,17 +15,17 @@ export function overlappingPaths(source: string, destination: string, platform?:
 export async function validateDirectorySeparation(client: AgentClient, input: {
   sourceDevice: string; sourcePath: string; destinationDevice: string; destinationPath: string;
 }, sourceInfo: HostInfo, destinationInfo: HostInfo, sourceContext: AgentContext, destinationContext: AgentContext, options: AgentRequestOptions) {
-  let sameHost = input.sourceDevice.toLowerCase() === input.destinationDevice.toLowerCase()
-    || Boolean(sourceInfo.hostname && sourceInfo.hostname === destinationInfo.hostname && sourceInfo.platform === destinationInfo.platform);
-  // Multiple device descriptors can name the same network host.
+  let sameHost = input.sourceDevice.toLowerCase() === input.destinationDevice.toLowerCase();
+  // Shared configured endpoints establish aliases. A hostname alone does not:
+  // separate machines can share an OS hostname or a reverse-proxy hostname.
   if (!sameHost && typeof client.getDevice === "function") {
-    const host = (name: string, context: AgentContext) => {
+    const endpoints = (name: string) => {
       const device = client.getDevice(name);
-      const url = context === "system" ? device.url : device.userUrl ?? device.desktopUrl;
-      return url ? new URL(url).hostname : undefined;
+      return [device.url, device.userUrl, device.desktopUrl].filter((url): url is string => Boolean(url))
+        .map(url => new URL(url).href.replace(/\/$/, ""));
     };
-    const sourceHost = host(input.sourceDevice, sourceContext);
-    sameHost = Boolean(sourceHost && sourceHost === host(input.destinationDevice, destinationContext));
+    const destinationEndpoints = new Set(endpoints(input.destinationDevice));
+    sameHost = endpoints(input.sourceDevice).some(url => destinationEndpoints.has(url));
   }
   if (!sameHost) return;
   const [source, destination] = await Promise.all([
