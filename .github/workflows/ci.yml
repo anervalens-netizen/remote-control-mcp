@@ -88,6 +88,8 @@ jobs:
       - name: Typecheck and native Windows test
         shell: powershell
         run: |
+          pnpm check:privacy
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           pnpm typecheck
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           pnpm vitest run --maxWorkers=1 --no-file-parallelism

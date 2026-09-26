@@ -1,3 +1,4 @@
+import { withErrorOutputContract } from "./error-output-contract.ts";
 import { withToolErrors } from "./tool-errors.ts";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { toolResultSchemas, type ToolResultName } from "./semantic-result-schemas.ts";
@@ -128,7 +129,7 @@ export function installDefaultToolOutputContracts(server: McpServer): void {
       const semanticSchema = toolResultSchemas[name as ToolResultName] as SafeParseSchema | undefined;
       return { ...result, structuredContent: compactStructuredContent(structured, STRUCTURED_CONTENT_MAX_BYTES, semanticSchema) };
     };
-    return original(name, { ...config, outputSchema: schema }, wrappedCallback);
+    return original(name, { ...config, outputSchema: withErrorOutputContract(schema) }, wrappedCallback);
   };
   installedServers.add(server);
 }

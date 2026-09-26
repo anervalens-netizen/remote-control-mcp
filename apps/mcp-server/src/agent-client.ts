@@ -23,6 +23,8 @@ function configuredTimeout(): number {
   return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : DEFAULT_HTTP_TIMEOUT_MS;
 }
 
+export type JobStartFailure = { code: "job_start_conflict" | "job_start_uncertain"; jobId?: string };
+
 export class AgentRequestError extends Error {
   readonly device: string;
   readonly context: AgentEndpointContext;
@@ -31,8 +33,9 @@ export class AgentRequestError extends Error {
   readonly status: number | undefined;
   readonly recovery: JobRecoveryPayload | undefined;
   readonly responseBodyTruncated: boolean;
+  readonly jobStartFailure: JobStartFailure | undefined;
 
-  constructor(message: string, device: string, context: AgentEndpointContext, route: string, kind: "timeout" | "network" | "http" | "protocol" | "context" | "cancelled", status?: number, recovery?: JobRecoveryPayload, responseBodyTruncated = false) {
+  constructor(message: string, device: string, context: AgentEndpointContext, route: string, kind: "timeout" | "network" | "http" | "protocol" | "context" | "cancelled", status?: number, recovery?: JobRecoveryPayload, responseBodyTruncated = false, jobStartFailure?: JobStartFailure) {
     super(message);
     this.name = "AgentRequestError";
     this.device = device;
@@ -42,6 +45,7 @@ export class AgentRequestError extends Error {
     this.status = status;
     this.recovery = recovery;
     this.responseBodyTruncated = responseBodyTruncated;
+    this.jobStartFailure = jobStartFailure;
   }
 }
 
@@ -66,7 +70,7 @@ function ordinaryHttpDiagnostic(value: unknown): { diagnostic: string; truncated
   return boundedHttpDiagnostic(diagnostic === "{}" ? "" : diagnostic ?? "");
 }
 
-async function readAgentError(response: Response): Promise<{ recovery?: JobRecoveryPayload; diagnostic?: string; truncated: boolean }> {
+async function readAgentError(response: Response): Promise<{ recovery?: JobRecoveryPayload; jobStartFailure?: JobStartFailure; diagnostic?: string; truncated: boolean }> {
   const reader = response.body?.getReader();
   if (!reader) return { truncated: false };
   const chunks: Uint8Array[] = [];
@@ -88,7 +92,13 @@ async function readAgentError(response: Response): Promise<{ recovery?: JobRecov
   catch { return boundedHttpDiagnostic(raw); }
   try {
     const recovery = jobRecoveryPayload(value);
-    return recovery ? { recovery, truncated: false } : ordinaryHttpDiagnostic(value);
+    if (recovery) return { recovery, truncated: false };
+    const payload = value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+    if (payload && (payload.error === "job_start_conflict" || payload.error === "job_start_uncertain")) {
+      const jobId = typeof payload.jobId === "string" && /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(payload.jobId) ? payload.jobId : undefined;
+      return { ...ordinaryHttpDiagnostic(value), jobStartFailure: { code: payload.error, ...(jobId ? { jobId } : {}) } };
+    }
+    return ordinaryHttpDiagnostic(value);
   } catch {
     // A parsed body's excessive depth must not bypass field selection/redaction
     // by falling back to its raw JSON representation.
@@ -181,9 +191,9 @@ export class AgentClient {
         ...(signal ? { signal } : {}),
       });
       if (!response.ok) {
-        const { recovery, diagnostic, truncated } = await readAgentError(response);
+        const { recovery, diagnostic, truncated, jobStartFailure } = await readAgentError(response);
         const detail = recovery ? " job_recovery_required" : diagnostic ? ` ${diagnostic}` : "";
-        throw new AgentRequestError(`${name} ${context} ${route} failed: HTTP ${response.status}${detail}`, name, context, route, "http", response.status, recovery, truncated);
+        throw new AgentRequestError(`${name} ${context} ${route} failed: HTTP ${response.status}${detail}`, name, context, route, "http", response.status, recovery, truncated, jobStartFailure);
       }
       try {
         return await response.json() as T;

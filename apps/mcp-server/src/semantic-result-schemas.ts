@@ -60,7 +60,7 @@ const deviceInfo = z.object({
 const fsWrite = z.object({ path: z.string(), bytes: nonnegative, writtenBytes: nonnegative, mode: z.enum(["rewrite", "append"]), atomic: z.boolean(), durable: z.boolean() }).passthrough();
 const fsManage = z.object({ operation: z.enum(["stat", "mkdir", "move", "copy", "delete", "times"]).optional(), path: z.string(), size: nonnegative.optional(), ok: z.boolean().optional(),
   copied: nonnegative.optional(), skipped: nonnegative.optional(),
-  outcome: z.enum(["copied", "skipped", "partial", "failed"]).optional(), reason: z.literal("destination_exists").optional(),
+  outcome: z.enum(["copied", "skipped", "partial", "failed", "same_file_noop"]).optional(), reason: z.literal("destination_exists").optional(),
 }).passthrough().refine((value) => value.operation !== undefined || value.size !== undefined || value.ok !== undefined, "filesystem management result must identify the operation or stat data");
 const ptyOutput = z.object({ id: z.string(), state: z.string(), offset: nonnegative, nextOffset: nonnegative, totalBytes: nonnegative, bytesRead: nonnegative, eof: z.boolean(), data: z.string() }).passthrough();
 const ptySession = z.object({ id: z.string(), pid: z.number().int().positive(), state: z.string() }).passthrough();

@@ -26,6 +26,11 @@ try{
  git(l,'update-index','--add','--cacheinfo','120000',sha,'link.txt');assert.ok(scan(l,'--staged').issues.some(i=>i.kind==='external-symlink'));
  git(l,'commit','-qm','Synthetic link fixture');assert.ok(scan(l,'--history','HEAD').issues.some(i=>i.kind==='external-symlink'));cases++;
  // NUL-delimited tree parsing must retain unusual names rather than normalize them away.
- const n=fixture();writeFileSync(path.join(n,'name\nwith-tab\t.txt'),'safe fixture');commit(n);assert.equal(scan(n,'--history','HEAD').status,'PASS');cases++;
+ const n=fixture();
+ const content=execFileSync('git',['hash-object','-w','--stdin'],{cwd:n,input:'safe fixture',encoding:'utf8'}).trim();
+ const tree=execFileSync('git',['mktree','-z'],{cwd:n,input:`100644 blob ${content}\tname\nwith-tab\t.txt\0`,encoding:'utf8'}).trim();
+ const unusualCommit=git(n,'commit-tree',tree,'-m','Publish sanitized public source baseline');
+ git(n,'update-ref','HEAD',unusualCommit);
+ assert.equal(scan(n,'--history','HEAD').status,'PASS');cases++;
  console.log(`PASS: ${cases} history/encoding/path regression cases.`);
 }finally{for(const d of roots)rmSync(d,{recursive:true,force:true});}

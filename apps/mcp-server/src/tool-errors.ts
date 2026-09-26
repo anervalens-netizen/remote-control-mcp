@@ -7,6 +7,7 @@ export function toolErrorDetails(error: unknown) {
       device: error.device, context: error.context, route: error.route, kind: error.kind,
       ...(error.status === undefined ? {} : { status: error.status }),
       ...(error.recovery ? { recovery: error.recovery } : {}),
+      ...(error.jobStartFailure ? error.jobStartFailure : {}),
       ...(error.responseBodyTruncated ? { responseBodyTruncated: true } : {}),
     } : {}),
   };
