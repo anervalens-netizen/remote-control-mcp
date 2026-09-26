@@ -103,7 +103,7 @@ if (configuredBodyLimitBytes !== null && (!Number.isSafeInteger(configuredBodyLi
 // a numeric parser limit, so MAX_SAFE_INTEGER is the practical no-fixed-cap value.
 const bodyLimit = configuredBodyLimitBytes ?? Number.MAX_SAFE_INTEGER;
 const app = Fastify({ logger: true, bodyLimit });
-const runtimeWithHttpLimits = () => ({ ...runtimeStatus(), maxBodyBytes: configuredBodyLimitBytes, transferStagingVersion: 1 });
+const runtimeWithHttpLimits = () => ({ ...runtimeStatus(), maxBodyBytes: configuredBodyLimitBytes, transferStagingVersion: 1, pathResolutionVersion: 1 });
 
 app.addHook("onRequest", async (request, reply) => {
   if (request.url === "/health" || allowUnauthenticated) return;

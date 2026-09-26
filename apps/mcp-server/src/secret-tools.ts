@@ -3,6 +3,7 @@ import path from "node:path";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { AgentClient, AgentContext } from "./agent-client.ts";
+import { OperationReceiptError } from "./operation-receipt-error.ts";
 import { SecretStore } from "./secret-store.ts";
 
 const CHUNK_BYTES = 1024 * 1024;
@@ -17,7 +18,7 @@ const secretMetadataSchema = z.object({
 
 type RemoteStat = { size: number; isFile: boolean; modifiedAt?: string; dev?: number; ino?: number };
 type RemoteInfo = { platform?: string };
-type MoveResult = { atomic?: boolean; destinationAtomic?: boolean };
+type MoveResult = { ok?: boolean; atomic?: boolean; destinationAtomic?: boolean; [key: string]: unknown };
 type Identity = "root" | "owner";
 
 function identityContext(identity: Identity | undefined): AgentContext {
@@ -40,6 +41,7 @@ async function installChunks(
   const temporary = siblingTemporary(destination, info.platform);
   let offset = 0;
   let wrote = false;
+  let activationAttempted = false;
   try {
     for await (const chunk of chunks) {
       await client.fsWrite(device, {
@@ -54,14 +56,39 @@ async function installChunks(
       offset += chunk.length;
     }
     if (!wrote) await client.fsWrite(device, { path: temporary, data: "", mode: "rewrite", createParents: true, permissions: 0o600 }, context);
+    activationAttempted = true;
     const move = await client.fsManage(device, { operation: "move", path: temporary, destination, force: true }, context) as MoveResult;
+    if (move?.ok !== true) {
+      const recovery: Record<string, unknown> = {};
+      // Only recovery metadata is allowed through; never serialize arbitrary
+      // agent response fields, exception messages, or secret content.
+      for (const key of ["cleanupPath", "sourceRemoved", "sourceQuarantined", "destinationAtomic", "destinationDurable", "sourceRemovalDurable", "durabilityVerification", "atomic"] as const) {
+        const value = move?.[key];
+        if (typeof value === "boolean" || (typeof value === "string" && value.length <= 4096)) recovery[key] = value;
+      }
+      throw new OperationReceiptError("Secret activation did not confirm completion; inspect the destination and retained recovery material before retrying", {
+        code: move?.ok === false ? "secret_install_failed" : "secret_install_uncertain", phase: "activation",
+        device, context, destination, bytesStaged: offset, temporaryPath: temporary, recoveryRequired: true, recovery,
+      });
+    }
     const destinationAtomic = move.destinationAtomic ?? move.atomic ?? false;
     return { device, destination, bytes: offset, identity: context === "user" ? "owner" : "root", atomic: destinationAtomic, destinationAtomic };
   } catch (error) {
-    try { await client.fsManage(device, { operation: "delete", path: temporary, force: true }, context); } catch { /* best effort */ }
-    throw error;
+    if (error instanceof OperationReceiptError) throw error;
+    if (activationAttempted) throw new OperationReceiptError("Secret activation outcome is uncertain; inspect the destination and retained staging before retrying", {
+      code: "secret_install_uncertain", phase: "activation", device, context, destination,
+      temporaryPath: temporary, bytesStaged: offset, recoveryRequired: true,
+    }, error);
+    let cleanupPending = false;
+    try {
+      const removed = await client.fsManage(device, { operation: "delete", path: temporary, force: true }, context, { timeoutMs: 1000 }) as { ok?: boolean };
+      cleanupPending = removed?.ok !== true;
+    } catch { cleanupPending = true; }
+    throw new OperationReceiptError("Secret staging failed before activation", {
+      code: "secret_install_failed", phase: "staging", device, context, destination, bytesStaged: offset,
+      ...(cleanupPending ? { cleanupPending: true, cleanupPath: temporary, recoveryRequired: true } : {}),
+    }, error);
   }
-  throw new Error("unreachable secret installation state");
 }
 
 export async function importRemoteSecret(
@@ -74,8 +101,9 @@ export async function importRemoteSecret(
   if (!before.isFile) throw new Error(`Secret import source is not a file: ${input.sourcePath}`);
 
   const raw = await client.rawFile(input.sourceDevice, input.sourcePath, context);
-  if (raw.size !== before.size) throw new Error(`Secret import source changed before streaming alias ${input.alias}`);
+  if (raw.size !== before.size) { await raw.cancel?.(); throw new Error(`Secret import source changed before streaming alias ${input.alias}`); }
   if (before.modifiedAt && raw.modifiedAt && new Date(before.modifiedAt).toISOString() !== raw.modifiedAt) {
+    await raw.cancel?.();
     throw new Error(`Secret import source timestamp changed before streaming alias ${input.alias}`);
   }
 
@@ -101,8 +129,10 @@ export async function importRemoteSecret(
     }
   }
 
-  const metadata = await store.putChunks(input.alias, chunks());
-  return { ...metadata, importedFrom: { device: input.sourceDevice, identity: context === "user" ? "owner" : "root" } };
+  try {
+    const metadata = await store.putChunks(input.alias, chunks());
+    return { ...metadata, importedFrom: { device: input.sourceDevice, identity: context === "user" ? "owner" : "root" } };
+  } finally { await raw.cancel?.(); }
 }
 
 export async function installSecret(

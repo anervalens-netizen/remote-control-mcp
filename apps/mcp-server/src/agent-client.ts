@@ -70,7 +70,7 @@ function ordinaryHttpDiagnostic(value: unknown): { diagnostic: string; truncated
   return boundedHttpDiagnostic(diagnostic === "{}" ? "" : diagnostic ?? "");
 }
 
-async function readAgentError(response: Response): Promise<{ recovery?: JobRecoveryPayload; jobStartFailure?: JobStartFailure; diagnostic?: string; truncated: boolean }> {
+async function readAgentError(response: Response, maxBytes = 1024 * 1024): Promise<{ recovery?: JobRecoveryPayload; jobStartFailure?: JobStartFailure; diagnostic?: string; truncated: boolean }> {
   const reader = response.body?.getReader();
   if (!reader) return { truncated: false };
   const chunks: Uint8Array[] = [];
@@ -82,7 +82,7 @@ async function readAgentError(response: Response): Promise<{ recovery?: JobRecov
       size += value.byteLength;
       // Allow old agents' diagnostics above 64 KiB without truncating the JSON
       // before parsing. New agents already emit a bounded typed receipt.
-      if (size > 1024 * 1024) { await reader.cancel(); return { truncated: true }; }
+      if (size > maxBytes) { await reader.cancel(); return { truncated: true }; }
       chunks.push(value);
     }
   } finally { reader.releaseLock(); }
@@ -279,6 +279,7 @@ export class AgentClient {
     size: number;
     modifiedAt: string | null;
     chunks: AsyncIterable<Buffer>;
+    cancel: () => Promise<void>;
   }> {
     const endpoint = this.endpoint(name, context, "/v1/fs/raw");
     const url = new URL("/v1/fs/raw", endpoint.base);
@@ -289,7 +290,7 @@ export class AgentClient {
 
     let response: Response;
     try {
-      response = await fetch(url, { headers, ...(deadline.signal ? { signal: deadline.signal } : {}) });
+      response = await fetch(url, { headers, redirect: "error", ...(deadline.signal ? { signal: deadline.signal } : {}) });
     } catch (error) {
       if (deadline.timedOut()) {
         deadline.dispose();
@@ -299,9 +300,17 @@ export class AgentClient {
       throw error;
     }
     if (!response.ok) {
-      const detail = (await response.text()).slice(0, 64 * 1024);
-      deadline.dispose();
-      throw new AgentRequestError(`${name} ${context} /v1/fs/raw failed: HTTP ${response.status} ${detail}`, name, context, "/v1/fs/raw", "http", response.status);
+      try {
+        const { diagnostic, truncated } = await readAgentError(response, 64 * 1024);
+        throw new AgentRequestError(`${name} ${context} /v1/fs/raw failed: HTTP ${response.status}${diagnostic ? ` ${diagnostic}` : ""}`, name, context, "/v1/fs/raw", "http", response.status, undefined, truncated);
+      } catch (error) {
+        if (error instanceof AgentRequestError) throw error;
+        if (deadline.timedOut()) throw new AgentRequestError(`${name} ${context} /v1/fs/raw timed out after ${timeoutMs}ms`, name, context, "/v1/fs/raw", "timeout");
+        throw new AgentRequestError(`${name} ${context} /v1/fs/raw error response interrupted`, name, context, "/v1/fs/raw", "network", response.status);
+      } finally {
+        deadline.dispose();
+        await response.body?.cancel().catch(() => undefined);
+      }
     }
     if (!response.body) {
       deadline.dispose();
@@ -333,7 +342,7 @@ export class AgentClient {
       }
     })();
 
-    return { size, modifiedAt, chunks };
+    return { size, modifiedAt, chunks, cancel: async () => { deadline.dispose(); await response.body?.cancel().catch(() => undefined); } };
   }
 
   fsRead(name: string, input: unknown, context: AgentEndpointContext = "system", options?: AgentRequestOptions): Promise<unknown> { return this.request(name, "/v1/fs/read", input, context, options); }

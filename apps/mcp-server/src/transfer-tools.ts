@@ -1,3 +1,6 @@
+import { OperationReceiptError } from "./operation-receipt-error.ts";
+import { validateDirectorySeparation } from "./directory-paths.ts";
+import { toolErrorDetails } from "./tool-errors.ts";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -12,7 +15,7 @@ function text(value: unknown) {
 type StatResult = { posixMode?: number | null; size: number; isFile: boolean; isDirectory?: boolean; dev?: number; ino?: number; modifiedAt?: string };
 type ReadResult = { data: string; bytesRead: number };
 type ListEntry = { name: string; path: string; type: "directory" | "file" | "symlink" | "other"; size: number; modifiedAt?: string; error?: string };
-type Info = { platform?: string; runtime?: { transferStagingVersion?: number } };
+type Info = { platform?: string; hostname?: string; runtime?: { transferStagingVersion?: number } };
 type CleanupReceipt = { cleanupPending?: boolean; cleanupPath?: string; cleanupError?: string };
 type MoveResult = { ok?: boolean; error?: string; atomic?: boolean; destinationAtomic?: boolean } & CleanupReceipt;
 const legacyWarning = "Explicit legacy-agent compatibility: destination permissions/ACLs/executable bits are not guaranteed preserved. Upgrade source and destination agents for private metadata-preserving transfers.";
@@ -214,6 +217,15 @@ export async function syncDirectory(client: AgentClient, input: {
   const deadline = createDeadline(input.timeoutMs, input.signal, DEFAULT_TRANSFER_TIMEOUT_MS);
   const signal = deadline.signal;
   const requestOptions = () => deadlineOptions(deadline);
+  const directories: string[] = [""];
+  const files: Array<{ source: string; relative: string; size: number; modifiedAt?: string }> = [];
+  const skipped: Array<{ path: string; type: string }> = [];
+  const completed = new Map<number, Record<string, unknown>>();
+  const failed = new Map<number, Record<string, unknown>>();
+  const attempted = new Set<number>();
+  const directoryAttempts: string[] = [], directoryCompletions: string[] = [];
+  let bytes = 0, mutationAttempted = false;
+  let phase = "preflight";
   try {
   signal?.throwIfAborted();
   const sourceContext = input.sourceContext ?? "system";
@@ -222,11 +234,11 @@ export async function syncDirectory(client: AgentClient, input: {
   signal?.throwIfAborted();
   const srcPath = sourceInfo.platform === "win32" ? path.win32 : path.posix;
   const dstPath = destinationInfo.platform === "win32" ? path.win32 : path.posix;
+  await validateDirectorySeparation(client, input, sourceInfo, destinationInfo, sourceContext, destinationContext, requestOptions());
   const rootStat = await client.fsManage(input.sourceDevice, { operation: "stat", path: input.sourcePath }, sourceContext, requestOptions()) as StatResult;
   signal?.throwIfAborted();
   if (!rootStat.isDirectory) throw new Error(`Source is not a directory: ${input.sourcePath}`);
 
-  const directories: string[] = [""]; const files: Array<{ source: string; relative: string; size: number; modifiedAt?: string }> = []; const skipped: Array<{ path: string; type: string }> = [];
   for (let i = 0; i < directories.length; i += 1) {
     const relative = directories[i]!;
     const current = relative ? srcPath.join(input.sourcePath, relative) : input.sourcePath;
@@ -251,11 +263,19 @@ export async function syncDirectory(client: AgentClient, input: {
   ], destinationInfo.platform);
   requireTransferCapability(destinationInfo, input.allowLegacyAgent);
   requireTransferCapability(sourceInfo, input.allowLegacyAgent, "Source");
-  await client.fsManage(input.destinationDevice, { operation: "mkdir", path: input.destinationPath, recursive: true }, destinationContext, requestOptions());
+  phase = "directories";
+  const ensureDirectory = async (pathname: string) => {
+    mutationAttempted = true;
+    directoryAttempts.push(pathname);
+    const receipt = await client.fsManage(input.destinationDevice, { operation: "mkdir", path: pathname, recursive: true }, destinationContext, requestOptions()) as { ok?: boolean };
+    if (receipt?.ok === false) throw new Error("Destination directory creation was not completed");
+    directoryCompletions.push(pathname);
+  };
+  await ensureDirectory(input.destinationPath);
   signal?.throwIfAborted();
   for (const relative of directories.slice(1)) {
     signal?.throwIfAborted();
-    await client.fsManage(input.destinationDevice, { operation: "mkdir", path: dstPath.join(input.destinationPath, ...destinationSegments(relative, destinationInfo.platform, sourceInfo.platform)), recursive: true }, destinationContext, requestOptions());
+    await ensureDirectory(dstPath.join(input.destinationPath, ...destinationSegments(relative, destinationInfo.platform, sourceInfo.platform)));
     signal?.throwIfAborted();
   }
   const destinationEntries = new Map<string, ListEntry>();
@@ -268,14 +288,18 @@ export async function syncDirectory(client: AgentClient, input: {
       for (const entry of entries) destinationEntries.set(dstPath.join(dir, entry.name), entry);
     }
   }
-  let bytes = 0;
-  const outcomes = await mapLimit(files, input.concurrency ?? 4, async (file) => {
+  phase = "files";
+  const outcomes = await mapLimit(files, input.concurrency ?? 4, async (file, index) => {
+    attempted.add(index);
+    try {
     signal?.throwIfAborted();
     const destination = dstPath.join(input.destinationPath, ...destinationSegments(file.relative, destinationInfo.platform, sourceInfo.platform));
     const existing = destinationEntries.get(destination);
     if (existing && !existing.error && existing.type === "file" && existing.size === file.size &&
         existing.modifiedAt && file.modifiedAt && Math.abs(Date.parse(existing.modifiedAt) - Date.parse(file.modifiedAt)) < 2) {
-      return { relative: file.relative, bytes: 0, chunks: 0, unchanged: true };
+      const outcome = { relative: file.relative, bytes: 0, chunks: 0, unchanged: true };
+      completed.set(index, outcome);
+      return outcome;
     }
     const result = await transferFile(client, {
       sourceDevice: input.sourceDevice, sourcePath: file.source, sourceContext, sourceSupportsTransferMetadata: supportsPrivateStage(sourceInfo),
@@ -286,8 +310,18 @@ export async function syncDirectory(client: AgentClient, input: {
       preserveTimestamps: input.compare === "size-mtime",
       signal,
     });
-    bytes += result.bytes; return { relative: file.relative, bytes: result.bytes, chunks: result.chunks, unchanged: false, ...("cleanupPending" in result && result.cleanupPending ? { cleanupPending: true, cleanupPath: result.cleanupPath, cleanupError: result.cleanupError } : {}), ...("legacyAgent" in result && result.legacyAgent ? { legacyAgent: true, metadataPreserved: false, compatibilityWarning: legacyWarning } : {}) };
-  });
+    bytes += result.bytes; const outcome = { relative: file.relative, bytes: result.bytes, chunks: result.chunks, unchanged: false, ...("cleanupPending" in result && result.cleanupPending ? { cleanupPending: true, cleanupPath: result.cleanupPath, cleanupError: result.cleanupError } : {}), ...("legacyAgent" in result && result.legacyAgent ? { legacyAgent: true, metadataPreserved: false, compatibilityWarning: legacyWarning } : {}) };
+    completed.set(index, outcome);
+    return outcome;
+    } catch (error) {
+      const details = toolErrorDetails(error);
+      const cleanup = error && typeof error === "object" ? error as Record<string, unknown> : {};
+      failed.set(index, { relative: file.relative, ...details, destinationState: "unverified",
+        ...(typeof cleanup.cleanupPath === "string" ? { cleanupPending: true, cleanupPath: cleanup.cleanupPath } : {}),
+      });
+      throw error;
+    }
+  }, signal);
   const transferred = outcomes.filter((file) => !file.unchanged);
   const unchanged = outcomes.filter((file) => file.unchanged).map((file) => file.relative);
   const pendingCleanup = transferred.filter(file => "cleanupPending" in file && file.cleanupPending);
@@ -298,6 +332,26 @@ export async function syncDirectory(client: AgentClient, input: {
     ...((!supportsPrivateStage(destinationInfo) || !supportsPrivateStage(sourceInfo)) ? { legacyAgent: true, metadataPreserved: false, compatibilityWarning: legacyWarning } : {}),
     durationMs: Math.round(performance.now() - started), note: "Copies/updates files; existing destination-only files are preserved.",
   };
+  } catch (error) {
+    if (!mutationAttempted) throw error;
+    // mapLimit drains started workers before returning: this receipt cannot
+    // race further work started by this invocation.
+    const outcomes = [...completed.entries()].sort(([a], [b]) => a - b).map(([, value]) => value);
+    const transferred = outcomes.filter(value => value.unchanged === false);
+    const unchanged = outcomes.filter(value => value.unchanged === true).map(value => value.relative);
+    const failures = [...failed.entries()].sort(([a], [b]) => a - b).map(([, value]) => value);
+    const notAttempted = files.filter((_, index) => !attempted.has(index)).map(file => file.relative);
+    throw new OperationReceiptError("Directory synchronization did not complete; inspect the partial receipt before retrying", {
+      code: "directory_sync_partial", phase, sourceDevice: input.sourceDevice, sourcePath: input.sourcePath,
+      destinationDevice: input.destinationDevice, destinationPath: input.destinationPath,
+      destinationMutationAttempted: true, partialEffectsPossible: true, cancelled: Boolean(signal?.aborted),
+      directories: directories.length, directoryAttempts, directoryCompletions, files: files.length, bytes,
+      skipped, transferred, unchanged, failed: failures, notAttempted,
+      filesTransferred: transferred.length, filesUnchanged: unchanged.length,
+      filesFailed: failures.length, filesNotAttempted: notAttempted.length,
+      failure: toolErrorDetails(error), durationMs: Math.round(performance.now() - started),
+      note: "Completed files remain installed. Failed file destinations are unverified; notAttempted files were not started. No automatic replay was performed.",
+    }, error);
   } finally {
     deadline.dispose();
   }

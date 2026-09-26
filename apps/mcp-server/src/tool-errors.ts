@@ -1,7 +1,9 @@
+import { OperationReceiptError } from "./operation-receipt-error.ts";
 import { AgentRequestError } from "./agent-client.ts";
 
 export function toolErrorDetails(error: unknown) {
   return {
+    ...(error instanceof OperationReceiptError ? error.receipt : {}),
     error: error instanceof Error ? error.message : String(error),
     ...(error instanceof AgentRequestError ? {
       device: error.device, context: error.context, route: error.route, kind: error.kind,

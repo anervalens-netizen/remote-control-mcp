@@ -1,3 +1,4 @@
+import { resolveProspectivePath } from "./path-resolution.ts";
 import { beginTransfer, finalizeTransfer } from "./transfer-staging.ts";
 import { copyPath } from "./filesystem-copy.ts";
 import { lstat, mkdir, open, readdir, realpath, rm, stat, utimes } from "node:fs/promises";
@@ -402,7 +403,7 @@ export async function fsList(input: { path: string }) {
 }
 
 export async function fsManage(input: {
-  operation: "stat" | "mkdir" | "move" | "copy" | "delete" | "times" | "transfer-stage" | "transfer-finalize";
+  operation: "stat" | "mkdir" | "move" | "copy" | "delete" | "times" | "transfer-stage" | "transfer-finalize" | "resolve-path";
   path: string;
   destination?: string;
   recursive?: boolean;
@@ -412,6 +413,7 @@ export async function fsManage(input: {
   expectedDestination?: string; expectedBytes?: number; sourceMode?: number;
 }, signal?: AbortSignal) {
   switch (input.operation) {
+    case "resolve-path": return { ...await resolveProspectivePath(input.path) };
     case "transfer-stage": return { ...await beginTransfer(input.path, signal) };
     case "transfer-finalize":
       if (!input.destination || input.expectedDestination === undefined || input.expectedBytes === undefined) throw new Error("Missing transfer finalization metadata");

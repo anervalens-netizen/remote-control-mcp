@@ -4,7 +4,7 @@ import { timeoutMsField } from "./deadline.ts";
 // Internal transfer operations use the authenticated filesystem route; public
 // fs_manage remains the existing six-operation tool.
 export const fsManageSchema = z.object({
-  operation: z.enum(["stat", "mkdir", "move", "copy", "delete", "times", "transfer-stage", "transfer-finalize"]),
+  operation: z.enum(["stat", "mkdir", "move", "copy", "delete", "times", "transfer-stage", "transfer-finalize", "resolve-path"]),
   path: z.string().min(1), destination: z.string().optional(),
   recursive: z.boolean().optional(), force: z.boolean().optional(),
   modifiedAt: z.string().datetime().optional(), accessedAt: z.string().datetime().optional(),
