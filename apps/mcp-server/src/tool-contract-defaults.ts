@@ -119,6 +119,7 @@ export function installDefaultToolOutputContracts(server: McpServer): void {
   target.registerTool = (name: string, config: any, callback: (...args: any[]) => any) => {
     const schema = config?.outputSchema ?? toolResultSchemas[name as ToolResultName];
     if (!schema) throw new Error(`Missing semantic output contract for registered tool: ${name}`);
+    const advertisedSchema = withErrorOutputContract(schema);
     const wrappedCallback = async (...args: any[]) => {
       const result = await withToolErrors(() => callback(...args));
       if (!result || typeof result !== "object") return result;
@@ -126,10 +127,9 @@ export function installDefaultToolOutputContracts(server: McpServer): void {
       const structured = current && typeof current === "object" && !Array.isArray(current)
         ? current as Record<string, unknown>
         : structuredFromContent((result as any).content);
-      const semanticSchema = toolResultSchemas[name as ToolResultName] as SafeParseSchema | undefined;
-      return { ...result, structuredContent: compactStructuredContent(structured, STRUCTURED_CONTENT_MAX_BYTES, semanticSchema) };
+      return { ...result, structuredContent: compactStructuredContent(structured, STRUCTURED_CONTENT_MAX_BYTES, advertisedSchema) };
     };
-    return original(name, { ...config, outputSchema: withErrorOutputContract(schema) }, wrappedCallback);
+    return original(name, { ...config, outputSchema: advertisedSchema }, wrappedCallback);
   };
   installedServers.add(server);
 }
