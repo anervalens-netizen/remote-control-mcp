@@ -47,7 +47,7 @@ async function initializeSession(base: string): Promise<string> {
 }
 
 async function health(base: string): Promise<any> {
-  return await (await fetch(`${base}/health`)).json();
+  return await (await fetch(`${base}/health`, {headers:{authorization:"Bearer m16-token"}})).json();
 }
 
 describe("M16 transport remediation", () => {

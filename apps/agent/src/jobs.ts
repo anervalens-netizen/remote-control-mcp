@@ -1,3 +1,4 @@
+import { JobStartDeduplicator, type JobStartInput } from "./job-start-dedup.ts";
 import { jobRecoveryPayload, type JobRecoveryDetails } from "../../../packages/protocol/src/job-recovery.ts";
 import { jobLineageSchema } from "../../../packages/protocol/src/project.ts";
 import { closeSync, existsSync, fsyncSync, openSync, readFileSync, readSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -96,6 +97,7 @@ export class JobRecoveryError extends Error {
 }
 
 const jobsRoot = ensureStateDir("jobs");
+const jobStartDedup = new JobStartDeduplicator(ensureStateDir("job-start-keys"));
 const live = new Map<string, ChildProcess>();
 const windowsLive = new Set<string>();
 const cancelInFlight = new Map<string, Promise<ReturnType<typeof summary>>>();
@@ -559,8 +561,11 @@ async function startWindowsDetachedRunner(input: {
   return parsed.pid;
 }
 
-export async function jobStart(input: { command: string; cwd?: string; env?: Record<string, string> }) {
-  const id = randomUUID();
+export async function jobStart(input: JobStartInput) {
+  return jobStartDedup.run(input, id => startJobWithId(input, id), jobStatusAsync);
+}
+
+async function startJobWithId(input: JobStartInput, id: string) {
   const executionMarker = "RCMCP_JOB_ID=" + id;
   const stdoutPath = outputPath(id, "stdout"); const stderrPath = outputPath(id, "stderr"); const donePath = exitPath(id);
   let child: ChildProcess | undefined;

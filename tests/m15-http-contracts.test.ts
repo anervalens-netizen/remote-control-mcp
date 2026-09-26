@@ -85,11 +85,11 @@ describe("M15 W5 HTTP contracts", () => {
 
   it("exposes the effective request-body limit and has no fixed default cap", async () => {
     const { base } = await harness();
-    const health = await (await fetch(`${base}/health`)).json() as any;
+    const health = await (await fetch(`${base}/health`, {headers:{authorization:"Bearer m15-http-token"}})).json() as any;
     expect(health.runtime.maxBodyBytes).toBeNull();
 
     const bounded = await harness(1000, { maxBodyBytes: 1024 });
-    const boundedHealth = await (await fetch(`${bounded.base}/health`)).json() as any;
+    const boundedHealth = await (await fetch(`${bounded.base}/health`, {headers:{authorization:"Bearer m15-http-token"}})).json() as any;
     expect(boundedHealth.runtime.maxBodyBytes).toBe(1024);
     const response = await fetch(`${bounded.base}/mcp`, {
       method: "POST",
@@ -106,7 +106,7 @@ describe("M15 W5 HTTP contracts", () => {
 
   it("reports registered, in-flight and idle session counts separately", async () => {
     const { base } = await harness();
-    const healthBefore = await (await fetch(`${base}/health`)).json() as any;
+    const healthBefore = await (await fetch(`${base}/health`, {headers:{authorization:"Bearer m15-http-token"}})).json() as any;
     expect(healthBefore.sessions).toMatchObject({ registered: 0, inFlight: 0, idle: 0 });
     expect(healthBefore.memory.rssBytes).toBeGreaterThan(0);
     expect(healthBefore.memory.heapUsedBytes).toBeGreaterThan(0);
@@ -123,7 +123,7 @@ describe("M15 W5 HTTP contracts", () => {
     expect(response.status).toBe(200);
     await response.text();
 
-    const healthAfter = await (await fetch(`${base}/health`)).json() as any;
+    const healthAfter = await (await fetch(`${base}/health`, {headers:{authorization:"Bearer m15-http-token"}})).json() as any;
     expect(healthAfter.sessions.registered).toBe(1);
     expect(healthAfter.sessions.inFlight).toBe(0);
     expect(healthAfter.sessions.idle).toBe(1);
@@ -143,14 +143,14 @@ describe("M15 W5 HTTP contracts", () => {
     expect(response.status).toBe(200);
     await response.text();
 
-    const registered = await (await fetch(`${base}/health`)).json() as any;
+    const registered = await (await fetch(`${base}/health`, {headers:{authorization:"Bearer m15-http-token"}})).json() as any;
     expect(registered.sessions).toMatchObject({ registered: 1, idle: 1, idleTtlMs: 100 });
 
     const deadline = Date.now() + 1500;
     let after: any;
     do {
       await new Promise((resolve) => setTimeout(resolve, 50));
-      after = await (await fetch(`${base}/health`)).json() as any;
+      after = await (await fetch(`${base}/health`, {headers:{authorization:"Bearer m15-http-token"}})).json() as any;
     } while (after.sessions.registered !== 0 && Date.now() < deadline);
 
     expect(after.sessions).toMatchObject({ registered: 0, inFlight: 0, idle: 0, idleTtlMs: 100 });

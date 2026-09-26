@@ -13,7 +13,7 @@ it("starts the actual agent and serves repeated HEAD/GET without duplicate route
   const input=path.join(root,"source.bin"); await writeFile(input,"SOURCE Șță");
   const reservation=createServer(); await new Promise<void>(resolve=>reservation.listen(0,"127.0.0.1",resolve));
   const port=(reservation.address() as {port:number}).port; await new Promise<void>(resolve=>reservation.close(()=>resolve()));
-  const env: NodeJS.ProcessEnv={...process.env,RCMCP_AGENT_HOST:"127.0.0.1",RCMCP_AGENT_PORT:String(port),RCMCP_STATE_DIR:path.join(root,"state"),RCMCP_ALLOW_UNAUTHENTICATED:"1",RCMCP_DESKTOP_ENABLED:"0"};
+  const env: NodeJS.ProcessEnv={...process.env,RCMCP_AGENT_HOST:"127.0.0.1",RCMCP_AGENT_PORT:String(port),RCMCP_STATE_DIR:path.join(root,"state"),RCMCP_AGENT_TOKEN:"fixture-agent-health",RCMCP_ALLOW_UNAUTHENTICATED:"1",RCMCP_DESKTOP_ENABLED:"0"};
   delete env.RCMCP_BODY_LIMIT_BYTES;
   const child=spawn(process.execPath,[path.resolve("apps/agent/src/index.ts")],{env,stdio:["ignore","pipe","pipe"],windowsHide:true});
   const closed=once(child,"close"); let diagnostics="";
@@ -27,7 +27,9 @@ it("starts the actual agent and serves repeated HEAD/GET without duplicate route
       await new Promise(resolve=>setTimeout(resolve,50));
     }
     expect(ready,diagnostics).toBe(true);
-    const health=await fetch(base+"/health").then(response=>response.json()) as {runtime:{maxBodyBytes:number|null}};
+    expect(await fetch(base+"/health").then(r=>r.json())).toEqual({ok:true});
+    expect((await fetch(base+"/health/details")).status).toBe(401);
+    const health=await fetch(base+"/health",{headers:{authorization:"Bearer fixture-agent-health"}}).then(response=>response.json()) as {runtime:{maxBodyBytes:number|null}};
     expect(health.runtime.maxBodyBytes).toBeNull();
 
     const largeBytes=17*1024*1024;

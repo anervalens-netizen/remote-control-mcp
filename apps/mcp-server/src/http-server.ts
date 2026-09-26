@@ -6,12 +6,9 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import type { AgentClient } from "./agent-client.ts";
 import { registerTools } from "./all-tools.ts";
+import { readToolRegistry, installToolRegistry } from "./sdk-tool-registry.ts";
 
 type Session = { server: McpServer; transport: StreamableHTTPServerTransport; lastUsed: number; active: number };
-type McpServerInternals = {
-  _registeredTools: Record<string, unknown>;
-  setToolRequestHandlers(): void;
-};
 
 export function assertMcpHttpAuth(token: string | undefined, allowUnauthenticated = false): void {
   if (!token && !allowUnauthenticated) throw new Error("RCMCP_MCP_TOKEN is required unless RCMCP_ALLOW_UNAUTHENTICATED=1");
@@ -92,20 +89,15 @@ export function createMcpHttpServer(client: AgentClient, options: {
   let toolRegistryBuilds = 0;
   function build() {
     const server = new McpServer({ name: "remote-control-mcp", version: "0.1.0" }, { instructions: agentInstructions });
-    const internals = server as unknown as McpServerInternals;
     if (sharedToolRegistry === undefined) {
       registerTools(server, client);
-      if (!internals._registeredTools || typeof internals.setToolRequestHandlers !== "function") {
-        throw new Error("MCP SDK tool registry internals are incompatible with session reuse");
-      }
-      sharedToolRegistry = internals._registeredTools;
+      sharedToolRegistry = readToolRegistry(server);
       toolRegistryBuilds += 1;
     } else {
       // The SDK's transport is per-session, but tool definitions and handlers
       // are immutable in this server. Reuse that registry and install the
       // SDK request handlers against this session's underlying Server.
-      internals._registeredTools = sharedToolRegistry;
-      internals.setToolRequestHandlers();
+      installToolRegistry(server, sharedToolRegistry);
     }
     return server;
   }
@@ -139,7 +131,15 @@ export function createMcpHttpServer(client: AgentClient, options: {
     res.once("close", () => finishRequest(res.statusCode >= 400));
 
     try {
-      if (req.url === "/health") {
+      if (req.url === "/health" || req.url === "/health/details") {
+        const authenticated = Boolean(options.token) && req.headers.authorization === `Bearer ${options.token}`;
+        if (!authenticated) {
+          const status = req.url === "/health/details" ? 401 : 200;
+          res.writeHead(status, { "content-type": "application/json", "cache-control": "no-store" }).end(JSON.stringify(
+            status === 200 ? { ok: true, ready: true, service: "remote-control-mcp" } : { error: "unauthorized", requestId },
+          ));
+          return;
+        }
         const registered = sessions.size;
         const inFlight = [...sessions.values()].reduce((sum, session) => sum + session.active, 0);
         const idle = [...sessions.values()].filter((session) => session.active === 0).length;

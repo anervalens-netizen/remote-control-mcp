@@ -176,7 +176,7 @@ export class AgentClient {
     const signal = deadline.signal;
     try {
       const response = await fetch(`${endpoint.base}${route}`, {
-        method: body === undefined ? "GET" : "POST", headers,
+        method: body === undefined ? "GET" : "POST", headers, redirect: "error",
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
         ...(signal ? { signal } : {}),
       });

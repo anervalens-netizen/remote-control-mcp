@@ -468,6 +468,16 @@ export async function existingMode(target: string): Promise<number | undefined> 
 }
 
 export async function movePath(source: string, destination: string, force: boolean) {
+  const sourceInfo = await lstat(source, { bigint: true });
+  let destinationInfo;
+  try { destinationInfo = await lstat(destination, { bigint: true }); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+  // rename onto another name for the same inode can succeed without removing
+  // either name. Do not turn this no-op into an implicit unlink.
+  if (destinationInfo && (path.resolve(source) === path.resolve(destination) || (sourceInfo.ino !== 0n && sourceInfo.dev === destinationInfo.dev && sourceInfo.ino === destinationInfo.ino))) {
+    if (!force) throw Object.assign(new Error("Destination already exists"), { code: "EEXIST" });
+    return { ok: true, atomic: true, crossDevice: false, sourceRemoved: false, destinationAtomic: true, outcome: "same_file_noop" as const };
+  }
   try {
     const activation = await replaceByRename(source, destination, force);
     return {
@@ -526,8 +536,8 @@ export async function movePath(source: string, destination: string, force: boole
         throw new Error("Cross-device move could not preserve source metadata (" + metadataStrategy + ")");
       }
     }
-    let destinationDurable = process.platform === "win32";
-    let sourceRemovalDurable = process.platform === "win32";
+    let destinationDurable = false;
+    let sourceRemovalDurable = false;
     if (process.platform !== "win32") {
       await syncCopiedTree(temporary);
       const stagingDirectorySync = await syncContainingDirectory(temporary);
@@ -562,7 +572,8 @@ export async function movePath(source: string, destination: string, force: boole
       destinationDurable = true;
     }
 
-    journal.phase = "destination-durable";
+    // Windows has completed activation, but crash durability is not verified.
+    journal.phase = destinationDurable ? "destination-durable" : "activating";
     atomicWriteJson(captureJournal, journal);
     try {
       await rm(sourceCapture, { recursive: true, force: false });
@@ -597,6 +608,7 @@ export async function movePath(source: string, destination: string, force: boole
     return {
       ok: true, atomic: false, crossDevice: true, sourceRemoved: true, destinationAtomic: activation.atomic,
       destinationDurable, sourceRemovalDurable,
+      durabilityVerification: process.platform === "win32" ? "unverified" : "confirmed",
       ...(metadataStrategy ? { metadataPreserved: metadataStrategy !== "none", metadataStrategy } : {}),
       ...destinationCleanup,
     };

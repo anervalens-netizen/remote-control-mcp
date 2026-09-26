@@ -1,3 +1,4 @@
+import { JobStartKeyError } from "./job-start-dedup.ts";
 import { powerSchema,wakeSchema } from "../../../packages/protocol/src/power.ts";
 import { sendWake } from "../../../packages/shared/src/wake.ts";
 import { projectRun } from "./project-run.ts";
@@ -62,7 +63,7 @@ const repoPushSchema = z.object({
 });
 const projectPlanSchema = z.object(projectFields);
 
-const jobStartSchema = z.object({ command: z.string().min(1), cwd: z.string().optional(), env: z.record(z.string(), z.string()).optional() });
+const jobStartSchema = z.object({ command: z.string().min(1), cwd: z.string().optional(), idempotencyKey: z.string().min(1).max(200).optional(), env: z.record(z.string(), z.string()).optional() });
 const jobIdSchema = z.object({ id: z.string().min(1) });
 const jobOutputSchema = z.object({
   id: z.string().min(1), stream: z.enum(["stdout", "stderr"]).optional(), offset: z.number().int().optional(),
@@ -130,6 +131,7 @@ export function registerExtraRoutes(app: FastifyInstance): void {
     try { return await jobStart(parsed.data); }
     catch (error) {
       if (error instanceof JobRecoveryError) return reply.code(500).send(error.toJSON());
+      if (error instanceof JobStartKeyError) return reply.code(409).send({error:error.code,message:error.message,jobId:error.jobId});
       throw error;
     }
   });

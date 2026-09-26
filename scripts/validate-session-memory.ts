@@ -12,7 +12,7 @@ async function initialize() {
   const response=await fetch(base+"/mcp",{method:"POST",headers:{authorization:"Bearer isolated-memory-validation","content-type":"application/json",accept:"application/json, text/event-stream"},body:JSON.stringify({jsonrpc:"2.0",id:1,method:"initialize",params:{protocolVersion:"2025-11-25",capabilities:{},clientInfo:{name:"m16-memory",version:"1"}}})});
   assert.equal(response.status,200); await response.text(); const id=response.headers.get("mcp-session-id");assert(id);ids.push(id);
 }
-async function snapshot(){await new Promise(resolve=>setTimeout(resolve,50));gc!();return await(await fetch(base+"/health")).json() as any;}
+async function snapshot(){await new Promise(resolve=>setTimeout(resolve,50));gc!();return await(await fetch(base+"/health",{headers:{authorization:"Bearer isolated-memory-validation"}})).json() as any;}
 try {
   await initialize(); const before=await snapshot();
   for(let i=0;i<100;i++)await initialize();

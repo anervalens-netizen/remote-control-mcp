@@ -112,7 +112,13 @@ app.addHook("onRequest", async (request, reply) => {
   }
 });
 
-app.get("/health", async () => ({ ok: true, device: os.hostname(), runtime: runtimeWithHttpLimits() }));
+const agentHealthDetails = () => ({ ok: true, device: os.hostname(), runtime: runtimeWithHttpLimits() });
+app.get("/health", async (request) => token && request.headers.authorization === `Bearer ${token}`
+  ? agentHealthDetails() : { ok: true });
+app.get("/health/details", async (request, reply) => {
+  if (!token || request.headers.authorization !== `Bearer ${token}`) return reply.code(401).send({ error: "unauthorized" });
+  return agentHealthDetails();
+});
 app.get("/v1/info", async () => ({
   hostname: os.hostname(), platform: process.platform, arch: process.arch, release: os.release(),
   uptimeSeconds: Math.floor(os.uptime()), cpuCount: os.cpus().length,
