@@ -6,8 +6,10 @@ import path from "node:path";
  * is found. Dangling links and inaccessible ancestors are errors, not evidence
  * that the source and destination are independent. No paths are created. */
 export async function resolveProspectivePath(input: string) {
-  // Do not collapse dot segments before following existing symlinks.
-  let candidate = path.isAbsolute(input) ? input : process.cwd() + path.sep + input;
+  // Windows resolves drive-relative/root-relative forms using native DOS
+  // normalization. On POSIX, do not collapse dot segments before symlinks.
+  let candidate = process.platform === "win32" ? path.resolve(input)
+    : path.isAbsolute(input) ? input : process.cwd() + path.sep + input;
   const missing: string[] = [];
   while (true) {
     try {
