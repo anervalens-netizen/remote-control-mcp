@@ -43,8 +43,8 @@ describe("deployment phases", () => {
     for (let i = 0; i < 20 && !page.stdout.data.includes("READY"); i++) page = await jobFollow({ id: run.job!.id, cursor: page.cursor, until: "output", waitMs: 500 });
     expect(page.stdout.data).toContain("READY");
     await jobCancel(run.job!.id);
-    expect(jobStatus(run.job!.id)).toMatchObject({ state: process.platform === "win32" ? "lost" : "cancelled", progressInterrupted: true });
-    if (process.platform === "win32") expect(jobStatus(run.job!.id).terminationVerified).toBe(false);
+    expect(jobStatus(run.job!.id)).toMatchObject({ state: "lost", progressInterrupted: true, terminationVerified: false });
+    expect(jobStatus(run.job!.id).recoveryReason).toMatch(/unverified|incomplete/);
     await expect(readFile(path.join(root, "recovered.txt"))).rejects.toThrow();
   }, 20000);
   it.runIf(process.platform === "win32")("preserves an ordinary native phase exit without caller exit boilerplate", async () => {

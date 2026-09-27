@@ -63,7 +63,9 @@ describe("persistent PTY", () => {
       expect(() => process.kill(childPid, 0)).not.toThrow();
 
       const ended = await ptyTerminate(session.id);
-      expect(ended).toMatchObject({ ok: true, state: "exited", exited: true, terminationVerified: true, forced: true });
+      expect(ended).toMatchObject({ ok: true, state: "exited", exited: true, terminationVerified: false, forced: true });
+      expect(ended.terminationVerificationScope).toBe("unverified");
+      expect(ended.terminationReason).toBe("posix_observed_tree_stopped_escape_not_excluded");
       expect(processAlive(childPid)).toBe(false);
       expect(processAlive(session.pid)).toBe(false);
     } finally {
@@ -95,7 +97,9 @@ describe("persistent PTY", () => {
       await waitFor(session.id, "DYNAMIC_READY");
 
       const ended = await ptyTerminate(session.id);
-      expect(ended).toMatchObject({ ok: true, exited: true, terminationVerified: true, forced: true });
+      expect(ended).toMatchObject({ ok: true, exited: true, terminationVerified: false, forced: true });
+      expect(ended.terminationVerificationScope).toBe("unverified");
+      expect(ended.terminationReason).toBe("posix_observed_tree_stopped_escape_not_excluded");
 
       const childPid = Number.parseInt((await readFile(spawnFile, "utf8")).trim(), 10);
       expect(Number.isFinite(childPid)).toBe(true);
@@ -123,7 +127,9 @@ describe("persistent PTY", () => {
       await waitFor(session.id, "SIGNAL_READY");
 
       const ended = await ptyTerminate(session.id);
-      expect(ended).toMatchObject({ ok: true, exited: true, terminationVerified: true, forced: true });
+      expect(ended).toMatchObject({ ok: true, exited: true, terminationVerified: false, forced: true });
+      expect(ended.terminationVerificationScope).toBe("unverified");
+      expect(ended.terminationReason).toBe("posix_observed_tree_stopped_escape_not_excluded");
       expect(await readFile(signalFile, "utf8")).toBe("T");
     } finally {
       await ptyRemove(session.id, true).catch(() => undefined);

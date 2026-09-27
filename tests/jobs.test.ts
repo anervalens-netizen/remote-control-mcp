@@ -152,9 +152,10 @@ describe("durable jobs", () => {
       expect(cancelled.terminationVerified).toBe(false);
       expect(cancelled.recoveryReason).toMatch(/unverified/);
     } else {
-      expect(cancelled.state).toBe("cancelled");
+      expect(cancelled.state).toBe("lost");
       expect(verifiedProcessTreeAlive(job.pid, job.processIdentity, job.startedAt, job.executionMarker)).toBe(false);
-      expect(cancelled.terminationVerified).toBe(true);
+      expect(cancelled.terminationVerified).toBe(false);
+      expect(cancelled.recoveryReason).toMatch(/unverified|incomplete/);
     }
     await jobRemove(job.id);
   });
@@ -177,8 +178,9 @@ describe("durable jobs", () => {
     }
     const done = await cancelling;
     expect(falseTerminal).toBe(false);
-    expect(done.state).toBe("cancelled");
-    expect(done.terminationVerified).toBe(true);
+    expect(done.state).toBe("lost");
+    expect(done.terminationVerified).toBe(false);
+    expect(done.recoveryReason).toMatch(/unverified|incomplete/);
     expect(verifiedProcessTreeAlive(job.pid, job.processIdentity, job.startedAt, job.executionMarker)).toBe(false);
     await jobRemove(job.id);
   });

@@ -115,8 +115,10 @@ describe("Issue #35 audit remediation", () => {
     expect(result.timedOut).toBe(false);
     expect(result.durationMs).toBeLessThan(3000);
     if (process.platform !== "win32") {
-      expect(result.terminationVerified).toBe(true);
-      expect(result.cancelled).toBe(true);
+      expect(result.terminationVerified).toBe(false);
+      expect(result.terminationVerificationScope).toBe("unverified");
+      expect(result.terminationReason).toBe("posix_observed_tree_stopped_escape_not_excluded");
+      expect(result.cancelled).not.toBe(true);
     } else if (result.terminationVerified !== true) {
       expect(result.cancelled).not.toBe(true);
     }

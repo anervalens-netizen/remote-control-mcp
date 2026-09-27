@@ -60,7 +60,9 @@ describe("exec reliability", () => {
       expect(result.terminationVerification).toMatch(/partial_windows_job|unverified_windows_fallback/);
       expect(result.terminationReason ?? result.terminationError).toBeTruthy();
     } else {
-      expect(result.terminationVerified).toBe(true);
+      expect(result.terminationVerified).toBe(false);
+      expect(result.terminationVerificationScope).toBe("unverified");
+      expect(result.terminationReason).toBe("posix_observed_tree_stopped_escape_not_excluded");
     }
     expect(elapsed).toBeLessThan(3000);
 
@@ -112,7 +114,9 @@ describe("M15 final async execution lifecycle", () => {
       await waitForFile(ready);
       const result = await running;
       expect(result.timedOut).toBe(true);
-      expect(result.terminationVerified).toBe(true);
+      expect(result.terminationVerified).toBe(false);
+      expect(result.terminationVerificationScope).toBe("unverified");
+      expect(result.terminationReason).toBe("posix_observed_tree_stopped_escape_not_excluded");
     } finally {
       clearInterval(interval);
       await rm(root, { recursive: true, force: true });

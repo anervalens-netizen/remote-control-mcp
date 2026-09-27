@@ -341,6 +341,29 @@ export function verifiedProcessTreeAlive(
   );
 }
 
+function posixObservedTreeResult(
+  pid: number,
+  storedIdentity: string | undefined,
+  startedAt: string | undefined,
+  forced: boolean,
+  activeMembers: number,
+): ProcessTreeTerminationResult {
+  // /proc lineage is observation, not containment. A descendant can setsid()
+  // and scrub inherited markers between samples. Keep killing every observed
+  // identity-bound target, but never turn an empty observed set into a false
+  // whole-tree proof. Kernel containment would be required for that claim.
+  return {
+    terminated: false,
+    forced,
+    verificationScope: "unverified",
+    rootStopped: !matchesStoredProcessIdentity(pid, storedIdentity, startedAt),
+    activeMembers,
+    reason: activeMembers === 0
+      ? "posix_observed_tree_stopped_escape_not_excluded"
+      : "posix_observed_processes_still_active",
+  };
+}
+
 function assertValidPosixSignal(signal: NodeJS.Signals | number): void {
   const signals = osConstants.signals as Record<string, number>;
   const valid = typeof signal === "string"
@@ -464,7 +487,7 @@ export function terminateVerifiedProcessTreeDetailed(
     signalNew(initialSignal, signaledInitial);
     if (liveTargets().length === 0) {
       emptySince ??= Date.now();
-      if (Date.now() - emptySince >= quietWindowMs) return { terminated: true, forced: false, verification: "posix_identity_set", verificationScope: "whole_tree" };
+      if (Date.now() - emptySince >= quietWindowMs) return posixObservedTreeResult(pid, storedIdentity, startedAt, false, 0);
     } else {
       emptySince = null;
     }
@@ -483,18 +506,13 @@ export function terminateVerifiedProcessTreeDetailed(
     signalNew("SIGKILL", signaledForced);
     if (liveTargets().length === 0) {
       emptySince ??= Date.now();
-      if (Date.now() - emptySince >= quietWindowMs) return { terminated: true, forced, verification: "posix_identity_set", verificationScope: "whole_tree" };
+      if (Date.now() - emptySince >= quietWindowMs) return posixObservedTreeResult(pid, storedIdentity, startedAt, forced, 0);
     } else {
       emptySince = null;
     }
     sleepSync(20);
   }
-  return {
-    terminated: verificationAuthorityObserved && liveTargets().length === 0,
-    forced,
-    verification: verificationAuthorityObserved && liveTargets().length === 0 ? "posix_identity_set" : undefined,
-    verificationScope: verificationAuthorityObserved && liveTargets().length === 0 ? "whole_tree" : undefined,
-  };
+  return posixObservedTreeResult(pid, storedIdentity, startedAt, forced, liveTargets().length);
 }
 
 async function terminateWindowsPinnedRoot(pid: number, storedIdentity: string | undefined, timeoutMs: number): Promise<void> {
@@ -674,7 +692,7 @@ export async function terminateVerifiedProcessTreeDetailedAsync(
     signalNew(initialSignal, signaledInitial);
     if (liveTargets().length === 0) {
       emptySince ??= Date.now();
-      if (Date.now() - emptySince >= quietWindowMs) return { terminated: true, forced: false, verification: "posix_identity_set", verificationScope: "whole_tree" };
+      if (Date.now() - emptySince >= quietWindowMs) return posixObservedTreeResult(pid, storedIdentity, startedAt, false, 0);
     } else {
       emptySince = null;
     }
@@ -692,18 +710,13 @@ export async function terminateVerifiedProcessTreeDetailedAsync(
     signalNew("SIGKILL", signaledForced);
     if (liveTargets().length === 0) {
       emptySince ??= Date.now();
-      if (Date.now() - emptySince >= quietWindowMs) return { terminated: true, forced, verification: "posix_identity_set", verificationScope: "whole_tree" };
+      if (Date.now() - emptySince >= quietWindowMs) return posixObservedTreeResult(pid, storedIdentity, startedAt, forced, 0);
     } else {
       emptySince = null;
     }
     await delay(20);
   }
-  return {
-    terminated: verificationAuthorityObserved && liveTargets().length === 0,
-    forced,
-    verification: verificationAuthorityObserved && liveTargets().length === 0 ? "posix_identity_set" : undefined,
-    verificationScope: verificationAuthorityObserved && liveTargets().length === 0 ? "whole_tree" : undefined,
-  };
+  return posixObservedTreeResult(pid, storedIdentity, startedAt, forced, liveTargets().length);
 }
 
 export function terminateVerifiedProcessTree(

@@ -73,7 +73,7 @@ describe("E2 contracts", () => {
     expect(jobs).not.toContain("for (const file of [metaPath(id), stdoutPath, stderrPath, donePath, progressPath(id)]) rmSync(file, { force: true })");
     expect(pty).toContain("let published = false;");
     expect(pty).toContain("await cleanupFailedPtyStart(session");
-    expect(pty).toContain("terminateVerifiedProcessTree(meta.pid, meta.processIdentity, meta.createdAt, 1000");
+    expect(pty).toContain("terminateVerifiedProcessTreeDetailed(meta.pid, meta.processIdentity, meta.createdAt, 1000");
     expect(pty).toContain('"RCMCP_PTY_SESSION_ID=" + meta.id');
     expect(pty).toContain("rmSync(meta.outputPath, { force: true })");
   });

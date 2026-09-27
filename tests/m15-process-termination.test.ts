@@ -35,7 +35,9 @@ describe.skipIf(process.platform === "win32")("M15 W3 escaped Linux descendants"
     expect(result.timedOut).toBe(true);
     expect(elapsed).toBeLessThan(3000);
     expect(result.stdout).not.toContain("ESCAPED_FINISHED");
-    expect((result as any).terminationVerified).toBe(true);
+    expect((result as any).terminationVerified).toBe(false);
+    expect((result as any).terminationVerificationScope).toBe("unverified");
+    expect((result as any).terminationReason).toBe("posix_observed_tree_stopped_escape_not_excluded");
     expect((result as any).drainTimedOut).toBe(false);
   });
 
@@ -46,7 +48,9 @@ describe.skipIf(process.platform === "win32")("M15 W3 escaped Linux descendants"
     });
     expect(result.timedOut).toBe(true);
     expect(result.stdout).not.toContain("ROOT_GONE_SURVIVOR");
-    expect((result as any).terminationVerified).toBe(true);
+    expect((result as any).terminationVerified).toBe(false);
+    expect((result as any).terminationVerificationScope).toBe("unverified");
+    expect((result as any).terminationReason).toBe("posix_observed_tree_stopped_escape_not_excluded");
     expect(result.durationMs).toBeLessThan(1200);
   });
 
@@ -61,8 +65,10 @@ describe.skipIf(process.platform === "win32")("M15 W3 escaped Linux descendants"
       await waitForFile(ready, 2_000);
       const result = await running;
       expect(result.timedOut).toBe(true);
-      expect((result as any).terminationVerified).toBe(true);
-      expect((result as any).terminationVerification).toBe("posix_identity_set");
+      expect((result as any).terminationVerified).toBe(false);
+    expect((result as any).terminationVerificationScope).toBe("unverified");
+    expect((result as any).terminationReason).toBe("posix_observed_tree_stopped_escape_not_excluded");
+      expect((result as any).terminationVerification).toBeUndefined();
       expect((result as any).drainTimedOut).toBe(false);
       expect(Date.now() - started).toBeLessThan(3000);
     } finally { await rm(root, { recursive: true, force: true }); }
@@ -82,13 +88,14 @@ describe.skipIf(process.platform === "win32")("M15 W3 escaped Linux descendants"
       expect(existsSync(marker)).toBe(false);
 
       const cancelled = await jobCancel(job.id);
-      expect(cancelled.state).toBe("cancelled");
-      expect((cancelled as any).terminationVerified).toBe(true);
+      expect(cancelled.state).toBe("lost");
+      expect((cancelled as any).terminationVerified).toBe(false);
+      expect((cancelled as any).recoveryReason).toMatch(/unverified|incomplete/);
       expect(() => process.kill(childPid, 0)).toThrow();
 
       await new Promise((resolve) => setTimeout(resolve, 3250));
       expect(existsSync(marker)).toBe(false);
-      expect(jobStatus(job.id).state).toBe("cancelled");
+      expect(jobStatus(job.id).state).toBe("lost");
     } finally {
       await jobRemove(job.id, true).catch(() => undefined);
     }

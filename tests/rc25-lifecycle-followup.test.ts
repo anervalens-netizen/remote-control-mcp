@@ -102,7 +102,7 @@ it.skipIf(process.platform === "win32")("does not call a cooperative zero-exit S
   try {
     await vi.waitFor(() => expect(existsSync(ready)).toBe(true), { timeout: 5000 });
     controller.abort();
-    expect(await running).toMatchObject({ ok: false, result: { code: 0, cancelled: true, cancellationRequested: true, timedOut: false } });
+    expect(await running).toMatchObject({ ok: false, result: { code: 0, cancellationRequested: true, timedOut: false, terminationVerified: false, terminationVerificationScope: "unverified", terminationReason: "posix_observed_tree_stopped_escape_not_excluded" } });
   } finally { controller.abort(); await running; }
 }, 10_000);
 

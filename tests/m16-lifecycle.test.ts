@@ -33,9 +33,11 @@ describe("M16 lifecycle lane", () => {
         expect(second.state).toBe("lost");
         expect(second.recoveryReason).toMatch(/unverified/);
       } else {
-        expect(first.state).toBe("cancelled");
-        expect(second.state).toBe("cancelled");
-        expect(second.state === "cancelling" || second.state === "cancelled").toBe(true);
+        expect(first.state).toBe("lost");
+        expect(second.state).toBe("lost");
+        expect(first.terminationVerified).toBe(false);
+        expect(second.terminationVerified).toBe(false);
+        expect(second.recoveryReason).toMatch(/unverified|incomplete/);
       }
     } finally {
       await jobRemove(job.id, true).catch(() => undefined);

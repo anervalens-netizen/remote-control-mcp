@@ -316,7 +316,7 @@ describe("restart recovery", () => {
         state: "lost",
         exited: false,
         terminationVerified: false,
-        recoveryReason: "agent_restarted_session_survivor_stopped",
+        recoveryReason: "agent_restarted_session_observed_tree_stopped_unverified",
       });
       await Promise.race([
         childClosed,

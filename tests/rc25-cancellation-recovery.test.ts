@@ -134,8 +134,10 @@ describe("RC25-01 foreground cancellation", () => {
     expect(result.cancellationRequested).toBe(true);
     expect(result.timedOut).toBe(false);
     if (process.platform !== "win32") {
-      expect(result.terminationVerified).toBe(true);
-      expect(result.cancelled).toBe(true);
+      expect(result.terminationVerified).toBe(false);
+      expect(result.terminationVerificationScope).toBe("unverified");
+      expect(result.terminationReason).toBe("posix_observed_tree_stopped_escape_not_excluded");
+      expect(result.cancelled).not.toBe(true);
     }
   }, 40_000);
 });

@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import * as pty from "node-pty";
-import { processAlive, currentProcessIdentityAsync, terminateVerifiedProcessTree, terminateVerifiedProcessTreeDetailedAsync } from "./process-identity.ts";
+import { processAlive, currentProcessIdentityAsync, terminateVerifiedProcessTreeDetailed, terminateVerifiedProcessTreeDetailedAsync } from "./process-identity.ts";
 import { runtimeStringEnv } from "./runtime-env.ts";
 import { runtimeInstanceId } from "./runtime.ts";
 import { atomicWriteJson, ensureStateDir, utf8LeadingCodePointLength, utf8SafeLength } from "./state.ts";
@@ -80,18 +80,22 @@ function recoverPersisted(): void {
     try {
       const meta = readMeta(name.slice(0, -5));
       if (meta.state === "running") {
-        const survivorStopped = process.platform !== "win32" && meta.processIdentity
-          ? terminateVerifiedProcessTree(meta.pid, meta.processIdentity, meta.createdAt, 1000, "SIGTERM", "RCMCP_PTY_SESSION_ID=" + meta.id)
-          : false;
+        const termination = process.platform !== "win32" && meta.processIdentity
+          ? terminateVerifiedProcessTreeDetailed(meta.pid, meta.processIdentity, meta.createdAt, 1000, "SIGTERM", "RCMCP_PTY_SESSION_ID=" + meta.id)
+          : undefined;
         if (process.platform === "win32" && meta.processIdentity) {
           void terminateVerifiedProcessTreeDetailedAsync(meta.pid, meta.processIdentity, meta.createdAt, 1000, "SIGTERM", "RCMCP_PTY_SESSION_ID=" + meta.id);
         }
         meta.state = "lost";
         meta.finishedAt = new Date().toISOString();
+        meta.terminationVerified = termination?.terminated === true;
+        meta.terminationVerification = termination?.verification ?? null;
+        meta.terminationVerificationScope = termination?.verificationScope ?? null;
+        meta.terminationReason = termination?.reason ?? null;
         meta.recoveryReason = process.platform === "win32"
           ? "agent_restarted_session_termination_unverified"
-          : survivorStopped
-          ? "agent_restarted_session_survivor_stopped"
+          : termination?.reason === "posix_observed_tree_stopped_escape_not_excluded"
+          ? "agent_restarted_session_observed_tree_stopped_unverified"
           : "agent_restarted_session_not_reattachable";
         writeMeta(meta);
       }

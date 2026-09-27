@@ -11,6 +11,7 @@ This file describes reusable engineering requirements, not deployment state or a
 - Directory synchronization checks same-host canonical path overlap before mutation and preserves completed/failed/unattempted results after all started workers settle.
 - Health exposes minimal unauthenticated liveness and authenticated diagnostics.
 - Optional job keys preserve typed conflict/uncertainty details and never authorize replay of an uncertain effect.
+- Process cancellation/timeout must distinguish stopping every observed identity-bound process from proving that no detached descendant escaped before observation. Without kernel containment, do not publish whole-tree verification or a verified `cancelled` job state when that distinction cannot be proved.
 - SDK adapters and advertised input/output schemas are covered through actual MCP client calls, not only direct function invocation.
 
 Run the commands documented in README.md and the relevant platform tests. Hardware-dependent checks must not be represented as passed when they are unavailable. Keep fixtures synthetic and published review discussions limited to generic code behavior.

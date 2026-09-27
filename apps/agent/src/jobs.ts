@@ -387,14 +387,18 @@ function refresh(meta: JobMeta): JobMeta {
     const raw = readFileSync(meta.exitPath, "utf8").trim();
     const parsed = Number.parseInt(raw, 10);
     const wasCancelling = meta.state === "cancelling";
-    const cancellationVerificationFailed = wasCancelling && meta.terminationVerified === false;
-    meta.state = wasCancelling ? "cancelled" : "completed";
-    if (wasCancelling && !cancellationVerificationFailed) meta.terminationVerified = true;
     meta.exitCode = Number.isFinite(parsed) ? parsed : null;
     meta.finishedAt = statSync(meta.exitPath).mtime.toISOString();
     meta.ownerInstanceId = runtimeInstanceId;
-    if (!cancellationVerificationFailed) delete meta.recoveryReason;
     delete meta.processGoneObservedAt;
+    if (wasCancelling && meta.terminationVerified !== true) {
+      return markLost(meta, meta.recoveryReason ?? (process.platform === "win32"
+        ? "windows_root_stopped_tree_unverified"
+        : "posix_root_stopped_tree_unverified"));
+    }
+    meta.state = wasCancelling ? "cancelled" : "completed";
+    if (wasCancelling) meta.terminationVerified = true;
+    delete meta.recoveryReason;
     writeMeta(meta);
     if (process.platform === "win32") void releaseWindowsProcessTracker(meta.pid, meta.processIdentity);
   } else if (meta.state === "running") {
@@ -454,15 +458,14 @@ function refresh(meta: JobMeta): JobMeta {
     if (meta.ownerInstanceId !== runtimeInstanceId) { meta.ownerInstanceId = runtimeInstanceId; writeMeta(meta); }
   } else if (meta.state === "cancelling") {
     if (!jobTreeAlive(meta)) {
-      if (process.platform === "win32") {
-        return markLost(meta, "windows_root_stopped_tree_unverified");
+      if (meta.terminationVerified !== true) {
+        return markLost(meta, meta.recoveryReason ?? (process.platform === "win32"
+          ? "windows_root_stopped_tree_unverified"
+          : "posix_root_stopped_tree_unverified"));
       }
       meta.state = "cancelled";
-      if (meta.terminationVerified !== false) {
-        meta.terminationVerified = true;
-        delete meta.recoveryReason;
-      }
       meta.finishedAt ??= new Date().toISOString();
+      delete meta.recoveryReason;
       writeMeta(meta);
     } else if (meta.ownerInstanceId !== runtimeInstanceId) {
       if (!sameProcess(meta)) return markLost(meta, "cancellation_tree_identity_could_not_be_verified_after_restart");
@@ -687,16 +690,15 @@ async function startJobWithId(input: JobStartInput, id: string) {
         current.finishedAt = new Date().toISOString();
         current.recoveryReason = "runner_exited_without_durable_marker";
       } else if (current.state === "cancelling" && !jobTreeAlive(current)) {
-        if (process.platform === "win32") {
+        if (current.terminationVerified === true) {
+          current.state = "cancelled";
+          delete current.recoveryReason;
+        } else {
           current.state = "lost";
           current.terminationVerified = false;
-          current.recoveryReason = "windows_root_stopped_tree_unverified";
-        } else {
-          current.state = "cancelled";
-          if (current.terminationVerified !== false) {
-            current.terminationVerified = true;
-            delete current.recoveryReason;
-          }
+          current.recoveryReason ??= process.platform === "win32"
+            ? "windows_root_stopped_tree_unverified"
+            : "posix_root_stopped_tree_unverified";
         }
         current.finishedAt = new Date().toISOString();
       }
