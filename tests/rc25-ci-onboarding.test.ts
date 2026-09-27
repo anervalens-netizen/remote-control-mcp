@@ -2,21 +2,34 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 const workflow = readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8');
 describe('public CI isolation and truthful platform coverage', () => {
-  it('pins both CI execution hosts independently of inputs and repository variables', () => {
-    expect([...workflow.matchAll(/^    runs-on: (.+)$/gm)].map(match=>match[1])).toEqual(['ubuntu-latest','windows-latest']);
+  it('routes trusted Linux pushes to Gaming while keeping pull requests hosted', () => {
+    const hosts=[...workflow.matchAll(/^    runs-on: (.+)$/gm)].map(match=>match[1]);
+    expect(hosts).toHaveLength(2);
+    expect(hosts[0]).toContain("github.event_name == 'pull_request'");
+    expect(hosts[0]).toContain("'ubuntu-latest'");
+    expect(hosts[0]).toContain('"self-hosted"');
+    expect(hosts[0]).toContain('"gaming-ci"');
+    expect(hosts[0]).toContain('"remote-control-mcp"');
+    expect(hosts[1]).toBe('windows-latest');
     expect(workflow).not.toContain('inputs.runner');
     expect(workflow).not.toContain('vars.RCMCP_CI_RUNNER');
-    expect(workflow).not.toContain('self-hosted');
+    expect(workflow).not.toContain('pull_request_target');
     expect(workflow).toMatch(/RCMCP_TEST_INTERACTIVE: '0'/);
     expect(workflow).toContain('Interactive UIA/desktop tests explicitly skipped (not passed)');
   });
-  it('keeps every public workflow hosted and resolves actions to full commits', () => {
+  it('keeps untrusted pull requests on hosted runners and resolves actions to full commits', () => {
     const dir=new URL('../.github/workflows/',import.meta.url);
     for(const file of readdirSync(dir).filter(name=>name.endsWith('.yml'))){
       const source=readFileSync(new URL(file,dir),'utf8');
+      expect(source,file).not.toContain('pull_request_target');
       const hosts=[...source.matchAll(/runs-on: (.+)$/gm)].map(match=>match[1]);
       expect(hosts.length,file).toBeGreaterThan(0);
-      for(const host of hosts)expect(['ubuntu-latest','windows-latest'],file).toContain(host);
+      for(const host of hosts){
+        if(['ubuntu-latest','windows-latest'].includes(host))continue;
+        expect(host,file).toContain("github.event_name == 'pull_request'");
+        expect(host,file).toContain("'ubuntu-latest'");
+        expect(host,file).toContain('"self-hosted"');
+      }
       for(const action of source.matchAll(/uses: [\w.-]+\/[\w.-]+@([^\s]+)/g))expect(action[1],file).toMatch(/^[a-f0-9]{40}$/);
     }
   });
