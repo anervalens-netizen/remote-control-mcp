@@ -6,6 +6,7 @@ describe('public CI isolation and truthful platform coverage', () => {
     const hosts=[...workflow.matchAll(/^    runs-on: (.+)$/gm)].map(match=>match[1]!);
     expect(hosts).toHaveLength(2);
     expect(hosts[0]).toContain("github.event_name == 'pull_request'");
+    expect(hosts[0]).toContain("vars.CI_EXECUTOR != 'gaming'");
     expect(hosts[0]).toContain("'ubuntu-latest'");
     expect(hosts[0]).toContain('"self-hosted"');
     expect(hosts[0]).toContain('"gaming-ci"');
