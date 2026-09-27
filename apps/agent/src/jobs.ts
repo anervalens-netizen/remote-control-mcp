@@ -854,6 +854,13 @@ async function performJobCancel(id: string) {
     if (process.platform === "win32" && termination.rootStopped) {
       current.state = "lost";
       current.recoveryReason = "windows_root_stopped_tree_unverified";
+    } else if (
+      process.platform !== "win32"
+      && termination.rootStopped === true
+      && termination.activeMembers === 0
+    ) {
+      current.state = "lost";
+      current.recoveryReason = "posix_observed_tree_stopped_unverified";
     } else {
       current.state = "cancelling";
       current.recoveryReason = "cancellation_incomplete_processes_still_active";
@@ -924,7 +931,7 @@ export async function jobRemove(id: string, force = false) {
       }
     }
   }
-  if (meta.state === "lost" && meta.recoveryReason?.startsWith("windows_")) {
+  if (meta.state === "lost" && /^(windows_|posix_)/.test(meta.recoveryReason ?? "")) {
     return { id, removed: true, processCleanupVerified: false, orphanPossible: true, recoveryReason: meta.recoveryReason };
   }
   return { id, removed: true };

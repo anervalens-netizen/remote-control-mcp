@@ -316,6 +316,8 @@ describe("restart recovery", () => {
         state: "lost",
         exited: false,
         terminationVerified: false,
+        terminationVerificationScope: "unverified",
+        terminationReason: "posix_observed_tree_stopped_escape_not_excluded",
         recoveryReason: "agent_restarted_session_observed_tree_stopped_unverified",
       });
       await Promise.race([
@@ -324,7 +326,20 @@ describe("restart recovery", () => {
       ]);
       expect(() => process.kill(child.pid!, 0)).toThrow();
       expect(() => process.kill(-child.pid!, 0)).toThrow();
-      expect(recoveredModule.ptyOutput(id, 0, 1024).data).toContain("SURVIVOR_OUTPUT");
+      const output = recoveredModule.ptyOutput(id, 0, 1024);
+      expect(output.data).toContain("SURVIVOR_OUTPUT");
+      expect(output).toMatchObject({
+        state: "lost",
+        terminationVerified: false,
+        terminationVerificationScope: "unverified",
+        terminationReason: "posix_observed_tree_stopped_escape_not_excluded",
+      });
+      await expect(recoveredModule.ptyTerminate(id)).resolves.toMatchObject({
+        state: "lost",
+        terminationVerified: false,
+        terminationVerificationScope: "unverified",
+        terminationReason: "posix_observed_tree_stopped_escape_not_excluded",
+      });
       await recoveredModule.ptyRemove(id);
     } finally {
       try { process.kill(-child.pid!, "SIGKILL"); } catch { try { process.kill(child.pid!, "SIGKILL"); } catch { /* already stopped */ } }

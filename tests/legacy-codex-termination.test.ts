@@ -102,7 +102,14 @@ it.skipIf(process.platform === "win32")("never publishes cancelled for a job who
     }
     expect(status.state).toBe("lost");
     expect(status.terminationVerified).toBe(false);
-    expect(status.recoveryReason).toMatch(/unverified|incomplete/);
+    expect(status.recoveryReason).toBe("posix_observed_tree_stopped_unverified");
+    const removed = await jobRemove(job.id, false);
+    expect(removed).toMatchObject({
+      removed: true,
+      processCleanupVerified: false,
+      orphanPossible: true,
+      recoveryReason: "posix_observed_tree_stopped_unverified",
+    });
   } finally {
     await jobRemove(job.id, false).catch(() => undefined);
   }

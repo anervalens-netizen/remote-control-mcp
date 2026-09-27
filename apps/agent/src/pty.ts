@@ -322,6 +322,9 @@ export function ptyOutput(id: string, offset = 0, length?: number) {
   return {
     id, state: meta.state, offset: start, nextOffset, totalBytes, bytesRead, eof: nextOffset >= totalBytes,
     data: data.toString("utf8"), exited: meta.state === "exited", terminationVerified: meta.state === "exited" && meta.terminationVerified === true,
+    terminationVerification: meta.terminationVerification ?? null,
+    terminationVerificationScope: meta.terminationVerificationScope ?? "unverified",
+    terminationReason: meta.terminationReason ?? null,
     exitCode: meta.exitCode ?? null, signal: meta.signal ?? null, recoveryReason: meta.recoveryReason ?? null,
   };
 }
@@ -352,6 +355,9 @@ export async function ptyTerminate(id: string, signal?: string) {
       return {
         ok: true, id, state: historical.state, signal: historical.signal ?? null,
         exited: false, alreadyExited: false, terminationVerified: false, forced: false,
+        terminationVerification: historical.terminationVerification ?? null,
+        terminationVerificationScope: historical.terminationVerificationScope ?? "unverified",
+        terminationReason: historical.terminationReason ?? null,
         exitCode: historical.exitCode ?? null, recoveryReason: historical.recoveryReason ?? null,
       };
     }
@@ -365,7 +371,16 @@ export async function ptyTerminate(id: string, signal?: string) {
     };
   }
   if (session.meta.state !== "running") {
-    return { ok: true, id, state: session.meta.state, signal: session.meta.signal ?? null, exited: session.meta.state === "exited", alreadyExited: true, terminationVerified: session.meta.terminationVerified === true, forced: false, exitCode: session.meta.exitCode ?? null };
+    return {
+      ok: true, id, state: session.meta.state, signal: session.meta.signal ?? null,
+      exited: session.meta.state === "exited", alreadyExited: true,
+      terminationVerified: session.meta.terminationVerified === true, forced: false,
+      terminationVerification: session.meta.terminationVerification ?? null,
+      terminationVerificationScope: session.meta.terminationVerificationScope ?? "unverified",
+      terminationReason: session.meta.terminationReason ?? null,
+      recoveryReason: session.meta.recoveryReason ?? null,
+      exitCode: session.meta.exitCode ?? null,
+    };
   }
 
   await session.identityReady;
@@ -389,8 +404,11 @@ export async function ptyTerminate(id: string, signal?: string) {
     ("rootStopped" in treeTermination && treeTermination.rootStopped === true) || !processAlive(session.meta.pid)
   );
   if (process.platform === "win32" && (treeTerminationVerified || windowsRootStopped)) closeVerifiedWindowsPty(session.terminal);
+  const posixObservedTreeStopped = process.platform !== "win32"
+    && "rootStopped" in treeTermination && treeTermination.rootStopped === true
+    && "activeMembers" in treeTermination && treeTermination.activeMembers === 0;
 
-  if (!treeTerminationVerified && !windowsRootStopped) {
+  if (!treeTerminationVerified && !windowsRootStopped && !posixObservedTreeStopped) {
     if (process.platform === "win32") session.terminal.kill();
     else session.terminal.kill(signal);
 
@@ -437,6 +455,9 @@ export function ptyList() {
       id: meta.id, pid: meta.pid, shell: meta.shell, cwd: meta.cwd, createdAt: meta.createdAt, updatedAt: meta.updatedAt,
       cols: live?.terminal.cols ?? meta.cols, rows: live?.terminal.rows ?? meta.rows,
       state: meta.state, exited: meta.state === "exited", terminationVerified: meta.state === "exited" && meta.terminationVerified === true,
+      terminationVerification: meta.terminationVerification ?? null,
+      terminationVerificationScope: meta.terminationVerificationScope ?? "unverified",
+      terminationReason: meta.terminationReason ?? null,
       exitCode: meta.exitCode ?? null, signal: meta.signal ?? null,
       outputBytes: totalBytes, recoveryReason: meta.recoveryReason ?? null,
     };
