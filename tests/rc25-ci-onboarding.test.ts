@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 const workflow = readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8');
 describe('public CI isolation and truthful platform coverage', () => {
   it('routes trusted Linux pushes to Gaming while keeping pull requests hosted', () => {
-    const hosts=[...workflow.matchAll(/^    runs-on: (.+)$/gm)].map(match=>match[1]);
+    const hosts=[...workflow.matchAll(/^    runs-on: (.+)$/gm)].map(match=>match[1]!);
     expect(hosts).toHaveLength(2);
     expect(hosts[0]).toContain("github.event_name == 'pull_request'");
     expect(hosts[0]).toContain("'ubuntu-latest'");
@@ -22,7 +22,7 @@ describe('public CI isolation and truthful platform coverage', () => {
     for(const file of readdirSync(dir).filter(name=>name.endsWith('.yml'))){
       const source=readFileSync(new URL(file,dir),'utf8');
       expect(source,file).not.toContain('pull_request_target');
-      const hosts=[...source.matchAll(/runs-on: (.+)$/gm)].map(match=>match[1]);
+      const hosts=[...source.matchAll(/runs-on: (.+)$/gm)].map(match=>match[1]!);
       expect(hosts.length,file).toBeGreaterThan(0);
       for(const host of hosts){
         if(['ubuntu-latest','windows-latest'].includes(host))continue;
