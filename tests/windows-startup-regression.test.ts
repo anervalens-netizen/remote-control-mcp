@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 const startAgent = path.resolve("deploy/windows/start-agent.ps1");
 const installTask = path.resolve("deploy/windows/install-system-task.ps1");
 const updateEnv = path.resolve("deploy/windows/update-agent-env.ps1");
+const startupState = path.resolve("deploy/windows/startup-state.ps1");
 
 function source(file: string) {
   return readFileSync(file, "utf8").replace(/\r\n/g, "\n");
@@ -73,6 +74,40 @@ describe("Windows startup recovery regressions", () => {
     expect(helper).toContain("[System.Text.UTF8Encoding]::new($false)");
     expect(helper).toContain("[IO.File]::Replace($EnvTemp, $EnvFile, $EnvBackup, $true)");
     expect(helper).toContain("Set-Acl -LiteralPath $EnvTemp");
+  });
+
+  it("uses a real backup path when atomically replacing an existing startup-state manifest", () => {
+    const helper = source(startupState);
+    expect(helper).toContain("$backup = Join-Path $parent");
+    expect(helper).toContain("[IO.File]::Replace($temp, $StateFile, $backup, $true)");
+    expect(helper).not.toContain("[IO.File]::Replace($temp, $StateFile, $null)");
+  });
+
+  it.skipIf(process.platform !== "win32")("replaces an existing startup-state manifest in Windows PowerShell", () => {
+    const root = execFileSync("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "[IO.Path]::GetTempPath()"], { encoding: "utf8", windowsHide: true }).trim();
+    const dir = path.join(root, `rcmcp-startup-state-${process.pid}-${Date.now()}`);
+    const manifest = path.join(dir, "state.json");
+    const helperEscaped = startupState.replace(/'/g, "''");
+    const dirEscaped = dir.replace(/'/g, "''");
+    const manifestEscaped = manifest.replace(/'/g, "''");
+    const command = [
+      `[IO.Directory]::CreateDirectory('${dirEscaped}')|Out-Null`,
+      `. '${helperEscaped}'`,
+      `Save-RcmcpStartupState '${manifestEscaped}' ([pscustomobject]@{version=1;ownerProfile='C:\\Users\\first';userHost='one';backup='one'})`,
+      `Save-RcmcpStartupState '${manifestEscaped}' ([pscustomobject]@{version=1;ownerProfile='C:\\Users\\second';userHost='two';backup='two'})`,
+      `$state=[IO.File]::ReadAllText('${manifestEscaped}')|ConvertFrom-Json`,
+      `$left=@(Get-ChildItem -LiteralPath '${dirEscaped}' -Force | Where-Object { $_.Name -like '.rcmcp-install-*' })`,
+      `if($state.ownerProfile -ne 'C:\\Users\\second'){throw 'manifest not replaced'}`,
+      `if($left.Count -ne 0){throw 'temporary startup-state files leaked'}`,
+      `Remove-Item -LiteralPath '${dirEscaped}' -Recurse -Force`,
+      `Write-Output 'STARTUP_STATE_REPLACE_PASS'`,
+    ].join(";");
+    const output = execFileSync("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command], {
+      encoding: "utf8",
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    expect(output).toContain("STARTUP_STATE_REPLACE_PASS");
   });
 
   it.skipIf(process.platform !== "win32")("round-trips Unicode values through the isolated env updater", () => {

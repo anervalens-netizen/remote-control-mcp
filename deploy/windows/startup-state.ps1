@@ -15,11 +15,16 @@ function Save-RcmcpStartupState([string]$StateFile, $State) {
   $parent = Split-Path $StateFile -Parent
   [IO.Directory]::CreateDirectory($parent) | Out-Null
   $temp = Join-Path $parent ('.rcmcp-install-' + [Guid]::NewGuid().ToString('N') + '.tmp')
+  $backup = Join-Path $parent ('.rcmcp-install-' + [Guid]::NewGuid().ToString('N') + '.bak')
   try {
     [IO.File]::WriteAllText($temp, ($State | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
-    if ([IO.File]::Exists($StateFile)) { [IO.File]::Replace($temp, $StateFile, $null) }
+    if ([IO.File]::Exists($StateFile)) { [IO.File]::Replace($temp, $StateFile, $backup, $true) }
     else { [IO.File]::Move($temp, $StateFile) }
-  } finally { if ([IO.File]::Exists($temp)) { [IO.File]::Delete($temp) } }
+  } catch {
+    Remove-Item -LiteralPath $temp -Force -ErrorAction SilentlyContinue
+    throw
+  }
+  Remove-Item -LiteralPath $temp, $backup -Force -ErrorAction SilentlyContinue
 }
 function Read-RcmcpStartupState([string]$StateFile) {
   if (-not [IO.File]::Exists($StateFile)) { return $null }
