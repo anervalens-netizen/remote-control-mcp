@@ -95,6 +95,8 @@ describe("Android 10 companion platform wiring", () => {
     expect(activity).toContain("ProjectionScreenshotService.requestConsent(this)");
     expect(activity).toContain(".createScreenCaptureIntent()");
     expect(activity).toContain("consentTicket = 0");
+    expect(activity).toContain('consentTicket = state.getLong("consentTicket")');
+    expect(activity).toContain('state.putLong("consentTicket", consentTicket)');
     expect(projection).toContain("CONSENT.consume(");
     expect(projection).toContain('intent.removeExtra("resultData")');
     expect(projection).toContain("START_NOT_STICKY");
@@ -108,8 +110,12 @@ describe("Android 10 companion platform wiring", () => {
   it("drains frames and bounds capture, encoding, dimensions, and cleanup", () => {
     const projection = source("ProjectionScreenshotService");
     expect(projection).toContain("ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2)");
-    expect(projection).toContain("try (Image image = source.acquireLatestImage())");
+    expect(projection).toContain("image = source.acquireLatestImage()");
     expect(projection).toContain("requests.claimEncoding(target)");
+    const frame = projection.slice(projection.indexOf("private void onFrame"), projection.indexOf("private synchronized void finish"));
+    expect(frame.indexOf("frameWidth = width")).toBeLessThan(frame.indexOf("Bitmap.createBitmap(frameWidth"));
+    expect(frame).toContain("if (target.isDone()) return");
+    expect(frame).toContain("image.close()");
     expect(projection).toContain("image.getTimestamp() < requestedAtNanos");
     expect(projection).toContain("requests.begin()");
     expect(projection).toContain("main.postDelayed(timeout, ProjectionPolicy.CAPTURE_TIMEOUT_MS)");
@@ -133,6 +139,16 @@ describe("Android 10 companion platform wiring", () => {
     expect(source("RemoteAccessibilityService")).toContain('ProjectionScreenshotService.stop(this, "accessibility_unavailable")');
   });
 
+  it("lets accessibility teardown complete queued commands instead of deleting their callbacks", () => {
+    const accessibility = source("RemoteAccessibilityService");
+    const teardown = accessibility.slice(accessibility.indexOf("public void onDestroy()"),
+      accessibility.indexOf("public boolean onUnbind"));
+    expect(teardown).toContain("if (instance == this) instance = null");
+    expect(teardown).toContain("screenshot.complete(ScreenshotData.unavailable");
+    expect(teardown).not.toContain("removeCallbacksAndMessages(null)");
+    expect(teardown.indexOf("instance = null")).toBeLessThan(teardown.indexOf("screenshot.complete"));
+  });
+
   it("imports only owner-selected SAF documents into protected fields with a separate Save", () => {
     const activity = source("MainActivity");
     expect(activity).toContain("Intent.ACTION_OPEN_DOCUMENT");
@@ -145,7 +161,11 @@ describe("Android 10 companion platform wiring", () => {
     expect(activity).toContain("importedUnsaved = true");
     expect(activity).toContain("if (importedUnsaved)");
     expect(activity).toContain("token.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO)");
-    expect(activity).toContain("edit.setSaveEnabled(false)");
+    expect(activity).toContain("edit.setSaveEnabled(!password)");
+    expect(activity).toContain('state.putString("endpointDraft"');
+    expect(activity).toContain('state.putString("deviceDraft"');
+    expect(activity).toContain('state.getString("endpointDraft")');
+    expect(activity).toContain('state.getString("deviceDraft")');
     expect(activity).not.toMatch(/getIntent\(\)|takePersistableUriPermission/);
     const result = activity.slice(activity.indexOf("protected void onActivityResult"), activity.indexOf("private EditText field"));
     expect(result).not.toMatch(/config\.save|startControl\(|setEnabled\(/);

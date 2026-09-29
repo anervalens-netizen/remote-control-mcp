@@ -56,6 +56,7 @@ public final class MainActivity extends Activity {
         if (state != null) {
             importPending = state.getBoolean("importPending");
             sharingPending = state.getBoolean("sharingPending");
+            consentTicket = state.getLong("consentTicket");
             notificationPending = state.getBoolean("notificationPending");
         }
         importStopEpoch = state == null ? BackgroundConfigurationImport.stopEpoch() : state.getLong("importStopEpoch");
@@ -67,6 +68,12 @@ public final class MainActivity extends Activity {
         config = new ConfigRepository(this);
         ShellBridgeManager.init(this);
         buildUi();
+        if (state != null) {
+            String endpointDraft = state.getString("endpointDraft");
+            String deviceDraft = state.getString("deviceDraft");
+            if (endpointDraft != null) endpoint.setText(endpointDraft);
+            if (deviceDraft != null) device.setText(deviceDraft);
+        }
         updateSensitiveWindowProtection();
         if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
                 != PackageManager.PERMISSION_GRANTED) {
@@ -95,7 +102,12 @@ public final class MainActivity extends Activity {
         state.putBoolean("importPending", importPending);
         state.putLong("importStopEpoch", importStopEpoch);
         state.putBoolean("sharingPending", sharingPending);
+        state.putLong("consentTicket", consentTicket);
         state.putBoolean("notificationPending", notificationPending);
+        // Non-secret drafts survive recreation. The credential field is deliberately
+        // excluded from both view state and this Bundle.
+        if (endpoint != null) state.putString("endpointDraft", endpoint.getText().toString());
+        if (device != null) state.putString("deviceDraft", device.getText().toString());
         super.onSaveInstanceState(state);
     }
 
@@ -340,7 +352,10 @@ public final class MainActivity extends Activity {
         EditText edit = new EditText(this);
         edit.setHint(hint);
         edit.setSingleLine(true);
-        edit.setSaveEnabled(false);
+        // Only the credential must be excluded from automatic view-state persistence.
+        // Endpoint/device drafts are also copied explicitly into the Activity Bundle
+        // because these programmatic views do not rely on stable resource IDs.
+        edit.setSaveEnabled(!password);
         edit.setImportantForAutofill(View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS);
         if (password) edit.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
         return edit;
