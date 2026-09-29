@@ -25,7 +25,7 @@ describe("Android 10 companion platform wiring", () => {
       const launch = activity.indexOf("startActivityForResult", latch);
       expect(activity.slice(latch, launch)).toContain("updateLocalBoundary();");
     }
-    expect(activity).toContain("importPending || sharingPending || notificationPending");
+    expect(activity).toContain("importPending || importedUnsaved || BackgroundConfigurationImport.busy()");
     expect(activity).toContain("LocalConsentBoundary.INSTANCE.destroy(this)");
     expect(activity).not.toContain('allows("mutation")');
     expect(source("RemoteControlService")).not.toContain("LocalConsentBoundary");
@@ -41,15 +41,24 @@ describe("Android 10 companion platform wiring", () => {
     expect(importer).toContain("signal.cancel()");
     expect(importer).toContain("close(input)");
     expect(importer).toContain("close(descriptor)");
-    expect(importer).toContain("workerDone && cleanupPending == 0");
+    expect(importer).toContain("cancelled && workerDone && cleanupPending == 0");
+    expect(importer).toContain("static synchronized Job current()");
+    expect(importer).toContain("completedResult = parsed");
+    expect(importer).toContain("boolean attach(Object owner");
+    expect(importer).toContain("void detach(Object owner)");
+    expect(importer).toContain("remainingTimeoutMs()");
     expect(importer).not.toMatch(/newCachedThreadPool|new Thread\(/);
     const activity = source("MainActivity");
     expect(activity).not.toMatch(/openInputStream|openAssetFileDescriptor|ConfigurationImport.read/);
     expect(activity).toContain("imported -> statusHandler.post(");
     expect(activity).toContain("!importGeneration.accepts(generation)");
-    expect(activity).toContain("stopEpoch != BackgroundConfigurationImport.stopEpoch()");
+    expect(activity).toContain("job.epoch() != BackgroundConfigurationImport.stopEpoch()");
     expect(activity).toContain("importGeneration.destroy()");
-    expect(activity).toContain("statusHandler.postDelayed(importTimeout, BackgroundConfigurationImport.TIMEOUT_MS)");
+    expect(activity).toContain("statusHandler.postDelayed(importTimeout, remaining)");
+    expect(activity).toContain("isChangingConfigurations()");
+    expect(activity).toContain("detachImportForRecreation()");
+    expect(activity).toContain("reattachImportIfPresent()");
+    expect(activity).toContain("BackgroundConfigurationImport.current()");
     expect(source("RemoteControlService").match(/BackgroundConfigurationImport.stop\(\)/g)).toHaveLength(2);
   });
 
