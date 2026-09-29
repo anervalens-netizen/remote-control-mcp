@@ -60,3 +60,23 @@ Public workflows run only on GitHub-hosted Linux/Windows. Never register a persi
 The publication guard scans current/index content, all distinct historical paths and modes, commit messages, selected secret formats, and UTF-8/UTF-16 text. A PASS is not a universal secret-detection guarantee. Hooks run before publication; full-history CI is an independent backstop, not prevention of the first public exposure. If private material is detected, stop publication and preserve/remediate it privately rather than posting the matching values in an issue.
 
 Read `AGENTS.md` and `DEVELOPMENT_TRACKER.md`. Use a GitHub noreply author address. Keep public issues, test fixtures and reports wholly synthetic. Never copy private operational reports into this repository.
+
+## Optional ContextKeep result bridge
+
+Set RCMCP_CONTEXTKEEP_URL, RCMCP_CONTEXTKEEP_TOKEN and an absolute
+RCMCP_CONTEXTKEEP_STATE_DIR privately to enable correlation. The endpoint must
+use HTTPS or loopback HTTP. Configure the same directory after restart.
+
+For a correlated job_start, provide the existing ContextKeep projectId, taskId,
+runId and begin_run leaseToken in contextKeep, plus a stable idempotencyKey.
+Reserve the run and its subscription before invoking a fast job. inputHash in
+ContextKeep must match jobInputHash exported by the bridge (canonical command,
+cwd and sorted environment). Uncorrelated jobs retain their existing behavior.
+
+The bridge journals before execution, attaches the receipt and retries terminal
+observations while ContextKeep is unavailable. It never copies command text,
+environment values or raw output into events. A lost start receipt remains
+job_start_uncertain and is never automatically replayed. Inspect retained agent
+job-start-key metadata and correlate the known job through ContextKeep manually.
+Keep bridge journals in private backups. A delivered observation is not an
+independently verified result or a completed task.

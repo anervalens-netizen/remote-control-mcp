@@ -1,3 +1,4 @@
+import { configuredContextKeepBridge } from "./contextkeep-bridge.ts";
 import { toolErrorDetails, withToolErrors } from "./tool-errors.ts";
 import { jobFollowFields, jobLineageFields } from "../../../packages/protocol/src/project.ts";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -22,11 +23,13 @@ export async function startJobsMany(client: AgentClient, devices: string[], inpu
 }
 
 export function registerJobTools(server: McpServer, client: AgentClient): void {
-  const startSchema = executionInputSchema({ device: z.string().min(1), command: z.string().min(1), idempotencyKey: z.string().min(1).max(200).optional(), cwd: z.string().optional(), env: z.record(z.string(), z.string()).optional() });
+  const bridge=configuredContextKeepBridge(client);
+  const startSchema = executionInputSchema({ contextKeep:z.object({projectId:z.string().uuid(),taskId:z.string().uuid(),runId:z.string().uuid(),leaseToken:z.string().uuid()}).optional(), device: z.string().min(1), command: z.string().min(1), idempotencyKey: z.string().min(1).max(200).optional(), cwd: z.string().optional(), env: z.record(z.string(), z.string()).optional() });
   server.registerTool("job_start", { description: "Start a durable background job. Optional idempotencyKey prevents repeated starts for identical input; uncertain prior starts are never replayed automatically.", inputSchema: startSchema },
-    async ({ device, context, identity, elevation, ...input }) => withToolErrors(async () => {
+    async ({ device, context, identity, elevation, contextKeep, ...input }) => withToolErrors(async () => {
       const target = resolveExecutionContext(client, device, { context, identity, elevation }, "system");
-      const result = await client.jobStart(device, input, target);
+      if(contextKeep&&!bridge)throw new Error("ContextKeep bridge is not configured; correlated execution was not started.");
+      const result = contextKeep ? await bridge!.start(device,target,input,contextKeep) : await client.jobStart(device, input, target);
       return routedText(result, target);
     }));
   server.registerTool("job_start_many", { description: "Start the same durable background job on multiple devices with bounded parallelism and return per-device success/error results.", inputSchema: executionInputSchema({ devices: z.array(z.string().min(1)).min(1), command: z.string().min(1), idempotencyKey: z.string().min(1).max(200).optional(), cwd: z.string().optional(), env: z.record(z.string(), z.string()).optional(), concurrency: z.number().int().min(1).max(32).optional() }) },

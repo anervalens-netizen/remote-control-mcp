@@ -15,3 +15,11 @@ This file describes reusable engineering requirements, not deployment state or a
 - SDK adapters and advertised input/output schemas are covered through actual MCP client calls, not only direct function invocation.
 
 Run the commands documented in README.md and the relevant platform tests. Hardware-dependent checks must not be represented as passed when they are unavailable. Keep fixtures synthetic and published review discussions limited to generic code behavior.
+
+## Optional workflow event bridge
+
+- [x] Correlate a job with an existing project/task/run and durable start key.
+- [x] Persist the correlation before starting; preserve uncertain starts.
+- [x] Retry retained results without making ContextKeep availability an execution prerequisite.
+- [x] Cover duplicate starts, lost receipts and restart using synthetic tests.
+- [ ] Qualify live host delivery separately from local transport tests.
