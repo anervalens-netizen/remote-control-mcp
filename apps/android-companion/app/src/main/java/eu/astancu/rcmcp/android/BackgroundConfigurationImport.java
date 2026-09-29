@@ -9,6 +9,8 @@ import java.io.InputStream;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.FutureTask;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 
@@ -18,11 +20,17 @@ final class BackgroundConfigurationImport {
     private static final ExecutorService WORKER = Executors.newSingleThreadExecutor();
     // Provider cancellation/close can themselves block: keep those off the UI thread too.
     private static final ExecutorService CLEANUP = Executors.newFixedThreadPool(2);
+    // The provider-read deadline belongs to the process-wide job, not an Activity,
+    // so configuration recreation cannot accidentally extend the five-second bound.
+    private static final ScheduledExecutorService DEADLINES = Executors.newSingleThreadScheduledExecutor();
     private static Job active;
     private static long stopEpoch;
 
     static synchronized long stopEpoch() { return stopEpoch; }
     static synchronized boolean busy() { return active != null; }
+    static synchronized boolean blocksRemoteMutation() {
+        return active != null && !active.cancelled;
+    }
     static synchronized Job current() {
         return active != null && !active.cancelled ? active : null;
     }
@@ -35,6 +43,7 @@ final class BackgroundConfigurationImport {
         if (active != null) return null;
         Job job = new Job(resolver, uri, stopEpoch);
         active = job;
+        job.armDeadline();
         WORKER.execute(() -> {
             try { job.future.run(); }
             finally { job.workerFinished(); }
@@ -55,6 +64,7 @@ final class BackgroundConfigurationImport {
         private Consumer<ConfigurationImport> observer;
         private boolean completionReady;
         private ConfigurationImport completedResult;
+        private ScheduledFuture<?> deadline;
         private final FutureTask<Void> future;
 
         Job(ContentResolver resolver, Uri uri, long epoch) {
@@ -84,12 +94,28 @@ final class BackgroundConfigurationImport {
                         // without placing the bearer credential in instance state.
                         completedResult = parsed;
                         completionReady = true;
+                        if (deadline != null) deadline.cancel(false);
+                        deadline = null;
                         callback = observer;
                     }
                 }
                 if (callback != null) callback.accept(parsed);
                 return null;
             });
+        }
+
+        void armDeadline() {
+            synchronized (BackgroundConfigurationImport.class) {
+                if (cancelled || completionReady || active != this) return;
+                deadline = DEADLINES.schedule(this::expire, TIMEOUT_MS, TimeUnit.MILLISECONDS);
+            }
+        }
+
+        private void expire() {
+            synchronized (BackgroundConfigurationImport.class) {
+                if (cancelled || completionReady || active != this) return;
+                cancel();
+            }
         }
 
         boolean attach(Object owner, Consumer<ConfigurationImport> result) {
@@ -142,6 +168,8 @@ final class BackgroundConfigurationImport {
                 observer = null;
                 completedResult = null;
                 completionReady = false;
+                if (deadline != null) deadline.cancel(false);
+                deadline = null;
                 if (workerDone) {
                     releaseIfFinished();
                     return;

@@ -16,6 +16,7 @@ final class LocalConsentBoundary {
 
     synchronized boolean allows(String operation) {
         if ("observe".equals(operation)) return true;
+        if (BackgroundConfigurationImport.blocksRemoteMutation()) return false;
         for (boolean blocked : owners.values()) if (blocked) return false;
         return true;
     }

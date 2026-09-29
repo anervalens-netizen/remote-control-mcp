@@ -25,7 +25,9 @@ describe("Android 10 companion platform wiring", () => {
       const launch = activity.indexOf("startActivityForResult", latch);
       expect(activity.slice(latch, launch)).toContain("updateLocalBoundary();");
     }
-    expect(activity).toContain("importPending || importedUnsaved || BackgroundConfigurationImport.busy()");
+    expect(activity).toContain("importPending || importedUnsaved || (importJob != null && !importJob.completed())");
+    expect(source("LocalConsentBoundary")).toContain("BackgroundConfigurationImport.blocksRemoteMutation()");
+    expect(source("BackgroundConfigurationImport")).toContain("static synchronized boolean blocksRemoteMutation()");
     expect(activity).toContain("LocalConsentBoundary.INSTANCE.destroy(this)");
     expect(activity).not.toContain('allows("mutation")');
     expect(source("RemoteControlService")).not.toContain("LocalConsentBoundary");
@@ -47,6 +49,9 @@ describe("Android 10 companion platform wiring", () => {
     expect(importer).toContain("boolean attach(Object owner");
     expect(importer).toContain("void detach(Object owner)");
     expect(importer).toContain("remainingTimeoutMs()");
+    expect(importer).toContain("ScheduledExecutorService DEADLINES");
+    expect(importer).toContain("DEADLINES.schedule(this::expire, TIMEOUT_MS");
+    expect(importer).toContain("if (cancelled || completionReady || active != this) return");
     expect(importer).not.toMatch(/newCachedThreadPool|new Thread\(/);
     const activity = source("MainActivity");
     expect(activity).not.toMatch(/openInputStream|openAssetFileDescriptor|ConfigurationImport.read/);
@@ -59,6 +64,10 @@ describe("Android 10 companion platform wiring", () => {
     expect(activity).toContain("detachImportForRecreation()");
     expect(activity).toContain("reattachImportIfPresent()");
     expect(activity).toContain("BackgroundConfigurationImport.current()");
+    expect(activity).toContain("attachImportJob(retained, importedUnsaved)");
+    expect(activity).toContain("attachImportJob(job, false)");
+    expect(activity).toContain("if (!preserveDrafts)");
+    expect(activity).toContain("importedUnsaved && importJob != null && importJob.completed()");
     expect(source("RemoteControlService").match(/BackgroundConfigurationImport.stop\(\)/g)).toHaveLength(2);
   });
 
