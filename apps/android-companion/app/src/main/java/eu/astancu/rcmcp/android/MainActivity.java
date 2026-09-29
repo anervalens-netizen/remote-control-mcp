@@ -58,6 +58,7 @@ public final class MainActivity extends Activity {
             sharingPending = state.getBoolean("sharingPending");
             consentTicket = state.getLong("consentTicket");
             notificationPending = state.getBoolean("notificationPending");
+            importedUnsaved = state.getBoolean("importedUnsaved");
         }
         importStopEpoch = state == null ? BackgroundConfigurationImport.stopEpoch() : state.getLong("importStopEpoch");
         updateLocalBoundary();
@@ -73,6 +74,9 @@ public final class MainActivity extends Activity {
             String deviceDraft = state.getString("deviceDraft");
             if (endpointDraft != null) endpoint.setText(endpointDraft);
             if (deviceDraft != null) device.setText(deviceDraft);
+            if (importedUnsaved) {
+                importStatus.setText("Imported configuration is still unsaved. For safety, re-import it or re-enter its bearer credential before Save.");
+            }
         }
         updateSensitiveWindowProtection();
         if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
@@ -104,6 +108,7 @@ public final class MainActivity extends Activity {
         state.putBoolean("sharingPending", sharingPending);
         state.putLong("consentTicket", consentTicket);
         state.putBoolean("notificationPending", notificationPending);
+        state.putBoolean("importedUnsaved", importedUnsaved);
         // Non-secret drafts survive recreation. The credential field is deliberately
         // excluded from both view state and this Bundle.
         if (endpoint != null) state.putString("endpointDraft", endpoint.getText().toString());
@@ -377,6 +382,13 @@ public final class MainActivity extends Activity {
         String endpointValue = endpoint.getText().toString();
         String tokenValue = token.getText().toString();
         String deviceValue = device.getText().toString();
+        // Imported credentials are intentionally never written into Activity saved state.
+        // After recreation, do not silently pair the imported endpoint/device with the
+        // previously stored bearer credential; require the imported credential again.
+        if (importedUnsaved && Compatibility.isBlank(tokenValue)) {
+            status.setText("Imported credential was not retained across recreation. Re-import the configuration or enter its bearer credential before Save.");
+            return;
+        }
         if (!config.canSave(endpointValue, tokenValue, deviceValue)) {
             status.setText("Configuration rejected: use HTTPS, or literal 100.64.0.0/10 HTTP; token and device are required.");
             return;

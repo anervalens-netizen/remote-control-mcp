@@ -166,6 +166,10 @@ describe("Android 10 companion platform wiring", () => {
     expect(activity).toContain('state.putString("deviceDraft"');
     expect(activity).toContain('state.getString("endpointDraft")');
     expect(activity).toContain('state.getString("deviceDraft")');
+    expect(activity).toContain('state.putBoolean("importedUnsaved", importedUnsaved)');
+    expect(activity).toContain('importedUnsaved = state.getBoolean("importedUnsaved")');
+    expect(activity).toContain('if (importedUnsaved && Compatibility.isBlank(tokenValue))');
+    expect(activity).toContain("Imported credential was not retained across recreation");
     expect(activity).not.toMatch(/getIntent\(\)|takePersistableUriPermission/);
     const result = activity.slice(activity.indexOf("protected void onActivityResult"), activity.indexOf("private EditText field"));
     expect(result).not.toMatch(/config\.save|startControl\(|setEnabled\(/);
