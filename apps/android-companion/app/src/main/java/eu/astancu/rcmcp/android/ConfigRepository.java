@@ -13,8 +13,10 @@ public final class ConfigRepository {
     private static final String CONTROL_GENERATION = "control_generation";
 
     private final SharedPreferences preferences;
+    private final Context context;
 
     public ConfigRepository(Context context) {
+        this.context = context.getApplicationContext();
         preferences = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
     }
 
@@ -31,23 +33,25 @@ public final class ConfigRepository {
         } catch (IllegalArgumentException invalid) {
             return false;
         }
-        String effectiveToken = token == null || token.isBlank() ? token() : token;
+        String effectiveToken = token == null || Compatibility.isBlank(token) ? token() : token;
         return PairingValidator.validToken(effectiveToken) && PairingValidator.validDeviceId(deviceId);
     }
 
     public boolean save(String endpoint, String token, String deviceId) {
         if (!canSave(endpoint, token, deviceId)) return false;
         String normalized = EndpointValidator.validateAndNormalize(endpoint);
-        String effectiveToken = token == null || token.isBlank() ? token() : token;
+        String effectiveToken = token == null || Compatibility.isBlank(token) ? token() : token;
         return preferences.edit().putString(ENDPOINT, normalized).putString(TOKEN, effectiveToken)
                 .putString(DEVICE, deviceId.trim()).putBoolean(AUTH_BLOCKED, false).commit();
     }
 
     public void setEnabled(boolean enabled) {
+        if (!enabled) ProjectionScreenshotService.stop(context, "control_disabled");
         preferences.edit().putBoolean(ENABLED, enabled).apply();
     }
 
     public boolean setEnabledDurably(boolean enabled) {
+        if (!enabled) ProjectionScreenshotService.stop(context, "control_disabled");
         SharedPreferences.Editor editor = preferences.edit().putBoolean(ENABLED, enabled);
         if (!enabled) {
             long current = controlGeneration();
@@ -62,6 +66,7 @@ public final class ConfigRepository {
     }
 
     public void setAuthBlocked() {
+        ProjectionScreenshotService.stop(context, "authentication_blocked");
         preferences.edit().putBoolean(AUTH_BLOCKED, true).putBoolean(ENABLED, false).apply();
     }
 }

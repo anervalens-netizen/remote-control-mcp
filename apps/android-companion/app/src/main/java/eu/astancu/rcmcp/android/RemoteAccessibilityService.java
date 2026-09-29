@@ -42,12 +42,14 @@ public final class RemoteAccessibilityService extends AccessibilityService {
         thread.setDaemon(true);
         return thread;
     });
+    private final java.util.concurrent.atomic.AtomicBoolean screenshotBusy = new java.util.concurrent.atomic.AtomicBoolean();
+    private volatile CompletableFuture<ScreenshotData> pendingScreenshot;
     private long generation;
     private ExecutionLease currentLease;
     private SnapshotFreshness.Metadata lastSnapshot;
     private String lastPackage;
     private int lastWindowId = -1;
-    private Map<String, String> lastNodeIdentities = Map.of();
+    private Map<String, String> lastNodeIdentities = java.util.Collections.emptyMap();
 
     public static boolean isRunning() {
         return instance != null;
@@ -86,15 +88,26 @@ public final class RemoteAccessibilityService extends AccessibilityService {
 
     @Override
     public void onDestroy() {
+        ProjectionScreenshotService.stop(this, "accessibility_unavailable");
+        if (pendingScreenshot != null) pendingScreenshot.complete(ScreenshotData.unavailable("accessibility_unavailable"));
+        mainHandler.removeCallbacksAndMessages(null);
         generation++;
         lastSnapshot = null;
-        lastNodeIdentities = Map.of();
+        lastNodeIdentities = java.util.Collections.emptyMap();
         ExecutionLease lease = currentLease;
         currentLease = null;
         if (lease != null) lease.cancel();
         if (instance == this) instance = null;
-        screenshotEncoder.shutdownNow();
+        // Drain the at-most-one encoder task so its bitmap is recycled in finally.
+        screenshotEncoder.shutdown();
         super.onDestroy();
+    }
+
+    @Override
+    public boolean onUnbind(android.content.Intent intent) {
+        ProjectionScreenshotService.stop(this, "accessibility_unavailable");
+        if (instance == this) instance = null;
+        return super.onUnbind(intent);
     }
 
     private boolean isActiveService() {
@@ -103,6 +116,10 @@ public final class RemoteAccessibilityService extends AccessibilityService {
 
     public CompletableFuture<JSONObject> execute(JSONObject request, ExecutionLease lease) {
         CompletableFuture<JSONObject> result = new CompletableFuture<>();
+        if (!LocalConsentBoundary.INSTANCE.allows(request.optString("operation", ""))) {
+            completeError(result, "local_consent_required", "local_setup_or_dialog_active");
+            return result;
+        }
         if (Looper.myLooper() != Looper.getMainLooper()) {
             mainHandler.post(() -> executeOnMain(request, result, lease));
         } else {
@@ -145,15 +162,16 @@ public final class RemoteAccessibilityService extends AccessibilityService {
         DisplayInfo display = displayInfo();
         AccessibilityNodeInfo root = getRootInActiveWindow();
         boolean concreteWindowIdentity = root != null && root.getPackageName() != null
-                && !root.getPackageName().toString().isBlank() && root.getWindowId() >= 0;
+                && !Compatibility.isBlank(root.getPackageName().toString()) && root.getWindowId() >= 0;
         String packageName = concreteWindowIdentity ? root.getPackageName().toString() : null;
         int windowId = concreteWindowIdentity ? root.getWindowId() : -1;
         NodeCollection tree = wantTree ? collectNodes(root, maxNodes) : new NodeCollection(Protocol.emptyNodes(), false, new HashMap<>(), new ObservationBudget());
         JSONArray nodes = tree.nodes;
         if (root != null) root.recycle();
 
-        CompletableFuture<ScreenshotData> image = wantImage ? captureScreenshot() :
+        CompletableFuture<ScreenshotData> image = wantImage ? captureScreenshot(display) :
                 CompletableFuture.completedFuture(ScreenshotData.notRequested());
+        result.whenComplete((value, failure) -> { if (result.isCancelled()) image.cancel(false); });
         image.whenComplete((screenshot, throwable) -> mainHandler.post(() -> {
             if (result.isDone()) return;
             if (!isActiveService()) { completeError(result, "accessibility_unavailable", "accessibility_service_unavailable"); return; }
@@ -178,7 +196,7 @@ public final class RemoteAccessibilityService extends AccessibilityService {
             // snapshot-bound gesture or node action.
             lastPackage = concreteWindowIdentity ? packageName : null;
             lastWindowId = concreteWindowIdentity ? windowId : -1;
-            lastNodeIdentities = concreteWindowIdentity ? Map.copyOf(tree.identities) : Map.of();
+            lastNodeIdentities = concreteWindowIdentity ? java.util.Collections.unmodifiableMap(new HashMap<>(tree.identities)) : java.util.Collections.emptyMap();
             JSONObject snapshot = snapshotJson(lastSnapshot);
             JSONObject output = new JSONObject();
             try {
@@ -377,7 +395,7 @@ public final class RemoteAccessibilityService extends AccessibilityService {
     }
 
     private AccessibilityNodeInfo nodeAtPath(AccessibilityNodeInfo root, String path) {
-        if (path == null || path.isBlank()) return null;
+        if (path == null || Compatibility.isBlank(path)) return null;
         String[] parts = path.split("/");
         if (parts.length == 0 || !"0".equals(parts[0])) return null;
         AccessibilityNodeInfo current = AccessibilityNodeInfo.obtain(root);
@@ -404,7 +422,7 @@ public final class RemoteAccessibilityService extends AccessibilityService {
     }
 
     private boolean activeWindowMatches(String expectedPackage, int expectedWindowId) {
-        if (expectedPackage == null || expectedPackage.isBlank() || expectedWindowId < 0) return false;
+        if (expectedPackage == null || Compatibility.isBlank(expectedPackage) || expectedWindowId < 0) return false;
         AccessibilityNodeInfo root = getRootInActiveWindow();
         if (root == null || root.getPackageName() == null || root.getWindowId() < 0) {
             if (root != null) root.recycle();
@@ -417,6 +435,8 @@ public final class RemoteAccessibilityService extends AccessibilityService {
     }
 
     private void beginEffect() {
+        if (!LocalConsentBoundary.INSTANCE.allows("mutation"))
+            throw new ActionFailure("local_consent_required", "local_setup_or_dialog_active");
         if (currentLease == null || !currentLease.beginEffect()) throw new ActionFailure("expired_or_paused", "command_not_started");
     }
 
@@ -437,70 +457,118 @@ public final class RemoteAccessibilityService extends AccessibilityService {
         return "accessibility_unavailable";
     }
 
-    private CompletableFuture<ScreenshotData> captureScreenshot() {
-        CompletableFuture<ScreenshotData> result = new CompletableFuture<>();
-        try {
-            takeScreenshot(Display.DEFAULT_DISPLAY, getMainExecutor(), new TakeScreenshotCallback() {
-                @Override
-                public void onFailure(int errorCode) {
-                    result.complete(ScreenshotData.unavailable("screenshot_unavailable"));
-                }
-
-                @Override
-                public void onSuccess(ScreenshotResult screenshot) {
-                    if (screenshot == null || screenshot.getHardwareBuffer() == null) {
-                        result.complete(ScreenshotData.unavailable("screenshot_unavailable"));
-                        return;
-                    }
-                    HardwareBuffer hardwareBuffer = screenshot.getHardwareBuffer();
-                    Bitmap hardwareBitmap = Bitmap.wrapHardwareBuffer(hardwareBuffer, screenshot.getColorSpace());
-                    hardwareBuffer.close();
-                    if (hardwareBitmap == null) {
-                        result.complete(ScreenshotData.unavailable("screenshot_unavailable"));
-                        return;
-                    }
-                    Bitmap bitmap = hardwareBitmap.copy(Bitmap.Config.ARGB_8888, false);
-                    hardwareBitmap.recycle();
-                    if (bitmap == null) {
-                        result.complete(ScreenshotData.unavailable("screenshot_unavailable"));
-                        return;
-                    }
-                    try {
-                        screenshotEncoder.execute(() -> {
-                            try {
-                                result.complete(encodeScreenshot(bitmap));
-                            } finally {
-                                bitmap.recycle();
-                            }
-                        });
-                    } catch (RejectedExecutionException stopping) {
-                        bitmap.recycle();
-                        result.complete(ScreenshotData.unavailable("screenshot_unavailable"));
-                    }
-                }
-            });
-        } catch (RuntimeException unavailable) {
-            result.complete(ScreenshotData.unavailable("screenshot_unavailable"));
+    private CompletableFuture<ScreenshotData> captureScreenshot(DisplayInfo display) {
+        if (!canMutate()) return CompletableFuture.completedFuture(ScreenshotData.unavailable(availabilityReason()));
+        if (!ScreenshotBudget.fitsPixels(display.width, display.height)) {
+            return CompletableFuture.completedFuture(ScreenshotData.unavailable("screenshot_too_large"));
         }
+        if (Build.VERSION.SDK_INT == 29) {
+            return ProjectionScreenshotService.capture(display.width, display.height, display.rotation);
+        }
+        if (Build.VERSION.SDK_INT < 30) {
+            return CompletableFuture.completedFuture(ScreenshotData.unavailable("screenshot_unsupported"));
+        }
+        if (!screenshotBusy.compareAndSet(false, true)) {
+            return CompletableFuture.completedFuture(ScreenshotData.unavailable("screenshot_busy"));
+        }
+        CompletableFuture<ScreenshotData> result = new CompletableFuture<>();
+        pendingScreenshot = result;
+        Runnable timeout = () -> result.complete(ScreenshotData.unavailable("screenshot_timeout"));
+        mainHandler.postDelayed(timeout, ProjectionPolicy.CAPTURE_TIMEOUT_MS);
+        result.whenComplete((value, failure) -> {
+            mainHandler.removeCallbacks(timeout);
+            if (pendingScreenshot == result) pendingScreenshot = null;
+        });
+        Api30Screenshots.capture(this, display, result);
         return result;
     }
 
-    private ScreenshotData encodeScreenshot(Bitmap bitmap) {
-        ByteArrayOutputStream output = new ByteArrayOutputStream();
-        if (bitmap.compress(Bitmap.CompressFormat.PNG, 100, output)
+    /** Loaded only behind the API 30 guard; API 29 never resolves screenshot callback types. */
+    @android.annotation.TargetApi(30)
+    private static final class Api30Screenshots {
+        static void capture(RemoteAccessibilityService service, DisplayInfo display, CompletableFuture<ScreenshotData> result) {
+            try {
+                service.takeScreenshot(Display.DEFAULT_DISPLAY, service.getMainExecutor(), new TakeScreenshotCallback() {
+                    @Override public void onFailure(int errorCode) {
+                        service.screenshotBusy.set(false);
+                        result.complete(ScreenshotData.unavailable("screenshot_unavailable"));
+                    }
+                    @Override public void onSuccess(ScreenshotResult screenshot) {
+                        HardwareBuffer buffer = screenshot == null ? null : screenshot.getHardwareBuffer();
+                        if (buffer == null) {
+                            service.screenshotBusy.set(false);
+                            result.complete(ScreenshotData.unavailable("screenshot_unavailable"));
+                            return;
+                        }
+                        try {
+                            service.screenshotEncoder.execute(() -> {
+                                Bitmap hardware = null;
+                                Bitmap bitmap = null;
+                                try {
+                                    if (result.isDone()) return;
+                                    if (buffer.getWidth() != display.width || buffer.getHeight() != display.height) {
+                                        result.complete(ScreenshotData.unavailable("display_changed_refresh_required"));
+                                        return;
+                                    }
+                                    hardware = Bitmap.wrapHardwareBuffer(buffer, screenshot.getColorSpace());
+                                    if (hardware == null) throw new IllegalStateException();
+                                    bitmap = hardware.copy(Bitmap.Config.ARGB_8888, false);
+                                    if (bitmap == null) throw new IllegalStateException();
+                                    ScreenshotData data = encodeScreenshot(bitmap);
+                                    if (!service.canMutate()) data = ScreenshotData.unavailable("accessibility_unavailable");
+                                    result.complete(data);
+                                } catch (RuntimeException unavailable) {
+                                    result.complete(ScreenshotData.unavailable("screenshot_unavailable"));
+                                } finally {
+                                    if (bitmap != null) bitmap.recycle();
+                                    if (hardware != null) hardware.recycle();
+                                    buffer.close();
+                                    service.screenshotBusy.set(false);
+                                }
+                            });
+                        } catch (RejectedExecutionException stopping) {
+                            buffer.close();
+                            service.screenshotBusy.set(false);
+                            result.complete(ScreenshotData.unavailable("screenshot_unavailable"));
+                        }
+                    }
+                });
+            } catch (RuntimeException unavailable) {
+                service.screenshotBusy.set(false);
+                result.complete(ScreenshotData.unavailable("screenshot_unavailable"));
+            }
+        }
+    }
+
+    static ScreenshotData encodeScreenshot(Bitmap bitmap) {
+        if (!ScreenshotBudget.fitsPixels(bitmap.getWidth(), bitmap.getHeight())) return ScreenshotData.unavailable("screenshot_too_large");
+        BoundedImageOutput output = new BoundedImageOutput();
+        if (bitmap.compress(Bitmap.CompressFormat.PNG, 100, output) && !output.overflowed
                 && ScreenshotBudget.fitsCompressedBytes(output.size())) {
-            return ScreenshotData.available("image/png",
-                    Base64.encodeToString(output.toByteArray(), Base64.NO_WRAP));
+            return ScreenshotData.available("image/png", Base64.encodeToString(output.toByteArray(), Base64.NO_WRAP));
         }
         for (int quality : ScreenshotBudget.JPEG_QUALITIES) {
             output.reset();
-            if (bitmap.compress(Bitmap.CompressFormat.JPEG, quality, output)
+            if (bitmap.compress(Bitmap.CompressFormat.JPEG, quality, output) && !output.overflowed
                     && ScreenshotBudget.fitsCompressedBytes(output.size())) {
-                return ScreenshotData.available("image/jpeg",
-                        Base64.encodeToString(output.toByteArray(), Base64.NO_WRAP));
+                return ScreenshotData.available("image/jpeg", Base64.encodeToString(output.toByteArray(), Base64.NO_WRAP));
             }
         }
         return ScreenshotData.unavailable("screenshot_too_large");
+    }
+
+    /** Discard compressed overflow instead of accumulating unbounded PNG output. */
+    private static final class BoundedImageOutput extends ByteArrayOutputStream {
+        boolean overflowed;
+        @Override public synchronized void write(byte[] value, int offset, int length) {
+            if (overflowed || length > ScreenshotBudget.MAX_COMPRESSED_BYTES - count) { overflowed = true; return; }
+            super.write(value, offset, length);
+        }
+        @Override public synchronized void write(int value) {
+            if (overflowed || count == ScreenshotBudget.MAX_COMPRESSED_BYTES) { overflowed = true; return; }
+            super.write(value);
+        }
+        @Override public synchronized void reset() { super.reset(); overflowed = false; }
     }
 
     private NodeCollection collectNodes(AccessibilityNodeInfo root, int maxNodes) {
@@ -583,10 +651,10 @@ public final class RemoteAccessibilityService extends AccessibilityService {
     private String nodeIdentity(AccessibilityNodeInfo node) {
         if (Build.VERSION.SDK_INT >= 33) {
             String uniqueId = node.getUniqueId();
-            if (uniqueId != null && !uniqueId.isBlank()) return "uid:" + uniqueId;
+            if (uniqueId != null && !Compatibility.isBlank(uniqueId)) return "uid:" + uniqueId;
         }
         String viewId = node.getViewIdResourceName();
-        if (viewId == null || viewId.isBlank() || node.getPackageName() == null || node.getClassName() == null) return null;
+        if (viewId == null || Compatibility.isBlank(viewId) || node.getPackageName() == null || node.getClassName() == null) return null;
         Rect bounds = new Rect();
         node.getBoundsInScreen(bounds);
         return "view:" + node.getPackageName() + "|" + viewId + "|" + node.getClassName()
@@ -680,7 +748,7 @@ public final class RemoteAccessibilityService extends AccessibilityService {
         DisplayInfo(int width, int height, int rotation) { this.width = width; this.height = height; this.rotation = rotation; }
     }
 
-    private static final class ScreenshotData {
+    static final class ScreenshotData {
         final boolean requested;
         final boolean available;
         final String mimeType;

@@ -9,6 +9,13 @@ public final class ScreenshotBudget {
     public static final int MAX_COMPRESSED_BYTES = 8 * 1024 * 1024;
     public static final int[] JPEG_QUALITIES = {90, 80, 70, 60, 50};
 
+    // Bound raw allocations as well as the existing wire budget (up to 4K).
+    public static final long MAX_PIXELS = 3840L * 2160L;
+
+    public static boolean fitsPixels(int width, int height) {
+        return width > 0 && height > 0 && (long) width * height <= MAX_PIXELS;
+    }
+
     private ScreenshotBudget() {}
 
     public static boolean fitsCompressedBytes(int bytes) {

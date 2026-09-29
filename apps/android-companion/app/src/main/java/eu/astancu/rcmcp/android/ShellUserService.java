@@ -66,7 +66,7 @@ public final class ShellUserService extends IShellBridge.Stub {
     @Override
     public ParcelFileDescriptor exec(String executionId, ParcelFileDescriptor commandInput, int commandBytes,
                                      long deadlineElapsedMs, long timeoutMs, int maxOutputBytes) throws RemoteException {
-        if (executionId == null || executionId.isBlank()) throw new RemoteException("missing_execution_id");
+        if (executionId == null || Compatibility.isBlank(executionId)) throw new RemoteException("missing_execution_id");
         if (commandInput == null) throw new RemoteException("missing_command_pipe");
         final ParcelFileDescriptor[] pipe;
         try {
@@ -108,7 +108,7 @@ public final class ShellUserService extends IShellBridge.Stub {
 
     @Override
     public void cancel(String executionId) {
-        if (executionId == null || executionId.isBlank()) return;
+        if (executionId == null || Compatibility.isBlank(executionId)) return;
         prunePendingCancellations();
         RunningExecution execution = active.get(executionId);
         if (execution == null) {
@@ -342,7 +342,7 @@ public final class ShellUserService extends IShellBridge.Stub {
     private static Set<Integer> descendantPids(int rootPid) {
         File proc = new File("/proc");
         File[] entries = proc.listFiles();
-        if (entries == null) return Set.of();
+        if (entries == null) return java.util.Collections.emptySet();
         Map<Integer, Integer> parents = new HashMap<>();
         for (File entry : entries) {
             String name = entry.getName();
@@ -380,7 +380,7 @@ public final class ShellUserService extends IShellBridge.Stub {
     private static Set<Integer> executionPids(String executionId) {
         File proc = new File("/proc");
         File[] entries = proc.listFiles();
-        if (entries == null) return Set.of();
+        if (entries == null) return java.util.Collections.emptySet();
         byte[] marker = (EXECUTION_MARKER + "=" + executionId + "\0").getBytes(StandardCharsets.UTF_8);
         Set<Integer> matches = new HashSet<>();
         for (File entry : entries) {

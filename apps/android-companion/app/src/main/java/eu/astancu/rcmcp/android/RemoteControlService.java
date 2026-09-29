@@ -156,12 +156,16 @@ public final class RemoteControlService extends Service {
     }
 
     public static boolean stopFromOwner(android.content.Context context) {
+        BackgroundConfigurationImport.stop();
+        ProjectionScreenshotService.stop(context, "control_stopped");
         RemoteControlService service = instance;
         if (service != null) return service.stopLocally();
         return new ConfigRepository(context).setEnabledDurably(false);
     }
 
     private boolean stopLocally() {
+        BackgroundConfigurationImport.stop();
+        ProjectionScreenshotService.stop(this, "control_stopped");
         boolean durableStop = config.setEnabledDurably(false);
         running = false;
         loopGeneration++;
@@ -369,7 +373,7 @@ public final class RemoteControlService extends Service {
         long responseReceivedElapsedMs = SystemClock.elapsedRealtime();
         if (response.status == 401 || response.status == 403) throw new AuthFailure();
         if (response.status < 200 || response.status >= 300) throw new ProtocolFailure();
-        if (response.body.isBlank()) throw new ProtocolFailure();
+        if (Compatibility.isBlank(response.body)) throw new ProtocolFailure();
         JSONObject parsed = new JSONObject(response.body);
         JSONObject command = Protocol.commandResponse(parsed);
         return new PollResponse(parsed.getLong("serverTime"), Protocol.serverWaitMs(parsed),
@@ -508,6 +512,7 @@ public final class RemoteControlService extends Service {
 
     @Override
     public void onDestroy() {
+        ProjectionScreenshotService.stop(this, "control_stopped");
         running = false;
         loopGeneration++;
         if (instance == this) instance = null;
