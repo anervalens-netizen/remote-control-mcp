@@ -8,7 +8,7 @@ public final class EndpointValidator {
     private EndpointValidator() {}
 
     public static String validateAndNormalize(String raw) {
-        if (raw == null || raw.isBlank()) throw new IllegalArgumentException("endpoint_required");
+        if (raw == null || Compatibility.isBlank(raw)) throw new IllegalArgumentException("endpoint_required");
         String candidate = raw.trim();
         URI uri;
         try {

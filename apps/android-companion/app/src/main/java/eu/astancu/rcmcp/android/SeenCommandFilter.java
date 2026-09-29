@@ -25,7 +25,7 @@ public final class SeenCommandFilter {
     }
 
     public static SeenCommandFilter decode(String encoded) {
-        if (encoded == null || encoded.isBlank()) return new SeenCommandFilter();
+        if (encoded == null || Compatibility.isBlank(encoded)) return new SeenCommandFilter();
         return new SeenCommandFilter(Base64.getDecoder().decode(encoded));
     }
 

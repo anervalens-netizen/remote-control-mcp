@@ -36,7 +36,7 @@ describe("Android companion static capability contract", () => {
     expect(activity).not.toContain("token.setText(config.token())");
     expect(activity).toContain("token.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO)");
     expect(activity).toContain('token.setText("")');
-    expect(config).toContain("token == null || token.isBlank() ? token() : token");
+    expect(config).toContain("token == null || Compatibility.isBlank(token) ? token() : token");
   });
 
   it("reports the generated APK version instead of a duplicated literal", () => {
@@ -93,7 +93,7 @@ describe("Android companion static capability contract", () => {
     expect(accessibility).toContain("(concreteWindowIdentity && !activeWindowMatches(packageName, windowId))");
     expect(accessibility).toContain("lastPackage = concreteWindowIdentity ? packageName : null");
     expect(accessibility).toContain("lastWindowId = concreteWindowIdentity ? windowId : -1");
-    expect(accessibility).toContain("expectedPackage == null || expectedPackage.isBlank() || expectedWindowId < 0");
+    expect(accessibility).toContain("expectedPackage == null || Compatibility.isBlank(expectedPackage) || expectedWindowId < 0");
     expect(accessibility).toContain("&& lastPackage != null && activeWindowMatches(lastPackage, lastWindowId)");
     expect(accessibility).toContain("screen_or_window_changed_during_observation");
   });
@@ -118,7 +118,7 @@ describe("Android companion static capability contract", () => {
     expect(accessibility).toContain("boolean password = node.isPassword()");
     expect(accessibility).toContain('.put("text", password ? "" : collection.budget.take(node.getText()))');
     expect(accessibility).toContain('.put("description", password ? "" : collection.budget.take(node.getContentDescription()))');
-    expect(accessibility).toContain("lastNodeIdentities = concreteWindowIdentity ? Map.copyOf(tree.identities) : Map.of()");
+    expect(accessibility).toContain("lastNodeIdentities = concreteWindowIdentity ? java.util.Collections.unmodifiableMap(new HashMap<>(tree.identities)) : java.util.Collections.emptyMap()");
     expect(accessibility).toContain("String expectedIdentity = lastNodeIdentities.get(nodeId)");
     expect(accessibility).toContain("node_identity_changed");
     expect(accessibility).toContain("node_identity_unavailable");
@@ -279,7 +279,11 @@ describe("Android companion static capability contract", () => {
     const accessibility = readFileSync(path.join(appRoot, "java/eu/astancu/rcmcp/android/RemoteAccessibilityService.java"), "utf8");
     expect(accessibility).toContain("rcmcp-screenshot-encoder");
     expect(accessibility).toContain("screenshotEncoder.execute(() ->");
-    expect(accessibility).toContain("screenshotEncoder.shutdownNow()");
+    expect(accessibility).toContain("screenshotEncoder.shutdown()");
+    expect(accessibility).toContain("screenshotBusy.compareAndSet(false, true)");
+    expect(accessibility).toContain("if (result.isDone()) return");
+    expect(accessibility).toContain("if (bitmap != null) bitmap.recycle()");
+    expect(accessibility).toContain("buffer.close()");
   });
 
   it("does not stop UI-tree traversal merely because one field was truncated", () => {

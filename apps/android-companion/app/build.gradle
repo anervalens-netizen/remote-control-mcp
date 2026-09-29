@@ -17,10 +17,10 @@ android {
 
     defaultConfig {
         applicationId 'eu.astancu.rcmcp.android'
-        minSdk 30
+        minSdk 29
         targetSdk 36
-        versionCode 10
-        versionName '0.1.9-rc25-onboarding'
+        versionCode 11
+        versionName '0.1.10-android10'
 
     }
 
