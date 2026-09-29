@@ -78,6 +78,7 @@ public final class MainActivity extends Activity {
                 importStatus.setText("Imported configuration is still unsaved. For safety, re-import it or re-enter its bearer credential before Save.");
             }
         }
+        reattachImportIfPresent();
         updateSensitiveWindowProtection();
         if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
                 != PackageManager.PERMISSION_GRANTED) {
@@ -87,7 +88,8 @@ public final class MainActivity extends Activity {
 
     private void updateLocalBoundary() {
         LocalConsentBoundary.INSTANCE.update(this, foreground,
-                importPending || sharingPending || notificationPending);
+                importPending || importedUnsaved || BackgroundConfigurationImport.busy()
+                        || sharingPending || notificationPending);
     }
 
     @Override protected void onStart() {
@@ -118,7 +120,8 @@ public final class MainActivity extends Activity {
 
     @Override protected void onDestroy() {
         importGeneration.destroy();
-        cancelImport();
+        if (isChangingConfigurations()) detachImportForRecreation();
+        else cancelImport();
         statusHandler.removeCallbacksAndMessages(null);
         LocalConsentBoundary.INSTANCE.destroy(this);
         super.onDestroy();
@@ -311,46 +314,94 @@ public final class MainActivity extends Activity {
         updateSensitiveWindowProtection();
     }
 
-    private void cancelImport() {
-        importGeneration.cancel();
+    private void clearImportTimeout() {
         if (importTimeout != null) statusHandler.removeCallbacks(importTimeout);
         importTimeout = null;
-        if (importJob != null) importJob.cancel();
+    }
+
+    private void cancelImport() {
+        importGeneration.cancel();
+        clearImportTimeout();
+        if (importJob != null) {
+            importJob.detach(this);
+            importJob.cancel();
+        }
         importJob = null;
+        updateLocalBoundary();
+    }
+
+    private void detachImportForRecreation() {
+        clearImportTimeout();
+        if (importJob != null) importJob.detach(this);
+        importJob = null;
+        updateLocalBoundary();
+    }
+
+    private void reattachImportIfPresent() {
+        BackgroundConfigurationImport.Job retained = BackgroundConfigurationImport.current();
+        if (retained == null) return;
+        attachImportJob(retained);
     }
 
     private void startImport(Uri uri) {
         cancelImport();
-        long generation = importGeneration.begin();
-        long stopEpoch = BackgroundConfigurationImport.stopEpoch();
-        importJob = BackgroundConfigurationImport.start(getApplicationContext().getContentResolver(), uri,
-                imported -> statusHandler.post(() -> {
-                    if (!importGeneration.accepts(generation)
-                            || stopEpoch != BackgroundConfigurationImport.stopEpoch()) return;
-                    cancelImport();
-                    if (imported == null) {
-                        importStatus.setText("Import rejected: expected valid configuration JSON, at most 8192 bytes.");
-                        return;
-                    }
-                    getWindow().addFlags(WindowManager.LayoutParams.FLAG_SECURE);
-                    importedUnsaved = true;
-                    token.setText(imported.token);
-                    endpoint.setText(imported.endpoint);
-                    device.setText(imported.device);
-                    importStatus.setText("Configuration imported for review. Press Save configuration to confirm; control has not started.");
-                }));
-        if (importJob == null) {
-            importGeneration.cancel();
+        BackgroundConfigurationImport.Job job =
+                BackgroundConfigurationImport.start(getApplicationContext().getContentResolver(), uri);
+        if (job == null) {
             importStatus.setText("Previous import is still closing. Try again later.");
+            return;
+        }
+        attachImportJob(job);
+    }
+
+    private void attachImportJob(BackgroundConfigurationImport.Job job) {
+        importJob = job;
+        updateLocalBoundary();
+        long generation = importGeneration.begin();
+        boolean attached = job.attach(this, imported -> statusHandler.post(() -> {
+            if (importJob != job || !importGeneration.accepts(generation)
+                    || job.epoch() != BackgroundConfigurationImport.stopEpoch()) return;
+            clearImportTimeout();
+            importGeneration.cancel();
+            if (imported == null) {
+                job.detach(this);
+                job.cancel();
+                importJob = null;
+                updateLocalBoundary();
+                importStatus.setText("Import rejected: expected valid configuration JSON, at most 8192 bytes.");
+                return;
+            }
+            getWindow().addFlags(WindowManager.LayoutParams.FLAG_SECURE);
+            importedUnsaved = true;
+            updateLocalBoundary();
+            token.setText(imported.token);
+            endpoint.setText(imported.endpoint);
+            device.setText(imported.device);
+            importStatus.setText("Configuration imported for review. Press Save configuration to confirm; control has not started.");
+        }));
+        if (!attached) {
+            importGeneration.cancel();
+            importJob = null;
+            importStatus.setText("Previous import is no longer available. Select the configuration again.");
+            return;
+        }
+        if (job.completed()) {
+            importStatus.setText("Finishing imported configuration…");
+            return;
+        }
+        long remaining = job.remainingTimeoutMs();
+        if (remaining <= 0L) {
+            cancelImport();
+            importStatus.setText("Import timed out after 5 seconds. Provider may still be closing.");
             return;
         }
         importStatus.setText("Importing configuration…");
         importTimeout = () -> {
-            if (!importGeneration.accepts(generation)) return;
+            if (!importGeneration.accepts(generation) || importJob != job) return;
             cancelImport();
             importStatus.setText("Import timed out after 5 seconds. Provider may still be closing.");
         };
-        statusHandler.postDelayed(importTimeout, BackgroundConfigurationImport.TIMEOUT_MS);
+        statusHandler.postDelayed(importTimeout, remaining);
     }
 
     private EditText field(String hint, boolean password) {
@@ -402,6 +453,7 @@ public final class MainActivity extends Activity {
             return;
         }
         importedUnsaved = false;
+        updateLocalBoundary();
         importStatus.setText("");
         token.setText("");
         status.setText("Configuration saved privately. Stored credential is never displayed.");
@@ -409,11 +461,11 @@ public final class MainActivity extends Activity {
     }
 
     private void startControl() {
-        cancelImport();
         if (importedUnsaved) {
             status.setText("Review imported configuration and press Save configuration before starting control.");
             return;
         }
+        cancelImport();
         if (!RemoteControlService.hasControlNotificationPermission(this)) {
             if (Build.VERSION.SDK_INT >= 33) requestNotificationPermission();
             status.setText("Notification permission is required so the persistent local STOP control remains visible.");
