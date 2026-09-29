@@ -22,4 +22,5 @@ Run the commands documented in README.md and the relevant platform tests. Hardwa
 - [x] Persist the correlation before starting; preserve uncertain starts.
 - [x] Retry retained results without making ContextKeep availability an execution prerequisite.
 - [x] Cover duplicate starts, lost receipts and restart using synthetic tests.
-- [ ] Qualify live host delivery separately from local transport tests.
+- [x] Qualify the live bridge with an idempotent read-only executor job.
+- [ ] Qualify ChatGPT event receipt and continuation separately from service integration tests.
