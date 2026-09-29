@@ -281,6 +281,11 @@ describe("Android companion static capability contract", () => {
     expect(accessibility).toContain("screenshotEncoder.execute(() ->");
     expect(accessibility).toContain("screenshotEncoder.shutdown()");
     expect(accessibility).toContain("screenshotBusy.compareAndSet(false, true)");
+    expect(accessibility).toContain("releaseScreenshotSlot(result)");
+    expect(accessibility).toContain("if (pendingScreenshot != owner) return");
+    const screenshotPath = accessibility.slice(accessibility.indexOf("private CompletableFuture<ScreenshotData> captureScreenshot"),
+      accessibility.indexOf("static ScreenshotData encodeScreenshot"));
+    expect(screenshotPath.match(/screenshotBusy\.set\(false\)/g)).toHaveLength(1);
     expect(accessibility).toContain("if (result.isDone()) return");
     expect(accessibility).toContain("if (bitmap != null) bitmap.recycle()");
     expect(accessibility).toContain("buffer.close()");

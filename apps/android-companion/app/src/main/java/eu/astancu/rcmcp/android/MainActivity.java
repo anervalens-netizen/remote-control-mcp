@@ -88,7 +88,7 @@ public final class MainActivity extends Activity {
 
     private void updateLocalBoundary() {
         LocalConsentBoundary.INSTANCE.update(this, foreground,
-                importPending || importedUnsaved || BackgroundConfigurationImport.busy()
+                importPending || importedUnsaved || (importJob != null && !importJob.completed())
                         || sharingPending || notificationPending);
     }
 
@@ -116,6 +116,15 @@ public final class MainActivity extends Activity {
         if (endpoint != null) state.putString("endpointDraft", endpoint.getText().toString());
         if (device != null) state.putString("deviceDraft", device.getText().toString());
         super.onSaveInstanceState(state);
+        // Once an imported result was applied before this state snapshot, the nonsecret
+        // drafts and safety latch above are sufficient. Do not retain its credential
+        // process-wide merely to survive a later recreation; the user must re-enter it.
+        if (importedUnsaved && importJob != null && importJob.completed()) {
+            importJob.detach(this);
+            importJob.cancel();
+            importJob = null;
+            updateLocalBoundary();
+        }
     }
 
     @Override protected void onDestroy() {
@@ -340,7 +349,10 @@ public final class MainActivity extends Activity {
     private void reattachImportIfPresent() {
         BackgroundConfigurationImport.Job retained = BackgroundConfigurationImport.current();
         if (retained == null) return;
-        attachImportJob(retained);
+        // If importedUnsaved came from saved state, preserve the nonsecret drafts that
+        // the user may have edited. A job still in progress always starts with this latch
+        // cleared, so its eventual result remains authoritative.
+        attachImportJob(retained, importedUnsaved);
     }
 
     private void startImport(Uri uri) {
@@ -351,10 +363,15 @@ public final class MainActivity extends Activity {
             importStatus.setText("Previous import is still closing. Try again later.");
             return;
         }
-        attachImportJob(job);
+        // Selecting a new document replaces any previous unsaved import only after a
+        // new process-wide job was successfully created.
+        importedUnsaved = false;
+        token.setText("");
+        updateLocalBoundary();
+        attachImportJob(job, false);
     }
 
-    private void attachImportJob(BackgroundConfigurationImport.Job job) {
+    private void attachImportJob(BackgroundConfigurationImport.Job job, boolean preserveDrafts) {
         importJob = job;
         updateLocalBoundary();
         long generation = importGeneration.begin();
@@ -375,8 +392,10 @@ public final class MainActivity extends Activity {
             importedUnsaved = true;
             updateLocalBoundary();
             token.setText(imported.token);
-            endpoint.setText(imported.endpoint);
-            device.setText(imported.device);
+            if (!preserveDrafts) {
+                endpoint.setText(imported.endpoint);
+                device.setText(imported.device);
+            }
             importStatus.setText("Configuration imported for review. Press Save configuration to confirm; control has not started.");
         }));
         if (!attached) {

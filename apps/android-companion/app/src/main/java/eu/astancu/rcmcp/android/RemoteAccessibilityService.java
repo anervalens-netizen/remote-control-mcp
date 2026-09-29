@@ -480,10 +480,16 @@ public final class RemoteAccessibilityService extends AccessibilityService {
         mainHandler.postDelayed(timeout, ProjectionPolicy.CAPTURE_TIMEOUT_MS);
         result.whenComplete((value, failure) -> {
             mainHandler.removeCallbacks(timeout);
-            if (pendingScreenshot == result) pendingScreenshot = null;
+            releaseScreenshotSlot(result);
         });
         Api30Screenshots.capture(this, display, result);
         return result;
+    }
+
+    private synchronized void releaseScreenshotSlot(CompletableFuture<ScreenshotData> owner) {
+        if (pendingScreenshot != owner) return;
+        pendingScreenshot = null;
+        screenshotBusy.set(false);
     }
 
     /** Loaded only behind the API 30 guard; API 29 never resolves screenshot callback types. */
@@ -493,13 +499,11 @@ public final class RemoteAccessibilityService extends AccessibilityService {
             try {
                 service.takeScreenshot(Display.DEFAULT_DISPLAY, service.getMainExecutor(), new TakeScreenshotCallback() {
                     @Override public void onFailure(int errorCode) {
-                        service.screenshotBusy.set(false);
                         result.complete(ScreenshotData.unavailable("screenshot_unavailable"));
                     }
                     @Override public void onSuccess(ScreenshotResult screenshot) {
                         HardwareBuffer buffer = screenshot == null ? null : screenshot.getHardwareBuffer();
                         if (buffer == null) {
-                            service.screenshotBusy.set(false);
                             result.complete(ScreenshotData.unavailable("screenshot_unavailable"));
                             return;
                         }
@@ -526,18 +530,15 @@ public final class RemoteAccessibilityService extends AccessibilityService {
                                     if (bitmap != null) bitmap.recycle();
                                     if (hardware != null) hardware.recycle();
                                     buffer.close();
-                                    service.screenshotBusy.set(false);
                                 }
                             });
                         } catch (RejectedExecutionException stopping) {
                             buffer.close();
-                            service.screenshotBusy.set(false);
                             result.complete(ScreenshotData.unavailable("screenshot_unavailable"));
                         }
                     }
                 });
             } catch (RuntimeException unavailable) {
-                service.screenshotBusy.set(false);
                 result.complete(ScreenshotData.unavailable("screenshot_unavailable"));
             }
         }
