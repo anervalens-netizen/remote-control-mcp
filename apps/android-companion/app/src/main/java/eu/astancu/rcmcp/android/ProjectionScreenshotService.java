@@ -186,39 +186,50 @@ public final class ProjectionScreenshotService extends Service {
 
     private void onFrame(ImageReader source) {
         Bitmap bitmap = null;
+        Image image = null;
         CompletableFuture<ScreenshotData> target = null;
+        int frameWidth = 0;
+        int frameHeight = 0;
         try {
             synchronized (this) {
                 if (source != reader) return;
-                // Always drain and close; allocate/encode only for a pending request.
-                try (Image image = source.acquireLatestImage()) {
-                    if (image == null || !active) return;
-                    if (image.getTimestamp() < requestedAtNanos) return;
-                    target = requests.pending();
-                    if (!requests.claimEncoding(target)) { target = null; return; }
-                    if (!allowed(this) || !displayMatches() || image.getWidth() != width || image.getHeight() != height) {
-                        finish(target, ScreenshotData.unavailable("display_changed_or_locked_refresh_required"));
-                        return;
-                    }
-                    Image.Plane plane = image.getPlanes()[0];
-                    int pixelStride = plane.getPixelStride();
-                    int rowStride = plane.getRowStride();
-                    if (pixelStride != 4 || rowStride < width * 4) throw new IllegalStateException();
-                    ByteBuffer buffer = plane.getBuffer();
-                    // Copy rows without allocating a padded screen bitmap or retaining Image buffers.
-                    bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
-                    int[] row = new int[width];
-                    for (int y = 0; y < height; y++) {
-                        for (int x = 0; x < width; x++) {
-                            int offset = y * rowStride + x * pixelStride;
-                            int r = buffer.get(offset) & 255, g = buffer.get(offset + 1) & 255;
-                            int b = buffer.get(offset + 2) & 255, a = buffer.get(offset + 3) & 255;
-                            row[x] = (a << 24) | (r << 16) | (g << 8) | b;
-                        }
-                        bitmap.setPixels(row, 0, width, 0, y, width, 1);
-                    }
+                image = source.acquireLatestImage();
+                if (image == null || !active) return;
+                if (image.getTimestamp() < requestedAtNanos) return;
+                target = requests.pending();
+                if (!requests.claimEncoding(target)) { target = null; return; }
+                if (!allowed(this) || !displayMatches() || image.getWidth() != width || image.getHeight() != height) {
+                    finish(target, ScreenshotData.unavailable("display_changed_or_locked_refresh_required"));
+                    return;
                 }
+                frameWidth = width;
+                frameHeight = height;
             }
+
+            // The acquired Image is owned by this callback until close. Do the O(pixels)
+            // copy without the service monitor so timeout, STOP and revocation can finish
+            // the request and tear down the projection immediately.
+            Image.Plane plane = image.getPlanes()[0];
+            int pixelStride = plane.getPixelStride();
+            int rowStride = plane.getRowStride();
+            if (pixelStride != 4 || rowStride < frameWidth * 4) throw new IllegalStateException();
+            ByteBuffer buffer = plane.getBuffer();
+            bitmap = Bitmap.createBitmap(frameWidth, frameHeight, Bitmap.Config.ARGB_8888);
+            int[] row = new int[frameWidth];
+            for (int y = 0; y < frameHeight; y++) {
+                if (target.isDone()) return;
+                for (int x = 0; x < frameWidth; x++) {
+                    int offset = y * rowStride + x * pixelStride;
+                    int r = buffer.get(offset) & 255, g = buffer.get(offset + 1) & 255;
+                    int b = buffer.get(offset + 2) & 255, a = buffer.get(offset + 3) & 255;
+                    row[x] = (a << 24) | (r << 16) | (g << 8) | b;
+                }
+                bitmap.setPixels(row, 0, frameWidth, 0, y, frameWidth, 1);
+            }
+            image.close();
+            image = null;
+
+            if (target.isDone()) return;
             ScreenshotData data = RemoteAccessibilityService.encodeScreenshot(bitmap);
             synchronized (this) {
                 if (!active || !allowed(this) || !displayMatches()) data = ScreenshotData.unavailable("screen_sharing_changed_refresh_required");
@@ -227,6 +238,9 @@ public final class ProjectionScreenshotService extends Service {
         } catch (RuntimeException failure) {
             synchronized (this) { if (target != null) finish(target, ScreenshotData.unavailable("screenshot_unavailable")); }
         } finally {
+            if (image != null) {
+                try { image.close(); } catch (RuntimeException alreadyClosed) { /* teardown may invalidate it */ }
+            }
             if (bitmap != null) bitmap.recycle();
             synchronized (this) { if (target != null) requests.releaseEncoder(); }
         }

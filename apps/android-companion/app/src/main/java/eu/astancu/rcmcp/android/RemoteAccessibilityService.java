@@ -89,15 +89,18 @@ public final class RemoteAccessibilityService extends AccessibilityService {
     @Override
     public void onDestroy() {
         ProjectionScreenshotService.stop(this, "accessibility_unavailable");
-        if (pendingScreenshot != null) pendingScreenshot.complete(ScreenshotData.unavailable("accessibility_unavailable"));
-        mainHandler.removeCallbacksAndMessages(null);
+        // Mark inactive before completing asynchronous work. Queued command/observation
+        // callbacks must be allowed to run so they can report accessibility_unavailable;
+        // deleting the Handler queue here would strand their futures until controller timeout.
+        if (instance == this) instance = null;
         generation++;
         lastSnapshot = null;
         lastNodeIdentities = java.util.Collections.emptyMap();
         ExecutionLease lease = currentLease;
         currentLease = null;
         if (lease != null) lease.cancel();
-        if (instance == this) instance = null;
+        CompletableFuture<ScreenshotData> screenshot = pendingScreenshot;
+        if (screenshot != null) screenshot.complete(ScreenshotData.unavailable("accessibility_unavailable"));
         // Drain the at-most-one encoder task so its bitmap is recycled in finally.
         screenshotEncoder.shutdown();
         super.onDestroy();
