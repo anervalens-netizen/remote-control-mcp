@@ -1,3 +1,4 @@
+import { fsReadFields } from "../../../packages/protocol/src/execution.ts";
 import { registerFilesystemManageRoute } from "./filesystem-routes.ts";
 import { timeoutMsField } from "../../../packages/protocol/src/deadline.ts";
 import { registerBrowserRoutes } from "./browser-routes.ts";
@@ -37,14 +38,7 @@ const execSchema = z.object({
   maxOutputBytes: z.number().int().positive().max(64 * 1024 * 1024).optional(),
 });
 const fsReadSchema = z.object({
-  path: z.string().min(1),
-  offset: z.number().int().nonnegative().optional(),
-  length: z.number().int().nonnegative().optional(),
-  encoding: z.enum(["utf8", "base64"]).optional(),
-  tailBytes: z.number().int().nonnegative().max(64 * 1024 * 1024).optional(),
-  startLine: z.number().int().positive().optional(),
-  lineCount: z.number().int().positive().max(100_000).optional(),
-  maxBytes: z.number().int().positive().max(64 * 1024 * 1024).optional(),
+  ...fsReadFields,
 }).superRefine((value, ctx) => {
   const lineMode = value.startLine !== undefined || value.lineCount !== undefined || value.maxBytes !== undefined;
   if (value.tailBytes !== undefined && (value.offset !== undefined || value.length !== undefined || lineMode)) {
@@ -103,7 +97,7 @@ if (configuredBodyLimitBytes !== null && (!Number.isSafeInteger(configuredBodyLi
 // a numeric parser limit, so MAX_SAFE_INTEGER is the practical no-fixed-cap value.
 const bodyLimit = configuredBodyLimitBytes ?? Number.MAX_SAFE_INTEGER;
 const app = Fastify({ logger: true, bodyLimit });
-const runtimeWithHttpLimits = () => ({ ...runtimeStatus(), maxBodyBytes: configuredBodyLimitBytes, transferStagingVersion: 1, pathResolutionVersion: 1 });
+const runtimeWithHttpLimits = () => ({ ...runtimeStatus(), maxBodyBytes: configuredBodyLimitBytes, transferStagingVersion: 1, relaySourceVersion: 1, pathResolutionVersion: 1 });
 
 app.addHook("onRequest", async (request, reply) => {
   if (request.url === "/health" || allowUnauthenticated) return;

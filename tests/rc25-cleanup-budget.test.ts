@@ -9,8 +9,9 @@ it("starts the exact 250ms cleanup clock after a slow transfer, without inheriti
   let cleanupOptions: AgentRequestOptions | undefined;
   let cleanupCalls = 0, settled = false;
   const client = {
-    info: async () => ({ platform: "linux", runtime: { transferStagingVersion: 1 } }),
+    info: async () => ({ platform: "linux", runtime: { transferStagingVersion: 1, relaySourceVersion: 1 } }),
     fsWrite: async () => ({ ok: true }),
+    fsRead: async () => ({ path: "/source", data: "", encoding: "base64", bytesRead: 0, nextOffset: 0, eof: true, totalBytes: 0, sourceVersion: "1:1:0:0:0", modifiedAt: "2020-01-01T00:00:00.000Z", posixMode: 0o600 }),
     fsManage: async (_device: string, input: { operation: string }, _context: unknown, options: AgentRequestOptions) => {
       if (input.operation === "stat") return { isFile: true, size: 0 };
       if (input.operation === "transfer-stage") {

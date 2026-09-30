@@ -1,3 +1,4 @@
+import { configuredContextKeepBridge } from "./contextkeep-bridge.ts";
 import { toolErrorDetails, withToolErrors } from "./tool-errors.ts";
 import { jobFollowFields, jobLineageFields } from "../../../packages/protocol/src/project.ts";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -14,19 +15,28 @@ const routedText = (legacyValue: unknown, context: AgentEndpointContext, structu
     : { ...(legacyValue as Record<string, unknown>), identity: executionLabel(context), context }),
 });
 
-export async function startJobsMany(client: AgentClient, devices: string[], input: { command: string; cwd?: string; env?: Record<string, string>; idempotencyKey?: string }, context: AgentContext | AgentEndpointContext = "system", concurrency?: number) {
-  return mapLimit(devices, concurrency, async (device) => {
+type JobStartInput = { command: string; cwd?: string; env?: Record<string, string>; idempotencyKey?: string };
+type PlannedJob = { device: string; target: AgentEndpointContext };
+
+async function startPlannedJobs(client: AgentClient, planned: PlannedJob[], input: JobStartInput, concurrency?: number) {
+  return mapLimit(planned, concurrency, async ({ device, target: context }) => {
     try { return { device, context, ok: true as const, job: await client.jobStart(device, input, context) }; }
-    catch (error) { return { device, context, ok: false as const, ...toolErrorDetails(error) }; }
+    catch (error) { return { ...toolErrorDetails(error), device, context, ok: false as const }; }
   });
 }
 
+export async function startJobsMany(client: AgentClient, devices: string[], input: JobStartInput, context: AgentContext | AgentEndpointContext = "system", concurrency?: number) {
+  return startPlannedJobs(client, devices.map(device => ({ device, target: context })), input, concurrency);
+}
+
 export function registerJobTools(server: McpServer, client: AgentClient): void {
-  const startSchema = executionInputSchema({ device: z.string().min(1), command: z.string().min(1), idempotencyKey: z.string().min(1).max(200).optional(), cwd: z.string().optional(), env: z.record(z.string(), z.string()).optional() });
+  const bridge=configuredContextKeepBridge(client);
+  const startSchema = executionInputSchema({ contextKeep:z.object({projectId:z.string().uuid(),taskId:z.string().uuid(),runId:z.string().uuid(),leaseToken:z.string().uuid()}).optional(), device: z.string().min(1), command: z.string().min(1), idempotencyKey: z.string().min(1).max(200).optional(), cwd: z.string().optional(), env: z.record(z.string(), z.string()).optional() });
   server.registerTool("job_start", { description: "Start a durable background job. Optional idempotencyKey prevents repeated starts for identical input; uncertain prior starts are never replayed automatically.", inputSchema: startSchema },
-    async ({ device, context, identity, elevation, ...input }) => withToolErrors(async () => {
+    async ({ device, context, identity, elevation, contextKeep, ...input }) => withToolErrors(async () => {
       const target = resolveExecutionContext(client, device, { context, identity, elevation }, "system");
-      const result = await client.jobStart(device, input, target);
+      if(contextKeep&&!bridge)throw new Error("ContextKeep bridge is not configured; correlated execution was not started.");
+      const result = contextKeep ? await bridge!.start(device,target,input,contextKeep) : await client.jobStart(device, input, target);
       return routedText(result, target);
     }));
   server.registerTool("job_start_many", { description: "Start the same durable background job on multiple devices with bounded parallelism and return per-device success/error results.", inputSchema: executionInputSchema({ devices: z.array(z.string().min(1)).min(1), command: z.string().min(1), idempotencyKey: z.string().min(1).max(200).optional(), cwd: z.string().optional(), env: z.record(z.string(), z.string()).optional(), concurrency: z.number().int().min(1).max(32).optional() }) },
@@ -34,10 +44,15 @@ export function registerJobTools(server: McpServer, client: AgentClient): void {
       // Resolve every target before dispatch so an unavailable device/context
       // cannot leave a partially effected batch behind.
       const planned = devices.map((device) => ({ device, target: resolveExecutionContext(client, device, { context, identity, elevation }, "system") }));
-      const target = planned[0]?.target ?? "system";
-      const results = await startJobsMany(client, devices, input, target, concurrency);
-      const routed = results.map((result) => ({ ...result, identity: executionLabel(target), context: target }));
-      return routedText(results, target, { items: routed, identity: executionLabel(target), context: target });
+      const results = await startPlannedJobs(client, planned, input, concurrency);
+      const routed = results.map((result) => ({ ...result, identity: executionLabel(result.context) }));
+      const target = planned[0]!.target;
+      // A mixed batch has no single truthful route. Keep the legacy array,
+      // publish each resolved route, and retain summary fields only when uniform.
+      const summaryRoute = planned.every(item => item.target === target)
+        ? { identity: executionLabel(target), context: target }
+        : {};
+      return { ...text(results), structuredContent: { items: routed, ...summaryRoute } };
     });
   server.registerTool("job_lineage", { description: "Page the full durable identity-bound process ledger (up to 256 identities per page). Historical evidence, not a live process list; native identity strings are opaque. Status/wait/list only return trackedProcessCount.", inputSchema: executionInputSchema({ device: z.string().min(1), ...jobLineageFields }) },
     async ({ device, context, identity, elevation, ...input }) => {

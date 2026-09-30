@@ -1,3 +1,4 @@
+import { fsReadResultSchema } from "../../../packages/protocol/src/execution.ts";
 import { OperationReceiptError } from "./operation-receipt-error.ts";
 import { validateDirectorySeparation } from "./directory-paths.ts";
 import { toolErrorDetails } from "./tool-errors.ts";
@@ -13,9 +14,17 @@ function text(value: unknown) {
   return { content: [{ type: "text" as const, text: JSON.stringify(value) }] };
 }
 type StatResult = { posixMode?: number | null; size: number; isFile: boolean; isDirectory?: boolean; dev?: number; ino?: number; modifiedAt?: string };
-type ReadResult = { data: string; bytesRead: number };
+function versionedResult(value: unknown, expectedVersion?: string) {
+  const result = fsReadResultSchema.parse(value);
+  if (!result.sourceVersion || result.totalBytes === undefined || result.modifiedAt === undefined || result.posixMode === undefined) throw new Error("Source agent did not return a versioned read receipt; upgrade the source agent");
+  if (expectedVersion !== undefined && result.sourceVersion !== expectedVersion) throw new Error("Source changed during transfer");
+  return result;
+}
+function requireRelaySource(info: Info) {
+  if ((info.runtime?.relaySourceVersion ?? 0) < 1) throw new Error("Source agent lacks generation-bound relay reads. Upgrade the source agent; allowLegacyAgent cannot bypass source consistency. No destination mutation was requested.");
+}
 type ListEntry = { name: string; path: string; type: "directory" | "file" | "symlink" | "other"; size: number; modifiedAt?: string; error?: string };
-type Info = { platform?: string; hostname?: string; runtime?: { transferStagingVersion?: number } };
+type Info = { platform?: string; hostname?: string; runtime?: { transferStagingVersion?: number; relaySourceVersion?: number } };
 type CleanupReceipt = { cleanupPending?: boolean; cleanupPath?: string; cleanupError?: string };
 type MoveResult = { ok?: boolean; error?: string; atomic?: boolean; destinationAtomic?: boolean } & CleanupReceipt;
 const legacyWarning = "Explicit legacy-agent compatibility: destination permissions/ACLs/executable bits are not guaranteed preserved. Upgrade source and destination agents for private metadata-preserving transfers.";
@@ -83,11 +92,11 @@ export function validateDestinationPaths(relativePaths: Array<string | { relativ
 
 export async function transferFile(client: AgentClient, input: {
   sourceDevice: string; sourcePath: string; destinationDevice: string; destinationPath: string; chunkBytes?: number;
-  sourceContext?: AgentContext; destinationContext?: AgentContext; destinationPlatform?: string; destinationSupportsPrivateStage?: boolean; sourceSupportsTransferMetadata?: boolean;
+  sourceContext?: AgentContext; destinationContext?: AgentContext; destinationPlatform?: string; destinationSupportsPrivateStage?: boolean; sourceSupportsTransferMetadata?: boolean; sourceSupportsVersionedRead?: boolean;
   transport?: "relay" | "direct"; timeoutMs?: number; preserveTimestamps?: boolean; allowLegacyAgent?: boolean; signal?: AbortSignal;
 }) {
   const started = performance.now();
-  const { signal: callerSignal, destinationSupportsPrivateStage: _privateStage, sourceSupportsTransferMetadata: _sourceMetadata, ...publicInput } = input;
+  const { signal: callerSignal, destinationSupportsPrivateStage: _privateStage, sourceSupportsTransferMetadata: _sourceMetadata, sourceSupportsVersionedRead: _sourceVersion, ...publicInput } = input;
   const deadline = createDeadline(input.timeoutMs, callerSignal, DEFAULT_TRANSFER_TIMEOUT_MS);
   const signal = deadline.signal;
   const requestOptions = () => deadlineOptions(deadline);
@@ -98,7 +107,7 @@ export async function transferFile(client: AgentClient, input: {
     const [stat, destinationInfo, sourceInfo] = await Promise.all([
       client.fsManage(input.sourceDevice, { operation: "stat", path: input.sourcePath }, sourceContext, requestOptions()) as Promise<StatResult>,
       input.destinationPlatform === undefined || input.destinationSupportsPrivateStage === undefined ? client.info(input.destinationDevice, destinationContext, requestOptions()) as Promise<Info> : Promise.resolve({ platform: input.destinationPlatform, runtime: { transferStagingVersion: input.destinationSupportsPrivateStage ? 1 : 0 } } as Info),
-      input.sourceSupportsTransferMetadata === undefined ? client.info(input.sourceDevice, sourceContext, requestOptions()) as Promise<Info> : Promise.resolve({ runtime: { transferStagingVersion: input.sourceSupportsTransferMetadata ? 1 : 0 } } as Info),
+      input.sourceSupportsTransferMetadata === undefined || input.sourceSupportsVersionedRead === undefined ? client.info(input.sourceDevice, sourceContext, requestOptions()) as Promise<Info> : Promise.resolve({ runtime: { transferStagingVersion: input.sourceSupportsTransferMetadata ? 1 : 0, relaySourceVersion: input.sourceSupportsVersionedRead ? 1 : 0 } } as Info),
     ]);
     if (!stat.isFile) throw new Error(`Source is not a file: ${input.sourcePath}`);
 
@@ -131,6 +140,14 @@ export async function transferFile(client: AgentClient, input: {
       return { ...publicInput, ...result, ...(legacy ? { legacyAgent: true, metadataPreserved: false, compatibilityWarning: legacyWarning } : {}), durationMs: Math.round(performance.now() - started) };
     }
 
+    requireRelaySource(sourceInfo);
+    // Establish one generation and its metadata before any destination mutation.
+    // Each request closes its descriptor; the token carries no persistent handles.
+    const initialResponse = await client.fsRead(input.sourceDevice, { path: input.sourcePath, offset: 0, length: 0, encoding: "base64", versioned: true }, sourceContext, requestOptions());
+    signal?.throwIfAborted();
+    const initial = versionedResult(initialResponse);
+    const sourceVersion = initial.sourceVersion!;
+    Object.assign(stat, { size: initial.totalBytes, modifiedAt: initial.modifiedAt, posixMode: initial.posixMode });
     const chunk = input.chunkBytes ?? 1024 * 1024;
     if (!Number.isSafeInteger(chunk) || chunk <= 0) throw new Error("chunkBytes must be positive");
     const legacyTemporary = (destinationInfo.platform === "win32" ? path.win32 : path.posix).join(
@@ -150,7 +167,10 @@ export async function transferFile(client: AgentClient, input: {
       while (offset < stat.size) {
         signal?.throwIfAborted();
         const length = Math.min(chunk, stat.size - offset);
-        const part = await client.fsRead(input.sourceDevice, { path: input.sourcePath, offset, length, encoding: "base64" }, sourceContext, requestOptions()) as ReadResult;
+        const response = await client.fsRead(input.sourceDevice, { path: input.sourcePath, offset, length, encoding: "base64", expectedVersion: sourceVersion }, sourceContext, requestOptions());
+        signal?.throwIfAborted();
+        const part = versionedResult(response, sourceVersion);
+        if (part.bytesRead > length || Buffer.from(part.data, "base64").length !== part.bytesRead) throw new Error("Invalid versioned source chunk length");
         signal?.throwIfAborted();
         if (part.bytesRead <= 0) throw new Error(`Unexpected EOF at ${offset}/${stat.size}`);
         await client.fsWrite(input.destinationDevice, {
@@ -163,16 +183,18 @@ export async function transferFile(client: AgentClient, input: {
       signal?.throwIfAborted();
       const written = await client.fsManage(input.destinationDevice, { operation: "stat", path: temporaryPath }, destinationContext, requestOptions()) as StatResult;
       if (!written.isFile || written.size !== stat.size) throw new Error(`Transfer verification failed: expected ${stat.size} bytes, got ${written.size}`);
-      const sourceAfter = await client.fsManage(input.sourceDevice, { operation: "stat", path: input.sourcePath }, sourceContext, requestOptions()) as StatResult;
-      if (sourceAfter.size !== stat.size || sourceAfter.modifiedAt !== stat.modifiedAt || sourceAfter.posixMode !== stat.posixMode) throw new Error("Source changed during transfer");
       if (input.preserveTimestamps && stat.modifiedAt) {
         await client.fsManage(input.destinationDevice, { operation: "times", path: temporaryPath, modifiedAt: stat.modifiedAt }, destinationContext, requestOptions());
       }
       signal?.throwIfAborted();
+      // Confirm even empty files and changes after the last chunk, immediately
+      // before requesting destination publication (including timestamp work).
+      versionedResult(await client.fsRead(input.sourceDevice, { path: input.sourcePath, offset: 0, length: 0, encoding: "base64", expectedVersion: sourceVersion }, sourceContext, requestOptions()), sourceVersion);
+      signal?.throwIfAborted();
       const moved = await client.fsManage(input.destinationDevice, modern ? { operation: "transfer-finalize", path: temporaryPath, destination: input.destinationPath, expectedDestination: stage.expectedDestination, expectedBytes: stat.size, sourceMode: stat.posixMode ?? undefined, timeoutMs: deadline.remainingMs() } : { operation: "move", path: temporaryPath, destination: input.destinationPath, force: true }, destinationContext, requestOptions()) as MoveResult;
       if (moved.ok === false) throw new Error(moved.error ?? "Transfer activation failed");
       const destinationAtomic = moved.destinationAtomic ?? moved.atomic ?? false;
-      const receipt = { ...publicInput, ...moved, ...(legacy ? { legacyAgent: true, metadataPreserved: false, compatibilityWarning: legacyWarning } : {}), bytes: offset, chunks, transport: "relay-base64", sameFile: false, atomic: destinationAtomic, destinationAtomic, durationMs: Math.round(performance.now() - started) };
+      const receipt = { ...publicInput, ...moved, ...(legacy ? { legacyAgent: true, metadataPreserved: false, compatibilityWarning: legacyWarning } : {}), bytes: offset, chunks, transport: "relay-base64", sourceVerification: "generation-bound-reads-and-final-confirmation", sourceStableVerified: true, sameFile: false, atomic: destinationAtomic, destinationAtomic, durationMs: Math.round(performance.now() - started) };
       completedReceipt = receipt;
       return receipt;
     } catch (error) { operationError = error; throw error; }
@@ -263,6 +285,7 @@ export async function syncDirectory(client: AgentClient, input: {
   ], destinationInfo.platform);
   requireTransferCapability(destinationInfo, input.allowLegacyAgent);
   requireTransferCapability(sourceInfo, input.allowLegacyAgent, "Source");
+  if (files.length > 0 && input.transport !== "direct") requireRelaySource(sourceInfo);
   phase = "directories";
   const ensureDirectory = async (pathname: string) => {
     mutationAttempted = true;
@@ -302,7 +325,7 @@ export async function syncDirectory(client: AgentClient, input: {
       return outcome;
     }
     const result = await transferFile(client, {
-      sourceDevice: input.sourceDevice, sourcePath: file.source, sourceContext, sourceSupportsTransferMetadata: supportsPrivateStage(sourceInfo),
+      sourceDevice: input.sourceDevice, sourcePath: file.source, sourceContext, sourceSupportsTransferMetadata: supportsPrivateStage(sourceInfo), sourceSupportsVersionedRead: (sourceInfo.runtime?.relaySourceVersion ?? 0) >= 1,
       destinationDevice: input.destinationDevice, destinationPath: destination, destinationContext, destinationPlatform: destinationInfo.platform, destinationSupportsPrivateStage: supportsPrivateStage(destinationInfo), allowLegacyAgent: input.allowLegacyAgent,
       ...(input.chunkBytes === undefined ? {} : { chunkBytes: input.chunkBytes }),
       ...(input.transport === undefined ? {} : { transport: input.transport }),
@@ -364,7 +387,7 @@ export function registerTransferTools(server: McpServer, client: AgentClient): v
       sourceDevice: z.string().min(1), sourcePath: z.string().min(1), sourceContext: z.enum(["system", "user"]).optional(),
       destinationDevice: z.string().min(1), destinationPath: z.string().min(1), destinationContext: z.enum(["system", "user"]).optional(),
       transport: z.enum(["relay", "direct"]).optional(),
-      allowLegacyAgent: z.boolean().optional().describe("Explicitly allow older source or destination agents without private metadata transfer support. Default false; legacy mode does not guarantee permissions/ACL/executable preservation. Modern agents always use the preserving protocol."),
+      allowLegacyAgent: z.boolean().optional().describe("Explicitly allow older source or destination agents without private metadata transfer support. Default false; legacy mode does not guarantee permissions/ACL/executable preservation. Modern agents always use the preserving protocol. Relay sources must support generation-bound reads even in legacy mode."),
       timeoutMs: timeoutMsField.optional(),
       chunkBytes: z.number().int().min(64 * 1024).max(8 * 1024 * 1024).optional(),
       preserveTimestamps: z.boolean().optional(),
@@ -377,7 +400,7 @@ export function registerTransferTools(server: McpServer, client: AgentClient): v
       sourceDevice: z.string().min(1), sourcePath: z.string().min(1), sourceContext: z.enum(["system", "user"]).optional(),
       destinationDevice: z.string().min(1), destinationPath: z.string().min(1), destinationContext: z.enum(["system", "user"]).optional(),
       transport: z.enum(["relay", "direct"]).optional(),
-      allowLegacyAgent: z.boolean().optional().describe("Explicitly allow older source or destination agents without private metadata transfer support. Default false; legacy mode does not guarantee permissions/ACL/executable preservation. Modern agents always use the preserving protocol."),
+      allowLegacyAgent: z.boolean().optional().describe("Explicitly allow older source or destination agents without private metadata transfer support. Default false; legacy mode does not guarantee permissions/ACL/executable preservation. Modern agents always use the preserving protocol. Relay sources must support generation-bound reads even in legacy mode."),
       timeoutMs: timeoutMsField.optional(),
       compare: z.enum(["always", "size-mtime"]).optional(),
       chunkBytes: z.number().int().min(64 * 1024).max(8 * 1024 * 1024).optional(), concurrency: z.number().int().min(1).max(16).optional(), maxFiles: z.number().int().min(1).max(100000).optional(),

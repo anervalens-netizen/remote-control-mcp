@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
@@ -53,10 +53,10 @@ describe.skipIf(process.platform !== "win32")("Windows metadata recovery", () =>
     expect(semantic(after)).toBe(semantic(before));
   });
 
-  it("preserves alternate streams, file attributes and NTFS compression on staged rewrite", async () => {
+  it.each([false, true])("preserves alternate streams, file attributes and NTFS compression on staged rewrite (long=%s)", async longPath => {
     const root = await mkdtemp(path.join(os.tmpdir(), "rcmcp-win-full-meta-"));
     roots.push(root);
-    const file = path.join(root, "full.txt");
+    let file = path.join(root, "full.txt");
     await writeFile(file, "old");
     ps([
       "$p=$env:RCMCP_TEST_PATH",
@@ -67,6 +67,11 @@ describe.skipIf(process.platform !== "win32")("Windows metadata recovery", () =>
       "if($LASTEXITCODE -ne 0){exit $LASTEXITCODE}",
     ].join(";"), { RCMCP_TEST_PATH: file });
 
+    if (longPath) {
+      const directory = path.join(root, "long-segment-".repeat(18)); await mkdir(directory);
+      const extended = path.join(directory, "full.txt"); expect(extended.length).toBeGreaterThan(260);
+      await rename(file, extended); file = extended;
+    }
     const result = await fsWrite({ path: file, data: "new-content" });
     expect(result).toMatchObject({ metadataPreserved: true, metadataStrategy: "windows-full", replacedExisting: true });
 
@@ -75,7 +80,7 @@ describe.skipIf(process.platform !== "win32")("Windows metadata recovery", () =>
       "$attrs=[IO.File]::GetAttributes($p)",
       "$ads=(Get-Content -LiteralPath $p -Stream 'rcmcp.test' -Raw).ToString()",
       "[pscustomobject]@{ads=$ads;hidden=(($attrs -band [IO.FileAttributes]::Hidden) -ne 0);system=(($attrs -band [IO.FileAttributes]::System) -ne 0);compressed=(($attrs -band [IO.FileAttributes]::Compressed) -ne 0)} | ConvertTo-Json -Compress",
-    ].join(";"), { RCMCP_TEST_PATH: file })) as { ads: string; hidden: boolean; system: boolean; compressed: boolean };
+    ].join(";"), { RCMCP_TEST_PATH: path.toNamespacedPath(file) })) as { ads: string; hidden: boolean; system: boolean; compressed: boolean };
     expect(state).toEqual({ ads: "ADS-MARKER", hidden: true, system: true, compressed: true });
   });
 
@@ -92,4 +97,21 @@ describe.skipIf(process.platform !== "win32")("Windows metadata recovery", () =>
     const sparse = ps("$a=[IO.File]::GetAttributes($env:RCMCP_TEST_PATH); (($a -band [IO.FileAttributes]::SparseFile) -ne 0)", { RCMCP_TEST_PATH: file });
     expect(sparse).toBe("True");
   });
+});
+
+
+it.skipIf(process.platform !== "win32")("rewrites hidden sparse files in place without clearing attributes or requiring creation", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "rcmcp-win-hidden-sparse-")); roots.push(root);
+  const file = path.join(root, "hidden.txt"); await writeFile(file, "old payload that must be truncated");
+  ps([
+    "$ErrorActionPreference='Stop'",
+    "& fsutil.exe sparse setflag $env:RCMCP_TEST_PATH | Out-Null",
+    "if($LASTEXITCODE -ne 0){exit $LASTEXITCODE}",
+    "$a=[IO.File]::GetAttributes($env:RCMCP_TEST_PATH)",
+    "[IO.File]::SetAttributes($env:RCMCP_TEST_PATH,$a -bor [IO.FileAttributes]::Hidden -bor [IO.FileAttributes]::System)",
+  ].join(";"), { RCMCP_TEST_PATH: file });
+  expect(await fsWrite({ path: file, data: "new" })).toMatchObject({ atomic: false, metadataStrategy: "direct-existing", metadataPreserved: true });
+  expect(await readFile(file, "utf8")).toBe("new");
+  const attributes = JSON.parse(ps("$a=[IO.File]::GetAttributes($env:RCMCP_TEST_PATH);@{hidden=(($a-band[IO.FileAttributes]::Hidden)-ne 0);system=(($a-band[IO.FileAttributes]::System)-ne 0);sparse=(($a-band[IO.FileAttributes]::SparseFile)-ne 0)}|ConvertTo-Json -Compress", { RCMCP_TEST_PATH: file }));
+  expect(attributes).toEqual({ hidden: true, system: true, sparse: true });
 });

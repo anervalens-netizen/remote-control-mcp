@@ -53,7 +53,7 @@ async function fixture() {
 }
 function client(onWrite?: (pathname: string) => Promise<void>) {
   return {
-    info: async () => ({ platform: process.platform, runtime: { transferStagingVersion: 1 } }),
+    info: async () => ({ platform: process.platform, runtime: { transferStagingVersion: 1, relaySourceVersion: 1 } }),
     fsManage: async (_device: string, input: Parameters<typeof fsManage>[0]) => fsManage(fsManageSchema.parse(input)),
     fsRead: async (_device: string, input: Parameters<typeof fsRead>[0]) => fsRead(input),
     fsWrite: async (_device: string, input: Parameters<typeof fsWrite>[0]) => {
@@ -310,11 +310,17 @@ it.skipIf(process.platform === "win32")("forced regular copy replaces destinatio
 it.each(["direct","relay"])("reports successful publication with pending %s private-stage cleanup", async transport => {
   const {root,source,destination}=await fixture();
   const realRm=fsPromises.rm;
+  let denied=0;
   vi.spyOn(fsPromises,"rm").mockImplementation(async(target,options)=>{
-    if(path.dirname(String(target))===root && String(target)!==destination && String(target)!==source) throw Object.assign(new Error("fixture stage cleanup denied"),{code:"EACCES"});
+    const nativeTarget=path.toNamespacedPath(String(target));
+    if(path.toNamespacedPath(path.dirname(String(target)))===path.toNamespacedPath(root) && nativeTarget!==path.toNamespacedPath(destination) && nativeTarget!==path.toNamespacedPath(source)) {
+      denied++;
+      throw Object.assign(new Error("fixture stage cleanup denied"),{code:"EACCES"});
+    }
     return realRm(target,options);
   });
   const result=await transfer(transport,source,destination);
+  expect(denied).toBeGreaterThan(0);
   expect(result).toMatchObject({ok:true,cleanupPending:true,cleanupError:expect.stringContaining("fixture stage cleanup denied")});
   if (!("cleanupPath" in result)) throw new Error("Missing cleanupPath");
   expect(result.cleanupPath).toBeTruthy();expect(await stat(result.cleanupPath!)).toBeTruthy();
@@ -327,11 +333,11 @@ it.skipIf(process.platform === "win32")("reports retained linked payload until p
   expect(result).toMatchObject({ok:true,cleanupPending:true,cleanupPath:stage.temporaryPath});
   expect(await readFile(destination)).toEqual(await readFile(stage.temporaryPath));
 });
-it("negotiates old agents before creating a directory tree and keeps legacy behavior explicit",async()=>{
+it("negotiates old destinations before creating a directory tree and keeps legacy behavior explicit",async()=>{
   const {root,source}=await fixture();const sourceDir=path.join(root,"source-tree"),destinationDir=path.join(root,"destination-tree");
   await mkdir(sourceDir);await writeFile(path.join(sourceDir,"file"),"content");
   const base=client();let mutations=0;
-  const old={...base,info:async()=>({platform:process.platform}),fsList:async(_device:string,input:{path:string})=>{
+  const old={...base,info:async(device:string)=>device==="a"?base.info():({platform:process.platform}),fsList:async(_device:string,input:{path:string})=>{
     const entries=await readdir(input.path,{withFileTypes:true});return Promise.all(entries.map(async item=>({name:item.name,path:path.join(input.path,item.name),type:item.isDirectory()?"directory":"file",size:(await stat(path.join(input.path,item.name))).size})))
   },fsManage:async(device:string,input:any)=>{
     if(!["stat","times","mkdir","move","copy","delete"].includes(input.operation))throw new Error("legacy invalid operation");
@@ -403,6 +409,11 @@ it.each(["direct", "relay"])("negotiates a legacy source before %s mutation and 
   await expect(transferFile(mixed as any, input)).rejects.toThrow(/Source agent.*allowLegacyAgent=true/);
   expect(mutations).toBe(0); expect(mixed.directTransfer).not.toHaveBeenCalled();
   await expect(stat(destination)).rejects.toMatchObject({ code: "ENOENT" });
+  if (transport === "relay") {
+    await expect(transferFile(mixed as any, { ...input, allowLegacyAgent: true })).rejects.toThrow("generation-bound relay reads");
+    expect(mutations).toBe(0);
+    return;
+  }
   const result = await transferFile(mixed as any, { ...input, allowLegacyAgent: true });
   expect(result).toMatchObject({ legacyAgent: true, metadataPreserved: false, compatibilityWarning: expect.stringContaining("not guaranteed") });
   expect(await readFile(destination)).toEqual(await readFile(source));
@@ -463,7 +474,7 @@ for (const cleanup of ["failed", "timeout"]) {
     const original = kind === "abort" ? new DOMException("fixture caller aborted", "AbortError") : Object.freeze(new Error("fixture frozen error"));
     const failing = {
       ...base,
-      fsRead: async () => { throw original; },
+      fsRead: async (device: string, request: Parameters<typeof fsRead>[0]) => { if (request.length === 0) return client().fsRead(device, request); throw original; },
       fsManage: async (device: string, input: Parameters<typeof fsManage>[0]) => {
         if (input.operation === "delete") {
           if (cleanup === "timeout") return new Promise<never>(() => {});

@@ -199,7 +199,9 @@ describe("filesystem recoverability", () => {
     expect(source).toContain("Copy-RcmcpTreeMetadata");
     expect(source).toContain("[IO.File]::SetCreationTimeUtc");
     expect(source).toContain("[IO.File]::SetLastWriteTimeUtc");
-    expect(source).toContain("compact.exe /C /I /Q");
+    expect(source).toContain("[RcMcpTreeCompression]::Set($d,$sourceCompressed)");
+    expect(source).toContain("0x0009C040u");
+    expect(source).not.toContain("compact.exe /C /I /Q");
     expect(source).not.toContain('metadataStrategy === "windows-acl"');
   });
 

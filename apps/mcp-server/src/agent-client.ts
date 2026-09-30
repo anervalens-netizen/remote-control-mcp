@@ -361,12 +361,12 @@ export class AgentClient {
   startProcess(name: string, input: unknown, context: AgentEndpointContext = "system"): Promise<unknown> { return this.request(name, "/v1/processes/start", input, context); }
   killProcess(name: string, input: unknown, context: AgentEndpointContext = "system"): Promise<unknown> { return this.request(name, "/v1/processes/kill", input, context); }
 
-  jobStart(name: string, input: unknown, context: AgentEndpointContext = "system"): Promise<unknown> { return this.request(name, "/v1/jobs/start", input, context); }
+  jobStart(name: string, input: unknown, context: AgentEndpointContext = "system", options?: AgentRequestOptions): Promise<unknown> { return this.request(name, "/v1/jobs/start", input, context, options); }
   jobFollow(name: string, input: JobFollowInput, context: AgentEndpointContext = "system", signal?: AbortSignal): Promise<unknown> {
     return this.request(name, "/v1/jobs/follow", input, context, { timeoutMs: withTimeoutGrace(input.waitMs ?? 30000), signal });
   }
   deployRun(name: string, input: unknown, context: AgentEndpointContext = "system"): Promise<unknown> { return this.request(name, "/v1/deploy/run", input, context); }
-  jobStatus(name: string, id: string, context: AgentEndpointContext = "system"): Promise<unknown> { return this.request(name, "/v1/jobs/status", { id }, context); }
+  jobStatus(name: string, id: string, context: AgentEndpointContext = "system", options?: AgentRequestOptions): Promise<unknown> { return this.request(name, "/v1/jobs/status", { id }, context, options); }
   jobOutput(name: string, input: unknown, context: AgentEndpointContext = "system"): Promise<unknown> { return this.request(name, "/v1/jobs/output", input, context); }
   jobCancel(name: string, id: string, context: AgentEndpointContext = "system"): Promise<unknown> { return this.request(name, "/v1/jobs/cancel", { id }, context); }
   jobRemove(name: string, input: unknown, context: AgentEndpointContext = "system"): Promise<unknown> { return this.request(name, "/v1/jobs/remove", input, context); }
