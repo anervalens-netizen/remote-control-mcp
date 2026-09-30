@@ -1,3 +1,4 @@
+import { configuredContextKeepBridge,closeContextKeepBridges } from "./contextkeep-bridge.ts";
 import { execFileSync } from 'node:child_process';
 import process from 'node:process';
 import { AgentClient } from './agent-client.ts';
@@ -27,7 +28,9 @@ if (configuredMaxBodyBytes !== null && (!Number.isFinite(configuredMaxBodyBytes)
 const androidConfig = loadAndroidControllerConfig();
 const androidController = androidConfig ? new AndroidController(androidConfig) : undefined;
 if (androidController) await androidController.start();
-const http = createMcpHttpServer(new AgentClient(undefined, undefined, undefined, androidController), {
+const client=new AgentClient(undefined, undefined, undefined, androidController);
+configuredContextKeepBridge(client);
+const http = createMcpHttpServer(client, {
   token: process.env.RCMCP_MCP_TOKEN,
   sha,
   ...(configuredSessionIdleMs === undefined ? {} : { sessionIdleMs: configuredSessionIdleMs }),
@@ -40,6 +43,7 @@ const close = (): Promise<void> => {
     // HTTP/SSE sessions. Even if Android shutdown persistence fails, always
     // close MCP sockets so the signal handler cannot strand the process.
     try {
+      await closeContextKeepBridges();
       await androidController?.close();
     } finally {
       await new Promise<void>((resolve) => {

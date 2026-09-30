@@ -4,6 +4,7 @@ import process from "node:process";
 import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
+import { windowsNativePath } from "./windows-native-path.ts";
 import { atomicWriteJson, ensureStateDir } from "./state.ts";
 
 export type ActivationResult = { atomic: boolean; replacedExisting: boolean; cleanupPending?: boolean; cleanupPath?: string; cleanupError?: string };
@@ -183,7 +184,7 @@ if((Get-AclSignature (Get-Acl -LiteralPath $dest)) -ne (Get-AclSignature $acl)){
       await execFileAsync("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script], {
         windowsHide: true,
         maxBuffer: 1024 * 1024,
-        env: { ...process.env, RCMCP_META_SOURCE: source, RCMCP_META_DEST: destination },
+        env: { ...process.env, RCMCP_META_SOURCE: windowsNativePath(source), RCMCP_META_DEST: windowsNativePath(destination) },
         signal,
       });
       return "windows-full";
@@ -225,7 +226,7 @@ export async function captureWindowsDirectRewriteMetadata(source: string): Promi
   const { stdout } = await execFileAsync("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script], {
     windowsHide: true,
     maxBuffer: 1024 * 1024,
-    env: { ...process.env, RCMCP_META_SOURCE: source },
+    env: { ...process.env, RCMCP_META_SOURCE: windowsNativePath(source) },
   });
   return JSON.parse(stdout.trim()) as WindowsDirectRewriteMetadata;
 }
@@ -258,7 +259,7 @@ if($beforeMutable -ne $afterMutable){ [IO.File]::SetAttributes($target, ($after 
     maxBuffer: 1024 * 1024,
     env: {
       ...process.env,
-      RCMCP_META_DEST: target,
+      RCMCP_META_DEST: windowsNativePath(target),
       RCMCP_META_PROFILE: JSON.stringify(before),
     },
   });
@@ -305,7 +306,7 @@ $pairs | Sort-Object { $_.Source.Length } -Descending | ForEach-Object { Copy-Rc
     await execFileAsync("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script], {
       windowsHide: true,
       maxBuffer: 8 * 1024 * 1024,
-      env: { ...process.env, RCMCP_META_SOURCE: source, RCMCP_META_DEST: destination },
+      env: { ...process.env, RCMCP_META_SOURCE: windowsNativePath(source), RCMCP_META_DEST: windowsNativePath(destination) },
     });
     return "windows-full";
   } catch {
@@ -359,7 +360,7 @@ else { [IO.File]::Move($source,$destination) }`;
     await execFileAsync("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script], {
       windowsHide: true,
       maxBuffer: 1024 * 1024,
-      env: { ...process.env, RCMCP_MOVE_SOURCE: source, RCMCP_MOVE_DEST: destination },
+      env: { ...process.env, RCMCP_MOVE_SOURCE: windowsNativePath(source), RCMCP_MOVE_DEST: windowsNativePath(destination) },
     });
   } catch (error) {
     let sourceStillExists = false;

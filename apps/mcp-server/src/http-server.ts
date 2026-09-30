@@ -1,4 +1,5 @@
 import { agentInstructions } from "./instructions.ts";
+import { contextKeepBridgeDiagnostics } from "./contextkeep-bridge.ts";
 import { randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -148,6 +149,7 @@ export function createMcpHttpServer(client: AgentClient, options: {
           ok: true,
           ready: true,
           service: "remote-control-mcp",
+          contextKeepBridge: contextKeepBridgeDiagnostics(client),
           runtime: {
             instanceId, startedAt, pid: process.pid, sha: options.sha ?? null, node: process.version,
             requestTimeoutMs: client.requestTimeoutMs, maxBodyBytes,

@@ -1,3 +1,4 @@
+import { fileSignature } from "./file-version.ts";
 import { resolveProspectivePath } from "./path-resolution.ts";
 import { beginTransfer, finalizeTransfer } from "./transfer-staging.ts";
 import { copyPath } from "./filesystem-copy.ts";
@@ -12,6 +13,7 @@ const DEFAULT_LINE_COUNT = 1000;
 const READ_CHUNK_BYTES = 64 * 1024;
 
 type FsReadInput = {
+  versioned?: boolean; expectedVersion?: string;
   path: string; offset?: number; length?: number; encoding?: "utf8" | "base64";
   tailBytes?: number; startLine?: number; lineCount?: number; maxBytes?: number;
 };
@@ -181,8 +183,20 @@ export async function fsRead(input: FsReadInput) {
   if (input.tailBytes !== undefined && (input.offset !== undefined || input.length !== undefined || lineMode)) throw new Error("tailBytes cannot be combined with offset/length/line-range options");
   if (lineMode && (input.length !== undefined || input.tailBytes !== undefined)) throw new Error("line-range options cannot be combined with length/tail options");
   if (lineMode && input.encoding === "base64") throw new Error("line-range reads require UTF-8 encoding");
+  const versioned = input.versioned === true || input.expectedVersion !== undefined;
+  if (versioned && (lineMode || input.tailBytes !== undefined)) throw new Error("Versioned reads require byte paging");
   const file = await open(input.path, "r");
   try {
+    const before = versioned ? await file.stat({ bigint: true }) : undefined;
+    if (before && (!before.isFile() || !Number.isSafeInteger(Number(before.size)))) throw new Error("Versioned reads require a regular file with a supported size");
+    const sourceVersion = before ? fileSignature(before) : undefined;
+    const verify = async () => {
+      if (!sourceVersion) return;
+      if ((input.expectedVersion !== undefined && input.expectedVersion !== sourceVersion) ||
+          fileSignature(await file.stat({ bigint: true })) !== sourceVersion ||
+          fileSignature(await stat(input.path, { bigint: true })) !== sourceVersion) throw new Error("Source changed during versioned read");
+    };
+    await verify();
     const info = await file.stat();
     if (info.size === 0 && (lineMode || (input.tailBytes ?? 0) > 0)) {
       const probe = Buffer.alloc(1);
@@ -210,7 +224,9 @@ export async function fsRead(input: FsReadInput) {
       };
     }
     const offset = Math.max(input.offset ?? 0, 0);
-    const knownSize = info.size > 0;
+    // Versioned reads only accept regular files; size zero is authoritative,
+    // unlike virtual streams whose reported size may be zero while readable.
+    const knownSize = versioned || info.size > 0;
     const available = knownSize ? Math.max(0, info.size - offset) : undefined;
     const requested = input.length ?? DEFAULT_READ_BYTES;
     const toRead = available === undefined ? requested : Math.min(requested, available);
@@ -228,7 +244,9 @@ export async function fsRead(input: FsReadInput) {
     const totalBytes = knownSize ? info.size : nextOffset;
     const eof = knownSize ? nextOffset >= info.size : rawBytesRead < toRead;
 
+    await verify();
     return {
+      ...(sourceVersion === undefined ? {} : { sourceVersion, modifiedAt: info.mtime.toISOString(), posixMode: process.platform === "win32" ? null : info.mode & 0o777 }),
       path: input.path, totalBytes, offset, nextOffset, bytesRead: data.length, eof,
       encoding: input.encoding ?? "utf8",
       data: data.toString(input.encoding ?? "utf8"),

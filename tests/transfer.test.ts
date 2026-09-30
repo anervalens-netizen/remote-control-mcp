@@ -11,7 +11,7 @@ afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, { recur
 function localClient(failWriteAt?: number) {
   let writes = 0;
   return {
-    info: async () => ({ platform: process.platform, runtime: { transferStagingVersion: 1 } }),
+    info: async () => ({ platform: process.platform, runtime: { transferStagingVersion: 1, relaySourceVersion: 1 } }),
     fsManage: async (_device: string, input: Parameters<typeof fsManage>[0]) => fsManage(input),
     fsRead: async (_device: string, input: Parameters<typeof fsRead>[0]) => fsRead(input),
     fsWrite: async (_device: string, input: Parameters<typeof fsWrite>[0]) => {
@@ -111,7 +111,7 @@ describe("atomic file transfer", () => {
     let destinationLists = 0;
     let sourceLists = 0;
     const client = {
-      info: async () => ({ platform: process.platform, runtime: { transferStagingVersion: 1 } }),
+      info: async () => ({ platform: process.platform, runtime: { transferStagingVersion: 1, relaySourceVersion: 1 } }),
       fsManage: async (device: string, input: { operation: string }) => {
         if (device === "source" && input.operation === "stat") return { isDirectory: true, size: 0 };
         if (device === "destination") destinationMutations += 1;
@@ -193,7 +193,7 @@ describe("M15 W5 relay cancellation propagation", () => {
     let moves = 0;
     let sawReadSignal = false;
     const client = {
-      info: async () => ({ platform: process.platform, runtime: { transferStagingVersion: 1 } }),
+      info: async () => ({ platform: process.platform, runtime: { transferStagingVersion: 1, relaySourceVersion: 1 } }),
       fsManage: async (device: string, input: { operation: string }) => {
         if (input.operation === "transfer-stage") return { temporaryPath: "/destination/stage/payload", directory: "/destination/stage", expectedDestination: "absent" };
         if (device === "source" && input.operation === "stat") {

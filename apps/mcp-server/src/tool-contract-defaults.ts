@@ -5,6 +5,15 @@ import { toolResultSchemas, type ToolResultName } from "./semantic-result-schema
 
 const installedServers = new WeakSet<object>();
 
+// Hints describe effects; they never authorize or restrict the owner. Do not
+// infer read-only from a name: mixed/action tools deliberately have no default.
+const readOnlyTools = new Set([
+  "devices_list", "device_info", "device_contexts", "fs_read", "fs_list", "batch_read",
+  "job_status", "job_output", "job_output_since", "job_wait", "job_list", "job_lineage",
+  "pty_output", "search_results", "search_status", "service_inspect", "service_logs",
+  "network_snapshot", "android_status",
+]);
+
 export const STRUCTURED_CONTENT_MAX_BYTES = 64 * 1024;
 
 function jsonBytes(value: unknown): number {
@@ -129,7 +138,10 @@ export function installDefaultToolOutputContracts(server: McpServer): void {
         : structuredFromContent((result as any).content);
       return { ...result, structuredContent: compactStructuredContent(structured, STRUCTURED_CONTENT_MAX_BYTES, advertisedSchema) };
     };
-    return original(name, { ...config, outputSchema: advertisedSchema }, wrappedCallback);
+    const annotations = readOnlyTools.has(name)
+      ? { readOnlyHint: true, destructiveHint: false, idempotentHint: true, ...config?.annotations }
+      : config?.annotations;
+    return original(name, { ...config, ...(annotations ? { annotations } : {}), outputSchema: advertisedSchema }, wrappedCallback);
   };
   installedServers.add(server);
 }

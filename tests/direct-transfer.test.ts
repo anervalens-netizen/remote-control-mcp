@@ -112,7 +112,7 @@ it("rejects a source timestamp change and missing binary length before activatio
 
 function localClient() {
   return {
-    info: async () => ({ platform: process.platform, runtime: { transferStagingVersion: 1 } }),
+    info: async () => ({ platform: process.platform, runtime: { transferStagingVersion: 1, relaySourceVersion: 1 } }),
     fsManage: async (_device: string, input: Parameters<typeof fsManage>[0]) => fsManage(input),
     fsList: async (_device: string, input: Parameters<typeof fsList>[0]) => fsList(input),
     fsRead: async (_device: string, input: Parameters<typeof fsRead>[0]) => fsRead(input),

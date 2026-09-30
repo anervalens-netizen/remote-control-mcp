@@ -123,7 +123,7 @@ describe("M16 transport remediation", () => {
     let writes = 0;
     let moves = 0;
     const client = {
-      info: async () => ({ platform: "linux", runtime: { transferStagingVersion: 1 } }),
+      info: async () => ({ platform: "linux", runtime: { transferStagingVersion: 1, relaySourceVersion: 1 } }),
       fsManage: async (_device: string, input: { operation: string }) => {
         if (input.operation === "transfer-stage") return { temporaryPath: "/destination/stage/payload", directory: "/destination/stage", expectedDestination: "absent" };
         if (input.operation === "stat") return { isFile: true, size: 1, modifiedAt: "2026-09-20T00:00:00.000Z" };
@@ -151,7 +151,7 @@ describe("M16 transport remediation", () => {
 
     let destinationMutations = 0;
     const client = {
-      info: async (device: string) => ({ platform: device === "destination" ? "win32" : "linux", runtime: { transferStagingVersion: 1 } }),
+      info: async (device: string) => ({ platform: device === "destination" ? "win32" : "linux", runtime: { transferStagingVersion: 1, relaySourceVersion: 1 } }),
       fsManage: async (device: string, input: { operation: string }) => {
         if (device === "source" && input.operation === "stat") return { isDirectory: true, size: 0 };
         if (device === "destination") destinationMutations += 1;
@@ -206,14 +206,14 @@ describe("M16 transport remediation", () => {
 it("bounds best-effort relay cleanup when the destination is unresponsive", async () => {
   let cleanupSignal: AbortSignal | undefined;
   const client = {
-    info: async () => ({platform:"linux",runtime:{transferStagingVersion:1}}),
+    info: async () => ({platform:"linux",runtime:{transferStagingVersion:1,relaySourceVersion:1}}),
     fsManage: async (_device: string, input: {operation:string}, _context: unknown, options?: {signal?:AbortSignal}) => {
       if(input.operation==="stat")return {isFile:true,size:1,modifiedAt:"2026-09-20T00:00:00.000Z"};
       if(input.operation==="transfer-stage") return {temporaryPath:"/destination/stage/payload",directory:"/destination/stage",expectedDestination:"absent"};
       if(input.operation==="delete") {cleanupSignal=options?.signal; return new Promise(()=>{});}
       throw new Error("unexpected mutation");
     },
-    fsRead: async (_device:string,_input:unknown,_context:unknown,options?:{signal?:AbortSignal}) => new Promise((_resolve,reject)=>options?.signal?.addEventListener("abort",()=>reject(new Error("original read deadline")),{once:true})),
+    fsRead: async (_device:string,_input:{length?:number},_context:unknown,options?:{signal?:AbortSignal}) => _input.length === 0 ? { path: "/source", data: "", encoding: "base64", bytesRead: 0, nextOffset: 0, eof: false, totalBytes: 1, sourceVersion: "1:1:1:0:0", modifiedAt: "2020-01-01T00:00:00.000Z", posixMode: 0o600 } : new Promise((_resolve,reject)=>options?.signal?.addEventListener("abort",()=>reject(new Error("original read deadline")),{once:true})),
   };
   const started=performance.now();
   await expect(transferFile(client as any,{sourceDevice:"source",sourcePath:"/source",destinationDevice:"destination",destinationPath:"/destination",timeoutMs:20})).rejects.toThrow("original read deadline");

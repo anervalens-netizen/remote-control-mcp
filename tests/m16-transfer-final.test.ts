@@ -12,7 +12,7 @@ it.each([undefined, 0])("preserves cancellation and default deadline with an MCP
   let readOptions: { timeoutMs?: number; signal?: AbortSignal } | undefined;
   let writes = 0;
   const client = {
-    info: async () => ({ platform: "linux", runtime: { transferStagingVersion: 1 } }),
+    info: async () => ({ platform: "linux", runtime: { transferStagingVersion: 1, relaySourceVersion: 1 } }),
     fsManage: async (_device: string, input: { operation: string }) => input.operation === "stat" ? { isFile: true, size: 1 } : input.operation === "transfer-stage" ? { temporaryPath: "/destination/stage/payload", directory: "/destination/stage", expectedDestination: "absent" } : { ok: true },
     fsRead: async (_device: string, _input: unknown, _context: unknown, options: typeof readOptions) => {
       readOptions = options;
@@ -36,7 +36,7 @@ it("keeps one default whole-sync deadline across direct files with an MCP signal
   vi.useFakeTimers();
   const budgets: number[] = [];
   const client = {
-    info: async () => ({ platform: "linux", runtime: { transferStagingVersion: 1 } }),
+    info: async () => ({ platform: "linux", runtime: { transferStagingVersion: 1, relaySourceVersion: 1 } }),
     fsManage: async (_device: string, input: { operation: string }) => input.operation === "stat" ? { isDirectory: true, isFile: true, size: 1 } : { ok: true },
     fsList: async () => ["a", "b"].map(name => ({ name, path: `/source/${name}`, type: "file", size: 1 })),
     directTransfer: async (_source: string, _destination: string, input: { timeoutMs: number }, _sc: unknown, _dc: unknown, signal: AbortSignal) => {

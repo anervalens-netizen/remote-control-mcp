@@ -18,7 +18,7 @@ async function fixture(failRead=false,delayFirst=false){
  const root=await mkdtemp(path.join(os.tmpdir(),'sync-receipt-'));cleanups.push(()=>rm(root,{recursive:true,force:true}));
  const source=path.join(root,'source'),destination=path.join(root,'destination');await mkdir(source);await writeFile(path.join(source,'01-good'),'first');await writeFile(path.join(source,'02-fail'),'second');await writeFile(path.join(source,'03-late'),'third');
  const agent=Fastify();registerFilesystemManageRoute(agent);
- agent.get('/v1/info',async()=>({platform:process.platform,hostname:'synthetic-one-host',runtime:{transferStagingVersion:1,pathResolutionVersion:1}}));
+ agent.get('/v1/info',async()=>({platform:process.platform,hostname:'synthetic-one-host',runtime:{transferStagingVersion:1,relaySourceVersion:1,pathResolutionVersion:1}}));
  agent.post('/v1/fs/list',async request=>(await fsList(request.body as {path:string})).sort((a,b)=>a.name.localeCompare(b.name)));
  const reads:string[]=[];
  agent.post('/v1/fs/read',async request=>{const input=request.body as Parameters<typeof fsRead>[0];reads.push(input.path);if(failRead&&input.path.endsWith('02-fail'))throw new Error('injected read failure');if(delayFirst&&input.path.endsWith('01-good'))await new Promise(r=>setTimeout(r,50));return fsRead(input);});

@@ -4,7 +4,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { afterEach, describe, expect, it } from "vitest";
 import type { AgentClient, AgentEndpointContext } from "../apps/mcp-server/src/agent-client.ts";
 import { registerJobTools } from "../apps/mcp-server/src/job-tools.ts";
-import { installDefaultToolOutputContracts } from "../apps/mcp-server/src/tool-contract-defaults.ts";
+import { compactStructuredContent, installDefaultToolOutputContracts } from "../apps/mcp-server/src/tool-contract-defaults.ts";
 import { toolResultSchemas } from "../apps/mcp-server/src/semantic-result-schemas.ts";
 
 const closers: Array<() => Promise<void>> = [];
@@ -109,4 +109,62 @@ describe("M16 contract lane", () => {
     ]);
     expect(result.structuredContent).toMatchObject({ identity: "owner", context: "user", items: [{ device: "pc", identity: "owner", context: "user", ok: true }] });
   });
+});
+
+
+describe("heterogeneous automatic batches", () => {
+  const configuredContexts = (device: string) => ({ system: device !== "owner-only", user: true, desktop: false });
+
+  it.each([["owner-only", "dual"], ["dual", "owner-only"]])("keeps each resolved identity for %s then %s", async (first, second) => {
+    const { client, calls } = fakeClient({ configuredContexts });
+    const mcp = await jobHarness(client);
+    const devices = [first, second];
+    const result = await mcp.callTool({ name: "job_start_many", arguments: { devices, command: "synthetic", concurrency: 1 } });
+    expect(result.isError).not.toBe(true);
+    expect(calls).toEqual(devices.map(device => ({ device, context: device === "owner-only" ? "user" : "system" })));
+    const structured = result.structuredContent as { items: Array<{ device: string; identity: string; context: string }> };
+    expect(structured.items.map(({ device, identity, context }) => ({ device, identity, context }))).toEqual(
+      devices.map(device => ({ device, identity: device === "owner-only" ? "owner" : "root", context: device === "owner-only" ? "user" : "system" })),
+    );
+    expect(structured).not.toHaveProperty("identity");
+    expect(structured).not.toHaveProperty("context");
+  });
+
+  it("retains homogeneous metadata for explicit owner on differently configured devices", async () => {
+    const { client, calls } = fakeClient({ configuredContexts });
+    const mcp = await jobHarness(client);
+    const result = await mcp.callTool({ name: "job_start_many", arguments: { devices: ["owner-only", "dual"], command: "synthetic", identity: "owner", concurrency: 1 } });
+    expect(result.isError).not.toBe(true);
+    expect(calls).toEqual([{ device: "owner-only", context: "user" }, { device: "dual", context: "user" }]);
+    expect(result.structuredContent).toMatchObject({ identity: "owner", context: "user" });
+  });
+
+  it("rejects unavailable explicit root before dispatching even the valid first device", async () => {
+    const { client, calls } = fakeClient({ configuredContexts });
+    const mcp = await jobHarness(client);
+    const result = await mcp.callTool({ name: "job_start_many", arguments: { devices: ["dual", "owner-only"], command: "synthetic", identity: "root" } });
+    expect(result.isError).toBe(true);
+    expect(calls).toEqual([]);
+  });
+});
+
+
+it("rejects empty batches and dishonest summary routing without throwing", () => {
+  const item = { device: "fixture", identity: "owner", context: "user", ok: true, job: { id: "fixture-job", state: "running" } };
+  expect(toolResultSchemas.job_start_many.safeParse({ items: [] }).success).toBe(false);
+  expect(toolResultSchemas.job_start_many.safeParse({ items: [item], identity: "root", context: "system" }).success).toBe(false);
+  expect(toolResultSchemas.job_start_many.safeParse({ items: [{ ...item, identity: "root" }], identity: "root", context: "user" }).success).toBe(false);
+  expect(toolResultSchemas.job_start_many.safeParse({ items: [item] }).success).toBe(true);
+});
+
+it("preserves truthful per-item routing when a large mixed batch is compacted", () => {
+  const items = Array.from({ length: 100 }, (_, index) => ({
+    device: `fixture-${index}`, identity: index === 99 ? "root" : "owner", context: index === 99 ? "system" : "user", ok: true,
+    job: { id: `fixture-job-${index}`, state: "running", detail: "synthetic".repeat(1000) },
+  }));
+  const compacted = compactStructuredContent({ items }, 4096, toolResultSchemas.job_start_many);
+  expect(compacted.structuredContentTruncated).toBe(true);
+  expect(compacted).not.toHaveProperty("identity");
+  expect(compacted).not.toHaveProperty("context");
+  expect(toolResultSchemas.job_start_many.safeParse(compacted).success).toBe(true);
 });

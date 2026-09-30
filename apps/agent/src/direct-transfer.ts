@@ -1,4 +1,4 @@
-import type { BigIntStats } from "node:fs";
+import { fileSignature } from "./file-version.ts";
 import { open, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { createHash } from "node:crypto";
@@ -23,9 +23,6 @@ export type DirectTransferInput = {
 const rawDigestCache = new Map<string, { signature: string; sha256: string; expiresAt: number }>();
 const RAW_DIGEST_CACHE_LIMIT = 128;
 const RAW_DIGEST_CACHE_TTL_MS = 2 * 60 * 60 * 1000 + 60_000;
-function fileSignature(info: BigIntStats): string {
-  return [info.dev, info.ino, info.size, info.mtimeNs, info.ctimeNs].join(":");
-}
 
 export async function openRawFile(pathname: string, options: { metadataOnly?: boolean; signal?: AbortSignal } = {}) {
   const cacheKey = path.resolve(pathname);
