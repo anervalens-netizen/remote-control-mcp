@@ -3,6 +3,7 @@ import { resolveProspectivePath } from "./path-resolution.ts";
 import { beginTransfer, finalizeTransfer } from "./transfer-staging.ts";
 import { copyPath } from "./filesystem-copy.ts";
 import { lstat, mkdir, open, readdir, realpath, rm, stat, utimes } from "node:fs/promises";
+import { constants as fsConstants } from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { utf8LeadingCodePointLength, utf8SafeLength } from "./state.ts";
@@ -362,8 +363,14 @@ export async function fsWrite(input: { path: string; data: string; encoding?: "u
     if (stagedFile) { await stagedFile.close(); stagedFile = undefined; }
 
     if (directFallback && existingEntry?.isFile()) {
-      const direct = await open(input.path, "w");
-      try { await direct.writeFile(data); await direct.sync(); } finally { await direct.close(); }
+      // CREATE_ALWAYS rejects existing hidden/system files on Windows. Open
+      // write-only without creation/truncation, then truncate through that same
+      // handle; this does not add a read-permission requirement or clear flags.
+      const direct = await open(input.path, process.platform === "win32" ? fsConstants.O_WRONLY : "w");
+      try {
+        if (process.platform === "win32") await direct.truncate(0);
+        await direct.writeFile(data); await direct.sync();
+      } finally { await direct.close(); }
       if (windowsDirectMetadata) await restoreWindowsDirectRewriteMetadata(input.path, windowsDirectMetadata);
       const after = await stat(input.path);
       return {

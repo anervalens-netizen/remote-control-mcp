@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdtempSync, rmSync, readdirSync, readFileSync, writeFileSync, symlinkSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, readdirSync, readFileSync, writeFileSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, it, expect, vi, afterEach } from "vitest";
@@ -7,6 +7,17 @@ import { ContextKeepBridge, jobInputHash } from "../apps/mcp-server/src/contextk
 import type { AgentClient } from "../apps/mcp-server/src/agent-client.ts";
 
 const directories: string[] = [], bridges: ContextKeepBridge[] = [];
+const fileSymlinksAvailable = (() => {
+  if (process.platform !== "win32") return true;
+  const directory = mkdtempSync(path.join(tmpdir(), "rc-ck-symlink-capability-"));
+  try {
+    const target = path.join(directory, "target"); writeFileSync(target, "synthetic");
+    symlinkSync(target, path.join(directory, "link")); return true;
+  } catch (error) {
+    if (["EPERM", "EACCES"].includes((error as NodeJS.ErrnoException).code ?? "")) return false;
+    throw error;
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+})();
 afterEach(async () => { await Promise.all(bridges.splice(0).map(b => b.close())); for (const d of directories.splice(0)) rmSync(d, { recursive: true, force: true }); vi.restoreAllMocks(); });
 function fixture() {
   const directory = mkdtempSync(path.join(tmpdir(), "rc-ck-")); directories.push(directory);
@@ -72,7 +83,7 @@ describe("ContextKeep journal and delivery guarantees", () => {
     await f.make().pump(); expect(f.client.jobStart).toHaveBeenCalledTimes(1);
   });
   for (const fault of ["json", "version", "key", "path", "scope", "field", "target", "symlink"]) {
-    it(`never starts or repairs an invalid existing ${fault} journal`, async () => {
+    it.skipIf(fault === "symlink" && !fileSymlinksAvailable)(`never starts or repairs an invalid existing ${fault} journal`, async () => {
       const f = fixture(); const bridge = f.make(); await bridge.start("fixture", "user", f.input, f.work);
       if (fault === "json") writeFileSync(f.journalPath(), "{");
       else if (fault === "symlink") { const file = f.journalPath(); const evidence = path.join(f.directory, "evidence"); writeFileSync(evidence, readFileSync(file)); rmSync(file); symlinkSync(evidence, file); }
@@ -175,4 +186,18 @@ describe("ContextKeep journal and delivery guarantees", () => {
     for (const value of [f.work.leaseToken, f.config.token, f.input.command, f.work.runId, "fixture"]) expect(diagnostic).not.toContain(value);
     expect(b.diagnostics()).toMatchObject({ pendingCount: 1, corruptCount: 0, lastErrorCategories: { cancelled: 1 } });
   });
+});
+
+
+it.skipIf(process.platform !== "win32")("rejects an existing journal junction without following or replacing its evidence", async () => {
+  const f = fixture(); const bridge = f.make(); await bridge.start("fixture", "user", f.input, f.work);
+  const file = f.journalPath(), original = readFileSync(file, "utf8");
+  const evidenceDirectory = path.join(f.directory, "evidence-directory"); mkdirSync(evidenceDirectory);
+  const evidence = path.join(evidenceDirectory, "record.json"); writeFileSync(evidence, original);
+  rmSync(file); symlinkSync(evidenceDirectory, file, "junction");
+  await expect(f.make().start("fixture", "user", f.input, f.work)).rejects.toThrow("job_start_uncertain");
+  await bridge.pump();
+  expect(bridge.diagnostics().corruptCount).toBe(1);
+  expect(readFileSync(evidence, "utf8")).toBe(original);
+  expect(f.client.jobStart).toHaveBeenCalledTimes(1);
 });

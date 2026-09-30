@@ -116,12 +116,30 @@ Add-Type -TypeDefinition @'
 using System;
 using System.ComponentModel;
 using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
 public static class RcMcpFileSecurity {
   [DllImport("advapi32.dll", EntryPoint="SetFileSecurityW", CharSet=CharSet.Unicode, SetLastError=true)]
   private static extern bool SetFileSecurity(string path, uint information, byte[] descriptor);
   public static void Apply(string path, byte[] descriptor, bool protect) {
     uint information=7u | (protect ? 0x80000000u : 0x20000000u);
     if(!SetFileSecurity(path,information,descriptor)) throw new Win32Exception(Marshal.GetLastWin32Error());
+  }
+  [DllImport("kernel32.dll", EntryPoint="CreateFileW", CharSet=CharSet.Unicode, SetLastError=true)]
+  private static extern SafeFileHandle CreateFile(string path, uint access, uint share,
+    IntPtr security, uint disposition, uint flags, IntPtr template);
+  [DllImport("kernel32.dll", SetLastError=true)]
+  private static extern bool DeviceIoControl(SafeFileHandle handle, uint code,
+    ref ushort input, uint inputSize, IntPtr output, uint outputSize,
+    out uint returned, IntPtr overlapped);
+  public static void Compress(string path) {
+    // FSCTL_SET_COMPRESSION uses the native handle, not compact.exe's legacy
+    // drive parser (which rejects extended-length paths even when short).
+    using(SafeFileHandle handle=CreateFile(path,0xC0000000u,7,IntPtr.Zero,3,128,IntPtr.Zero)) {
+      if(handle.IsInvalid) throw new Win32Exception(Marshal.GetLastWin32Error());
+      ushort format=1; uint returned;
+      if(!DeviceIoControl(handle,0x0009C040u,ref format,2,IntPtr.Zero,0,out returned,IntPtr.Zero))
+        throw new Win32Exception(Marshal.GetLastWin32Error());
+    }
   }
 }
 '@
@@ -158,8 +176,7 @@ public static class RcMcpAlternateStreams {
   foreach($stream in $streams){ [RcMcpAlternateStreams]::Copy($source+':'+$stream.Stream,$dest+':'+$stream.Stream) }
 }
 if(($attributes -band [IO.FileAttributes]::Compressed) -ne 0){
-  & compact.exe /C /I /Q $dest | Out-Null
-  if($LASTEXITCODE -ne 0){ exit $LASTEXITCODE }
+  [RcMcpFileSecurity]::Compress($dest)
 }
 [IO.File]::SetCreationTimeUtc($dest,[IO.File]::GetCreationTimeUtc($source))
 [IO.File]::SetLastAccessTimeUtc($dest,[IO.File]::GetLastAccessTimeUtc($source))
