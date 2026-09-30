@@ -30,7 +30,8 @@ export async function beginTransfer(destination: string, signal?: AbortSignal) {
   signal?.throwIfAborted();
   await mkdir(path.dirname(destination), { recursive: true });
   const expectedDestination = await destinationVersion(destination, signal);
-  const directory = await mkdtemp(path.join(path.dirname(destination), ".rcmcp-transfer-"));
+  const prefix = path.join(path.dirname(destination), ".rcmcp-transfer-");
+  const directory = await mkdtemp(process.platform === "win32" ? windowsNativePath(prefix) : prefix);
   try {
     if (process.platform === "win32") {
       // No payload exists until inheritance is disabled and only this identity
