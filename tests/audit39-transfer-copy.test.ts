@@ -310,11 +310,17 @@ it.skipIf(process.platform === "win32")("forced regular copy replaces destinatio
 it.each(["direct","relay"])("reports successful publication with pending %s private-stage cleanup", async transport => {
   const {root,source,destination}=await fixture();
   const realRm=fsPromises.rm;
+  let denied=0;
   vi.spyOn(fsPromises,"rm").mockImplementation(async(target,options)=>{
-    if(path.dirname(String(target))===root && String(target)!==destination && String(target)!==source) throw Object.assign(new Error("fixture stage cleanup denied"),{code:"EACCES"});
+    const nativeTarget=path.toNamespacedPath(String(target));
+    if(path.toNamespacedPath(path.dirname(String(target)))===path.toNamespacedPath(root) && nativeTarget!==path.toNamespacedPath(destination) && nativeTarget!==path.toNamespacedPath(source)) {
+      denied++;
+      throw Object.assign(new Error("fixture stage cleanup denied"),{code:"EACCES"});
+    }
     return realRm(target,options);
   });
   const result=await transfer(transport,source,destination);
+  expect(denied).toBeGreaterThan(0);
   expect(result).toMatchObject({ok:true,cleanupPending:true,cleanupError:expect.stringContaining("fixture stage cleanup denied")});
   if (!("cleanupPath" in result)) throw new Error("Missing cleanupPath");
   expect(result.cleanupPath).toBeTruthy();expect(await stat(result.cleanupPath!)).toBeTruthy();
