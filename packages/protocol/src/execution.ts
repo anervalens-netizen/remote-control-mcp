@@ -37,7 +37,11 @@ export const execResultSchema = z.object({
   terminationReason: z.string().optional(),
 }).passthrough();
 
+export const sourceVersionSchema = z.string().regex(/^\d+:\d+:\d+:-?\d+:-?\d+$/);
+
 export const fsReadFields = {
+  versioned: z.boolean().optional().describe("Verify regular-file identity and nanosecond modification/change times around a byte read. Byte paging only."),
+  expectedVersion: sourceVersionSchema.optional().describe("Require this sourceVersion; implies versioned. A mismatch fails without returning data."),
   path: z.string().min(1),
   offset: z.number().int().nonnegative().optional(),
   length: z.number().int().nonnegative().optional(),
@@ -49,6 +53,9 @@ export const fsReadFields = {
 };
 
 export const fsReadResultSchema = z.object({
+  sourceVersion: sourceVersionSchema.optional(),
+  modifiedAt: z.string().datetime().optional(),
+  posixMode: z.number().int().min(0).max(0o777).nullable().optional(),
   path: z.string(),
   data: z.string(),
   encoding: z.enum(["utf8", "base64"]),

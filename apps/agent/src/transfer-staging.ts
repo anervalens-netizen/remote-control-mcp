@@ -3,12 +3,13 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { link, lstat, mkdir, mkdtemp, open, rename, rm, unlink } from "node:fs/promises";
 import path from "node:path";
+import { windowsNativePath } from "./windows-native-path.ts";
 import { cloneExistingMetadata, syncContainingDirectory } from "./filesystem-atomic.ts";
 
 const execute = promisify(execFile);
 async function powershell(script: string, target: string, signal?: AbortSignal) {
   return execute("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "$ErrorActionPreference='Stop';" + script], {
-    windowsHide: true, signal, env: { ...process.env, RCMCP_TRANSFER_PATH: target }, maxBuffer: 1024 * 1024,
+    windowsHide: true, signal, env: { ...process.env, RCMCP_TRANSFER_PATH: windowsNativePath(target) }, maxBuffer: 1024 * 1024,
   });
 }
 
@@ -29,7 +30,8 @@ export async function beginTransfer(destination: string, signal?: AbortSignal) {
   signal?.throwIfAborted();
   await mkdir(path.dirname(destination), { recursive: true });
   const expectedDestination = await destinationVersion(destination, signal);
-  const directory = await mkdtemp(path.join(path.dirname(destination), ".rcmcp-transfer-"));
+  const prefix = path.join(path.dirname(destination), ".rcmcp-transfer-");
+  const directory = await mkdtemp(process.platform === "win32" ? windowsNativePath(prefix) : prefix);
   try {
     if (process.platform === "win32") {
       // No payload exists until inheritance is disabled and only this identity
@@ -87,7 +89,7 @@ export async function finalizeTransfer(input: {
         await execute("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command",
           "$ErrorActionPreference='Stop';[IO.File]::Move($env:RCMCP_PUBLISH_SOURCE,$env:RCMCP_PUBLISH_DEST)"], {
           windowsHide: true, signal, maxBuffer: 1024 * 1024,
-          env: { ...process.env, RCMCP_PUBLISH_SOURCE: input.path, RCMCP_PUBLISH_DEST: publicationPath },
+          env: { ...process.env, RCMCP_PUBLISH_SOURCE: windowsNativePath(input.path), RCMCP_PUBLISH_DEST: windowsNativePath(publicationPath) },
         });
         metadataPath = publicationPath;
       }
@@ -124,7 +126,7 @@ export async function finalizeTransfer(input: {
         await execute("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command",
           "$ErrorActionPreference='Stop';[IO.File]::Move($env:RCMCP_REPLACE_SOURCE,$env:RCMCP_REPLACE_DEST)"], {
           windowsHide: true, signal, maxBuffer: 1024 * 1024,
-          env: { ...process.env, RCMCP_REPLACE_SOURCE: metadataPath, RCMCP_REPLACE_DEST: input.destination },
+          env: { ...process.env, RCMCP_REPLACE_SOURCE: windowsNativePath(metadataPath), RCMCP_REPLACE_DEST: windowsNativePath(input.destination) },
         });
       }
     } else if (!before) {

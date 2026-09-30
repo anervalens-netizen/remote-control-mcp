@@ -22,7 +22,9 @@ env:
 
 jobs:
   check:
-    runs-on: ${{ (github.event_name == 'pull_request' || vars.CI_EXECUTOR != 'gaming') && 'ubuntu-latest' || fromJSON('["self-hosted","Linux","X64","gaming-ci","remote-control-mcp"]') }}
+    # Public workflow edits must never gain access to a personal-network runner.
+    # Owner-native qualification is executed separately through the private control plane.
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7

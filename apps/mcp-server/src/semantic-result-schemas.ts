@@ -147,7 +147,18 @@ export const toolResultSchemas = {
   host_power: z.object({ context: z.enum(["system", "user"]), ok: z.literal(true), scheduled: z.boolean(), submissionVerified: z.boolean().optional(), powerStateVerified: z.boolean(), dryRun: z.boolean().optional() }).passthrough().refine((value) => value.dryRun === true || value.submissionVerified === true, "power result must report submission or dry-run state"),
   wake_on_lan: z.object({ sent: z.boolean(), wakeVerified: z.boolean(), mac: z.string(), broadcast: z.string(), port: z.number().int().positive() }).passthrough(),
   job_start: z.object({ ...jobSummary.shape, ...route }).passthrough(),
-  job_start_many: z.object({ items: z.array(jobManyItem), ...route }).passthrough(),
+  job_start_many: z.object({ items: z.array(jobManyItem).min(1), identity: identity.optional(), context: context.optional() }).passthrough().superRefine((value, ctx) => {
+    // Summary routing is optional: compaction may retain a uniform subset of
+    // an originally mixed batch. Any summary that is present must be truthful.
+    const hasSummary = value.context !== undefined || value.identity !== undefined;
+    if (hasSummary && (!value.context || !value.identity || !value.items.every(item => item.context === value.context && item.identity === value.identity))) {
+      ctx.addIssue({ code: "custom", message: "Batch summary routing must match every retained item, or be absent" });
+    }
+    const labels = { user: "owner", system: "root", desktop: "interactive" } as const;
+    for (const [index, item] of value.items.entries()) {
+      if (item.identity !== labels[item.context]) ctx.addIssue({ code: "custom", path: ["items", index, "identity"], message: "Identity must match the resolved context" });
+    }
+  }),
   job_status: z.object({ ...jobSummary.shape, ...route }).passthrough(),
   job_output: jobOutput,
   job_wait: jobFollow,

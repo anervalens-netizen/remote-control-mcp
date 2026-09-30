@@ -4,6 +4,7 @@ import process from "node:process";
 import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
+import { windowsNativePath, windowsRobocopyPath } from "./windows-native-path.ts";
 import { atomicWriteJson, ensureStateDir } from "./state.ts";
 
 export type ActivationResult = { atomic: boolean; replacedExisting: boolean; cleanupPending?: boolean; cleanupPath?: string; cleanupError?: string };
@@ -115,12 +116,30 @@ Add-Type -TypeDefinition @'
 using System;
 using System.ComponentModel;
 using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
 public static class RcMcpFileSecurity {
   [DllImport("advapi32.dll", EntryPoint="SetFileSecurityW", CharSet=CharSet.Unicode, SetLastError=true)]
   private static extern bool SetFileSecurity(string path, uint information, byte[] descriptor);
   public static void Apply(string path, byte[] descriptor, bool protect) {
     uint information=7u | (protect ? 0x80000000u : 0x20000000u);
     if(!SetFileSecurity(path,information,descriptor)) throw new Win32Exception(Marshal.GetLastWin32Error());
+  }
+  [DllImport("kernel32.dll", EntryPoint="CreateFileW", CharSet=CharSet.Unicode, SetLastError=true)]
+  private static extern SafeFileHandle CreateFile(string path, uint access, uint share,
+    IntPtr security, uint disposition, uint flags, IntPtr template);
+  [DllImport("kernel32.dll", SetLastError=true)]
+  private static extern bool DeviceIoControl(SafeFileHandle handle, uint code,
+    ref ushort input, uint inputSize, IntPtr output, uint outputSize,
+    out uint returned, IntPtr overlapped);
+  public static void Compress(string path) {
+    // FSCTL_SET_COMPRESSION uses the native handle, not compact.exe's legacy
+    // drive parser (which rejects extended-length paths even when short).
+    using(SafeFileHandle handle=CreateFile(path,0xC0000000u,7,IntPtr.Zero,3,128,IntPtr.Zero)) {
+      if(handle.IsInvalid) throw new Win32Exception(Marshal.GetLastWin32Error());
+      ushort format=1; uint returned;
+      if(!DeviceIoControl(handle,0x0009C040u,ref format,2,IntPtr.Zero,0,out returned,IntPtr.Zero))
+        throw new Win32Exception(Marshal.GetLastWin32Error());
+    }
   }
 }
 '@
@@ -157,8 +176,7 @@ public static class RcMcpAlternateStreams {
   foreach($stream in $streams){ [RcMcpAlternateStreams]::Copy($source+':'+$stream.Stream,$dest+':'+$stream.Stream) }
 }
 if(($attributes -band [IO.FileAttributes]::Compressed) -ne 0){
-  & compact.exe /C /I /Q $dest | Out-Null
-  if($LASTEXITCODE -ne 0){ exit $LASTEXITCODE }
+  [RcMcpFileSecurity]::Compress($dest)
 }
 [IO.File]::SetCreationTimeUtc($dest,[IO.File]::GetCreationTimeUtc($source))
 [IO.File]::SetLastAccessTimeUtc($dest,[IO.File]::GetLastAccessTimeUtc($source))
@@ -183,7 +201,7 @@ if((Get-AclSignature (Get-Acl -LiteralPath $dest)) -ne (Get-AclSignature $acl)){
       await execFileAsync("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script], {
         windowsHide: true,
         maxBuffer: 1024 * 1024,
-        env: { ...process.env, RCMCP_META_SOURCE: source, RCMCP_META_DEST: destination },
+        env: { ...process.env, RCMCP_META_SOURCE: windowsNativePath(source), RCMCP_META_DEST: windowsNativePath(destination) },
         signal,
       });
       return "windows-full";
@@ -225,7 +243,7 @@ export async function captureWindowsDirectRewriteMetadata(source: string): Promi
   const { stdout } = await execFileAsync("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script], {
     windowsHide: true,
     maxBuffer: 1024 * 1024,
-    env: { ...process.env, RCMCP_META_SOURCE: source },
+    env: { ...process.env, RCMCP_META_SOURCE: windowsNativePath(source) },
   });
   return JSON.parse(stdout.trim()) as WindowsDirectRewriteMetadata;
 }
@@ -258,7 +276,7 @@ if($beforeMutable -ne $afterMutable){ [IO.File]::SetAttributes($target, ($after 
     maxBuffer: 1024 * 1024,
     env: {
       ...process.env,
-      RCMCP_META_DEST: target,
+      RCMCP_META_DEST: windowsNativePath(target),
       RCMCP_META_PROFILE: JSON.stringify(before),
     },
   });
@@ -270,7 +288,32 @@ async function cloneWindowsTreeMetadata(source: string, destination: string): Pr
     const script = `$ErrorActionPreference='Stop'
 $source=$env:RCMCP_META_SOURCE
 $dest=$env:RCMCP_META_DEST
-& robocopy.exe $source $dest /E /COPY:DAT /DCOPY:DAT /SL /SJ /R:0 /W:0 /NFL /NDL /NJH /NJS /NP | Out-Null
+Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
+public static class RcMcpTreeCompression {
+  [DllImport("kernel32.dll", EntryPoint="CreateFileW", CharSet=CharSet.Unicode, SetLastError=true)]
+  private static extern SafeFileHandle CreateFile(string path, uint access, uint share,
+    IntPtr security, uint disposition, uint flags, IntPtr template);
+  [DllImport("kernel32.dll", SetLastError=true)]
+  private static extern bool DeviceIoControl(SafeFileHandle handle, uint code,
+    ref ushort input, uint inputSize, IntPtr output, uint outputSize,
+    out uint returned, IntPtr overlapped);
+  public static void Set(string path, bool compressed) {
+    // BACKUP_SEMANTICS opens directories as well as files. OPEN_REPARSE_POINT
+    // avoids redirecting a compression operation through a filesystem link.
+    using(SafeFileHandle handle=CreateFile(path,0xC0000000u,7,IntPtr.Zero,3,0x02200080u,IntPtr.Zero)) {
+      if(handle.IsInvalid) throw new Win32Exception(Marshal.GetLastWin32Error());
+      ushort format=compressed ? (ushort)1 : (ushort)0; uint returned;
+      if(!DeviceIoControl(handle,0x0009C040u,ref format,2,IntPtr.Zero,0,out returned,IntPtr.Zero))
+        throw new Win32Exception(Marshal.GetLastWin32Error());
+    }
+  }
+}
+'@
+& robocopy.exe $env:RCMCP_COPY_SOURCE $env:RCMCP_COPY_DEST /E /COPY:DAT /DCOPY:DAT /SL /SJ /R:0 /W:0 /NFL /NDL /NJH /NJS /NP | Out-Null
 $robocopyCode=$LASTEXITCODE
 if($robocopyCode -gt 7){ throw "robocopy metadata copy failed with code $robocopyCode" }
 
@@ -285,13 +328,19 @@ function Copy-RcmcpTreeMetadata([string]$s,[string]$d){
   $sourceCompressed=(($attrs -band [IO.FileAttributes]::Compressed) -ne 0)
   $destCompressed=(($destAttrs -band [IO.FileAttributes]::Compressed) -ne 0)
   if($sourceCompressed -ne $destCompressed){
-    if($sourceCompressed){ & compact.exe /C /I /Q $d | Out-Null }
-    else { & compact.exe /U /I /Q $d | Out-Null }
-    if($LASTEXITCODE -ne 0){ throw "compact metadata copy failed on $d" }
+    [RcMcpTreeCompression]::Set($d,$sourceCompressed)
+    $actualCompressed=(([IO.File]::GetAttributes($d) -band [IO.FileAttributes]::Compressed) -ne 0)
+    if($actualCompressed -ne $sourceCompressed){ throw "Compression metadata differs after native copy" }
   }
-  [IO.File]::SetCreationTimeUtc($d,[IO.File]::GetCreationTimeUtc($s))
-  [IO.File]::SetLastAccessTimeUtc($d,[IO.File]::GetLastAccessTimeUtc($s))
-  [IO.File]::SetLastWriteTimeUtc($d,[IO.File]::GetLastWriteTimeUtc($s))
+  if(($attrs -band [IO.FileAttributes]::Directory) -ne 0){
+    [IO.Directory]::SetCreationTimeUtc($d,[IO.Directory]::GetCreationTimeUtc($s))
+    [IO.Directory]::SetLastAccessTimeUtc($d,[IO.Directory]::GetLastAccessTimeUtc($s))
+    [IO.Directory]::SetLastWriteTimeUtc($d,[IO.Directory]::GetLastWriteTimeUtc($s))
+  } else {
+    [IO.File]::SetCreationTimeUtc($d,[IO.File]::GetCreationTimeUtc($s))
+    [IO.File]::SetLastAccessTimeUtc($d,[IO.File]::GetLastAccessTimeUtc($s))
+    [IO.File]::SetLastWriteTimeUtc($d,[IO.File]::GetLastWriteTimeUtc($s))
+  }
   [IO.File]::SetAttributes($d,$attrs)
 }
 
@@ -299,16 +348,20 @@ $pairs=New-Object System.Collections.Generic.List[object]
 $pairs.Add([pscustomobject]@{Source=$source;Dest=$dest})
 Get-ChildItem -LiteralPath $source -Force -Recurse | ForEach-Object {
   $relative=$_.FullName.Substring($source.Length).TrimStart('\\')
-  $pairs.Add([pscustomobject]@{Source=$_.FullName;Dest=(Join-Path $dest $relative)})
+  $pairs.Add([pscustomobject]@{Source=$_.FullName;Dest=([IO.Path]::Combine($dest,$relative))})
 }
 $pairs | Sort-Object { $_.Source.Length } -Descending | ForEach-Object { Copy-RcmcpTreeMetadata $_.Source $_.Dest }`;
     await execFileAsync("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script], {
       windowsHide: true,
       maxBuffer: 8 * 1024 * 1024,
-      env: { ...process.env, RCMCP_META_SOURCE: source, RCMCP_META_DEST: destination },
+      env: { ...process.env, RCMCP_META_SOURCE: windowsNativePath(source), RCMCP_META_DEST: windowsNativePath(destination), RCMCP_COPY_SOURCE: windowsRobocopyPath(source), RCMCP_COPY_DEST: windowsRobocopyPath(destination) },
     });
     return "windows-full";
-  } catch {
+  } catch (error) {
+    if (process.env.RCMCP_METADATA_DIAGNOSTICS === "1") {
+      const detail = error as Error & { stderr?: string };
+      console.error("Windows tree metadata clone:", (detail.stderr || detail.message).slice(0, 1500));
+    }
     return "none";
   }
 }
@@ -359,7 +412,7 @@ else { [IO.File]::Move($source,$destination) }`;
     await execFileAsync("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script], {
       windowsHide: true,
       maxBuffer: 1024 * 1024,
-      env: { ...process.env, RCMCP_MOVE_SOURCE: source, RCMCP_MOVE_DEST: destination },
+      env: { ...process.env, RCMCP_MOVE_SOURCE: windowsNativePath(source), RCMCP_MOVE_DEST: windowsNativePath(destination) },
     });
   } catch (error) {
     let sourceStillExists = false;

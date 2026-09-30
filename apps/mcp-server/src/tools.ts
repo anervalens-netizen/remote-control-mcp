@@ -1,7 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { AgentClient } from "./agent-client.ts";
-import { execRequestFields, execResultSchema, executionRouteFields } from "../../../packages/protocol/src/execution.ts";
+import { execRequestFields, execResultSchema, executionRouteFields, fsReadFields } from "../../../packages/protocol/src/execution.ts";
 import { elevationSchema, executionInputSchema, executionLabel, identitySchema, legacyContextSchema, resolveExecutionContext } from "./execution-identity.ts";
 
 function text(value: unknown) {
@@ -49,11 +49,7 @@ export function registerTools(server: McpServer, client: AgentClient): void {
   server.registerTool("fs_read", {
     description: "Read file bytes as UTF-8/base64 using byte paging, bounded tail reads or bounded 1-based line ranges.",
     inputSchema: {
-      device: z.string().min(1), path: z.string().min(1), ...targetFields,
-      offset: z.number().int().nonnegative().optional(), length: z.number().int().nonnegative().optional(),
-      encoding: z.enum(["utf8", "base64"]).optional(), tailBytes: z.number().int().nonnegative().max(64 * 1024 * 1024).optional(),
-      startLine: z.number().int().positive().optional(), lineCount: z.number().int().positive().max(100_000).optional(),
-      maxBytes: z.number().int().positive().max(64 * 1024 * 1024).optional(),
+      device: z.string().min(1), ...fsReadFields, ...targetFields,
     },
   }, async ({ device, context, identity, elevation, ...input }) => {
     const target = resolveExecutionContext(client, device, { context, identity, elevation }, "system");

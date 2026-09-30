@@ -3,6 +3,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { AgentClient } from "./agent-client.ts";
 import { registerTools } from "./all-tools.ts";
+import { closeContextKeepBridges } from "./contextkeep-bridge.ts";
 
 // Stdio servers are spawned per MCP client. They must never own the singleton
 // phone-facing Android listener from RCMCP_ANDROID_CONFIG; the persistent HTTP
@@ -19,7 +20,8 @@ let closing = false;
 async function close() {
   if (closing) return;
   closing = true;
-  await server.close();
+  try { await closeContextKeepBridges(); }
+  finally { await server.close(); }
 }
 process.once("SIGINT", () => { void close(); });
 process.once("SIGTERM", () => { void close(); });
