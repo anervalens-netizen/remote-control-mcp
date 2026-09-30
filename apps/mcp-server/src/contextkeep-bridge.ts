@@ -12,6 +12,7 @@ type Config = { directory: string; url: string; token: string };
 type Caller = (name: string, args: Record<string, unknown>, signal?: AbortSignal) => Promise<unknown>;
 type Pending = Pick<Entry, "state" | "createdAt" | "nextAttemptAt" | "lastError"> & {
   saveRetry?: { attempts: number; at: number };
+  runLookupOffset?: number;
 };
 const reconciliationInterval = 60_000;
 const retryDelay = (attempts: number) => Math.min(300_000, 1000 * 2 ** Math.min(attempts, 9));
@@ -84,6 +85,7 @@ export class ContextKeepBridge {
     else this.pending.set(entry.key, {
       state: entry.state, createdAt: entry.createdAt, nextAttemptAt: entry.nextAttemptAt, lastError: entry.lastError,
       saveRetry: saved ? undefined : this.pending.get(entry.key)?.saveRetry,
+      runLookupOffset: this.pending.get(entry.key)?.runLookupOffset,
     });
   }
   private read(key: string) {
@@ -155,8 +157,11 @@ export class ContextKeepBridge {
     return result;
   }
   private async taskRun(entry: Entry, signal: AbortSignal): Promise<Record<string, unknown>> {
-    // Bounded pagination; records and runs share nextOffset, so use totalRuns.
-    for (let offset = 0; offset < 500; offset += 50) {
+    // Bound one attempt, not the entire task's searchable history. Keep the
+    // cursor only with unresolved in-memory work; restart safely rescans from 0
+    // without changing durable reservation or acknowledgement contracts.
+    const startOffset = this.pending.get(entry.key)?.runLookupOffset ?? 0;
+    for (let page = 0, offset = startOffset; page < 10; page++, offset += 50) {
       const view = await bounded(() => this.call("get_task", { projectId: entry.correlation.projectId, taskId: entry.correlation.taskId, offset, limit: 50 }, signal), signal);
       // publicRun carries explicit project/task scope; do not depend on the
       // separate task dossier's internal record representation for correlation.
@@ -165,8 +170,15 @@ export class ContextKeepBridge {
           view.pagination.offset !== offset || view.pagination.limit !== 50) throw new BridgeError("invalid_response");
       const matches = view.runs.filter(run => object(run) && run.id === entry.correlation.runId);
       if (matches.length > 1) throw new BridgeError("invalid_response");
-      if (matches.length === 1) return checkRun(matches[0], entry);
-      if (offset + 50 >= Number(view.pagination.totalRuns)) break;
+      const pending = this.pending.get(entry.key);
+      if (matches.length === 1) {
+        const run = checkRun(matches[0], entry);
+        if (pending) pending.runLookupOffset = 0;
+        return run;
+      }
+      const exhausted = offset + 50 >= Number(view.pagination.totalRuns);
+      if (pending) pending.runLookupOffset = exhausted ? 0 : offset + 50;
+      if (exhausted) break;
     }
     throw new BridgeError("proof_missing");
   }
@@ -194,7 +206,7 @@ export class ContextKeepBridge {
     if (this.reconcile(entry, remote)) return;
     if (!entry.observed) {
       let status: unknown;
-      try { status = await bounded(() => this.client.jobStatus(entry.device, entry.jobId!, entry.target), signal); }
+      try { status = await bounded(() => this.client.jobStatus(entry.device, entry.jobId!, entry.target, { signal }), signal); }
       catch { throw new BridgeError(signal.aborted ? "cancelled" : "executor"); }
       if (!object(status) || status.id !== entry.jobId || typeof status.state !== "string") throw new BridgeError("executor");
       if (!["completed", "cancelled", "lost"].includes(status.state)) {
