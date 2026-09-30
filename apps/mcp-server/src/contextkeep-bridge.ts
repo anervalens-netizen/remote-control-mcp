@@ -10,10 +10,20 @@ export type { WorkCorrelation } from "./contextkeep-journal.ts";
 
 type Config = { directory: string; url: string; token: string };
 type Caller = (name: string, args: Record<string, unknown>, signal?: AbortSignal) => Promise<unknown>;
+type Pending = Pick<Entry, "state" | "createdAt" | "nextAttemptAt" | "lastError"> & {
+  saveRetry?: { attempts: number; at: number };
+};
+const reconciliationInterval = 60_000;
+const retryDelay = (attempts: number) => Math.min(300_000, 1000 * 2 ** Math.min(attempts, 9));
 const terminal = new Set(["completed", "failed", "cancelled", "lost"]);
 const uncertain = () => new Error("job_start_uncertain: retained reservation requires inspection; automatic replay is disabled.");
 export function jobInputHash(input: { command: string; cwd?: string; env?: Record<string, string> }) {
-  return createHash("sha256").update(JSON.stringify({ command: input.command, cwd: input.cwd ?? null, env: Object.fromEntries(Object.entries(input.env ?? {}).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)) })).digest("hex");
+  // Construct the canonical object text directly: integer-like object keys
+  // are reordered by JSON.stringify even after Object.fromEntries(sorted).
+  const entries = Object.entries(input.env ?? {}).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0);
+  const environment = entries.map(([key, value]) => `${JSON.stringify(key)}:${JSON.stringify(value)}`).join(",");
+  const canonical = `{"command":${JSON.stringify(input.command)},"cwd":${JSON.stringify(input.cwd ?? null)},"env":{${environment}}}`;
+  return createHash("sha256").update(canonical).digest("hex");
 }
 function checkRun(value: unknown, entry: Entry): Record<string, unknown> {
   if (!object(value) || value.id !== entry.correlation.runId || value.projectId !== entry.correlation.projectId ||
@@ -49,6 +59,10 @@ export class ContextKeepBridge {
   private readonly call: Caller;
   private readonly client: AgentClient;
   private readonly config: Config;
+  private readonly pending = new Map<string, Pending>();
+  private readonly corrupt = new Set<string>();
+  private nextReconciliationAt = 0;
+  private journalError = false;
   constructor(client: AgentClient, config: Config, call?: Caller) {
     this.client = client; this.config = config;
     if (!path.isAbsolute(config.directory)) throw new Error("Bridge directory must be absolute.");
@@ -61,8 +75,46 @@ export class ContextKeepBridge {
   private save(entry: Entry, create = false) {
     try { saveEntry(this.config.directory, entry, create); }
     catch (error) { if (create) throw error; throw new BridgeError("journal"); }
+    this.index(entry, true);
   }
   private keys() { return readdirSync(this.config.directory).filter(f => /^[a-f0-9]{64}\.json$/.test(f)).sort().map(f => f.slice(0, -5)); }
+  private index(entry: Entry, saved = false) {
+    this.corrupt.delete(entry.key);
+    if (entry.state === "delivered") this.pending.delete(entry.key);
+    else this.pending.set(entry.key, {
+      state: entry.state, createdAt: entry.createdAt, nextAttemptAt: entry.nextAttemptAt, lastError: entry.lastError,
+      saveRetry: saved ? undefined : this.pending.get(entry.key)?.saveRetry,
+    });
+  }
+  private read(key: string) {
+    try {
+      const entry = readEntry(this.config.directory, key);
+      this.index(entry);
+      return entry;
+    } catch (error) {
+      this.pending.delete(key); this.corrupt.add(key);
+      throw error;
+    }
+  }
+  private refreshIndex() {
+    if (Date.now() < this.nextReconciliationAt) return;
+    // Bootstrap, then reconcile on the next pump/diagnostic call 60s after
+    // the previous scan finishes (even a slow or failed scan).
+    // External additions, repairs and removals become visible without watchers
+    // or retaining metadata for every permanent delivered tombstone. Local
+    // successful writes and strict reads update diagnostics immediately.
+    try {
+      const keys = this.keys();
+      this.journalError = false;
+      const missing = new Set([...this.pending.keys(), ...this.corrupt]);
+      for (const key of keys) {
+        missing.delete(key);
+        try { this.read(key); } catch { /* Keep corrupt evidence isolated. */ }
+      }
+      for (const key of missing) { this.pending.delete(key); this.corrupt.delete(key); }
+    } catch { this.journalError = true; }
+    finally { this.nextReconciliationAt = Date.now() + reconciliationInterval; }
+  }
   start(device: string, target: AgentEndpointContext, input: { command: string; cwd?: string; env?: Record<string, string>; idempotencyKey?: string }, correlation: WorkCorrelation) {
     const pending = this.startOnce(device, target, input, correlation);
     this.starting.add(pending);
@@ -82,7 +134,7 @@ export class ContextKeepBridge {
     catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw uncertain();
       let prior: Entry;
-      try { prior = readEntry(this.config.directory, key); } catch { throw uncertain(); }
+      try { prior = this.read(key); } catch { throw uncertain(); }
       if (prior.device !== device || prior.target !== target) throw uncertain();
       if (prior.hash !== hash || Object.keys(correlation).some(k => prior.correlation[k as keyof WorkCorrelation] !== correlation[k as keyof WorkCorrelation])) throw new Error("contextkeep_job_conflict");
       if (!prior.jobId) throw uncertain();
@@ -186,9 +238,12 @@ export class ContextKeepBridge {
     return true;
   }
   private async process(key: string) {
+    const scheduled = this.pending.get(key);
+    if (!scheduled || scheduled.state !== "tracking" || Math.max(scheduled.nextAttemptAt, scheduled.saveRetry?.at ?? 0) > Date.now()) return;
     let entry: Entry;
-    try { entry = readEntry(this.config.directory, key); } catch { return; } // Preserve corrupt evidence, isolate the next record.
+    try { entry = this.read(key); } catch { return; } // Strict disk read before acting, never cached ACK proof.
     if (entry.state !== "tracking" || entry.nextAttemptAt > Date.now() || this.shutdown.signal.aborted) return;
+    entry.attempts = Math.max(entry.attempts, scheduled.saveRetry?.attempts ?? 0);
     const deadline = new AbortController();
     const timer = setTimeout(() => deadline.abort(), 30_000);
     const signal = AbortSignal.any([this.shutdown.signal, deadline.signal]);
@@ -198,15 +253,25 @@ export class ContextKeepBridge {
     } catch (error) {
       entry.attempts = Math.min(30, entry.attempts + 1);
       entry.lastError = deadline.signal.aborted ? "timeout" : categoryOf(error);
-      entry.nextAttemptAt = Date.now() + Math.min(300_000, 1000 * 2 ** Math.min(entry.attempts, 9));
+      entry.nextAttemptAt = Date.now() + retryDelay(entry.attempts);
     } finally { clearTimeout(timer); }
-    try { this.save(entry); } catch { /* Retain the last durable stage, never replay a start. */ }
+    try { this.save(entry); } catch {
+      // A failed save cannot evict pending work or promote in-memory ACKs.
+      // Retain the last durable stage and back off even if the retry deadline
+      // itself could not be persisted. Reconciliation must retain this delay.
+      const retained = this.pending.get(key);
+      if (retained) {
+        const attempts = Math.min(30, Math.max(entry.attempts, (scheduled.saveRetry?.attempts ?? 0) + 1));
+        retained.saveRetry = { attempts, at: Date.now() + retryDelay(attempts) };
+      }
+    }
   }
   pump(): Promise<void> {
     if (this.shutdown.signal.aborted) return Promise.resolve();
     if (this.busy) return this.busy;
     this.busy = (async () => {
-      const keys = this.keys(); let next = 0;
+      this.refreshIndex();
+      const keys = [...this.pending.keys()]; let next = 0;
       // Slow/corrupt entries cannot serially starve healthy receipts.
       await Promise.all(Array.from({ length: Math.min(4, keys.length) }, async () => {
         while (!this.shutdown.signal.aborted) {
@@ -218,20 +283,16 @@ export class ContextKeepBridge {
     return this.busy;
   }
   diagnostics() {
-    let pendingCount = 0, corruptCount = 0, oldestPendingMs = 0;
+    this.refreshIndex();
+    let oldestPendingMs = 0;
     const lastErrorCategories: Partial<Record<ErrorCategory, number>> = {};
-    try {
-      for (const key of this.keys()) {
-        try {
-          const entry = readEntry(this.config.directory, key);
-          if (entry.state === "delivered") continue;
-          pendingCount++;
-          oldestPendingMs = Math.max(oldestPendingMs, Date.now() - entry.createdAt);
-          if (entry.lastError) lastErrorCategories[entry.lastError] = (lastErrorCategories[entry.lastError] ?? 0) + 1;
-        } catch { corruptCount++; }
-      }
-    } catch { lastErrorCategories.journal = 1; }
-    return { pendingCount, oldestPendingMs, lastErrorCategories, corruptCount };
+    for (const entry of this.pending.values()) {
+      oldestPendingMs = Math.max(oldestPendingMs, Date.now() - entry.createdAt);
+      const error = entry.saveRetry ? "journal" : entry.lastError;
+      if (error) lastErrorCategories[error] = (lastErrorCategories[error] ?? 0) + 1;
+    }
+    if (this.journalError) lastErrorCategories.journal = (lastErrorCategories.journal ?? 0) + 1;
+    return { pendingCount: this.pending.size, oldestPendingMs, lastErrorCategories, corruptCount: this.corrupt.size };
   }
   startWorker() {
     if (this.timer || this.shutdown.signal.aborted) return;
