@@ -37,6 +37,9 @@ export function readEntry(directory: string, key: string): Entry {
     const parsed = z.union([v1, v2]).parse(value);
     if (parsed.key !== key || (parsed.state !== "job_start_uncertain" && !parsed.jobId) ||
         (parsed.state === "job_start_uncertain" && (parsed.jobId || parsed.observed))) throw new Error();
+    // Legacy v1 delivery is retained as a historical no-replay tombstone, but
+    // v2 explicitly requires durable hash-checked attachment proof.
+    if (parsed.version === 2 && parsed.state === "delivered" && !parsed.attachAcknowledged) throw new Error();
     const entry: Entry = parsed.version === 2 ? parsed : {
       ...parsed, version: 2, attachAcknowledged: false, createdAt: Math.max(0, stat.mtimeMs), attempts: 0, nextAttemptAt: 0,
     };

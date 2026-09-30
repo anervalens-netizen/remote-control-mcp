@@ -13,7 +13,7 @@ type Caller = (name: string, args: Record<string, unknown>, signal?: AbortSignal
 const terminal = new Set(["completed", "failed", "cancelled", "lost"]);
 const uncertain = () => new Error("job_start_uncertain: retained reservation requires inspection; automatic replay is disabled.");
 export function jobInputHash(input: { command: string; cwd?: string; env?: Record<string, string> }) {
-  return createHash("sha256").update(JSON.stringify({ command: input.command, cwd: input.cwd ?? null, env: Object.fromEntries(Object.entries(input.env ?? {}).sort(([a], [b]) => a.localeCompare(b))) })).digest("hex");
+  return createHash("sha256").update(JSON.stringify({ command: input.command, cwd: input.cwd ?? null, env: Object.fromEntries(Object.entries(input.env ?? {}).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)) })).digest("hex");
 }
 function checkRun(value: unknown, entry: Entry): Record<string, unknown> {
   if (!object(value) || value.id !== entry.correlation.runId || value.projectId !== entry.correlation.projectId ||
@@ -45,6 +45,7 @@ export class ContextKeepBridge {
   private timer: ReturnType<typeof setInterval> | undefined;
   private busy: Promise<void> | undefined;
   private readonly shutdown = new AbortController();
+  private readonly starting = new Set<Promise<unknown>>();
   private readonly call: Caller;
   private readonly client: AgentClient;
   private readonly config: Config;
@@ -62,7 +63,13 @@ export class ContextKeepBridge {
     catch (error) { if (create) throw error; throw new BridgeError("journal"); }
   }
   private keys() { return readdirSync(this.config.directory).filter(f => /^[a-f0-9]{64}\.json$/.test(f)).sort().map(f => f.slice(0, -5)); }
-  async start(device: string, target: AgentEndpointContext, input: { command: string; cwd?: string; env?: Record<string, string>; idempotencyKey?: string }, correlation: WorkCorrelation) {
+  start(device: string, target: AgentEndpointContext, input: { command: string; cwd?: string; env?: Record<string, string>; idempotencyKey?: string }, correlation: WorkCorrelation) {
+    const pending = this.startOnce(device, target, input, correlation);
+    this.starting.add(pending);
+    void pending.then(() => this.starting.delete(pending), () => this.starting.delete(pending));
+    return pending;
+  }
+  private async startOnce(device: string, target: AgentEndpointContext, input: { command: string; cwd?: string; env?: Record<string, string>; idempotencyKey?: string }, correlation: WorkCorrelation) {
     if (this.shutdown.signal.aborted) throw new BridgeError("cancelled");
     if (!input.idempotencyKey || input.idempotencyKey.length > 200) throw new Error("Correlated jobs require a stable idempotencyKey.");
     if (!correlationSchema.safeParse(correlation).success || !device || device.length > 100 || !["user", "system", "desktop"].includes(target)) throw new Error("Invalid bridge correlation scope.");
@@ -79,12 +86,17 @@ export class ContextKeepBridge {
       if (prior.device !== device || prior.target !== target) throw uncertain();
       if (prior.hash !== hash || Object.keys(correlation).some(k => prior.correlation[k as keyof WorkCorrelation] !== correlation[k as keyof WorkCorrelation])) throw new Error("contextkeep_job_conflict");
       if (!prior.jobId) throw uncertain();
-      return this.client.jobStatus(device, prior.jobId, target);
+      return bounded(() => this.client.jobStatus(device, prior.jobId!, target, { signal: this.shutdown.signal }), this.shutdown.signal);
     }
     // Durable exclusive reservation precedes the only executor start. A lost
     // receipt or failed persistence never permits replay, including after restart.
     let result: unknown;
-    try { result = await this.client.jobStart(device, input, target); } catch { throw uncertain(); }
+    try {
+      result = await bounded(() => this.client.jobStart(device, input, target, { signal: this.shutdown.signal }), this.shutdown.signal);
+    } catch { throw uncertain(); }
+    // Aborting the request does not prove the executor did not start it. Keep
+    // the durable uncertain reservation; a late receipt must not mutate it.
+    if (this.shutdown.signal.aborted) throw uncertain();
     if (!object(result) || typeof result.id !== "string" || !result.id || result.id.length > 200) throw uncertain();
     entry.jobId = result.id; entry.state = "tracking";
     try { this.save(entry); } catch { throw uncertain(); }
@@ -158,7 +170,7 @@ export class ContextKeepBridge {
     const acknowledgedRun = checkRun(object(ack) ? ack.run : undefined, entry);
     if (!object(ack) || !(ack.duplicate === true || (ack.duplicate === false && typeof ack.applied === "boolean" &&
         z.string().uuid().safeParse(ack.observationId).success)) || !terminal.has(String(acknowledgedRun.status)) ||
-        (ack.duplicate === false && ack.applied === true && acknowledgedRun.status !== observedStatus(entry))) throw new BridgeError("ack_mismatch");
+        acknowledgedRun.status !== observedStatus(entry)) throw new BridgeError("ack_mismatch");
     entry.state = "delivered";
     this.save(entry); // Delivered tombstones are permanent deduplication records.
   }
@@ -230,7 +242,7 @@ export class ContextKeepBridge {
     if (this.timer) clearInterval(this.timer);
     this.timer = undefined;
     this.shutdown.abort();
-    await this.busy?.catch(() => {});
+    await Promise.allSettled([...this.starting, ...(this.busy ? [this.busy] : [])]);
   }
 }
 const instances = new WeakMap<AgentClient, ContextKeepBridge>();

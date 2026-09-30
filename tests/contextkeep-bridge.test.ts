@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, readdirSync, readFileSync, writeFileSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -33,7 +33,7 @@ function fixture() {
     if (name === "observe_run") { run.status = "completed"; return { run: { ...run }, duplicate: false, applied: true, observationId: randomUUID() }; }
     return { run: { ...run } };
   });
-  const make = (caller = call) => { const bridge = new ContextKeepBridge(client as unknown as AgentClient, config, caller); bridges.push(bridge); return bridge; };
+  const make = (caller: (name: string, args: Record<string, unknown>, signal?: AbortSignal) => Promise<unknown> = call) => { const bridge = new ContextKeepBridge(client as unknown as AgentClient, config, caller); bridges.push(bridge); return bridge; };
   const journalPath = () => path.join(directory, readdirSync(directory).find(f => /^[a-f0-9]{64}\.json$/.test(f) && !f.startsWith("00000000"))!);
   const journal = () => JSON.parse(readFileSync(journalPath(), "utf8"));
   const update = (fn: (entry: any) => void) => { const entry = journal(); fn(entry); writeFileSync(journalPath(), JSON.stringify(entry)); };
@@ -200,4 +200,63 @@ it.skipIf(process.platform !== "win32")("rejects an existing journal junction wi
   expect(bridge.diagnostics().corruptCount).toBe(1);
   expect(readFileSync(evidence, "utf8")).toBe(original);
   expect(f.client.jobStart).toHaveBeenCalledTimes(1);
+});
+
+
+it.each([false, true])("retains an observation when its acknowledgement has a conflicting terminal status (duplicate=%s)", async duplicate => {
+  const f = fixture();
+  const bridge = f.make(async name => name === "observe_run"
+    ? { run: { ...f.run, status: "failed" }, duplicate, applied: false, observationId: randomUUID() }
+    : name === "get_task" ? f.view() : { run: { ...f.run } });
+  await bridge.start("fixture", "user", f.input, f.work); await bridge.pump();
+  expect(f.journal()).toMatchObject({ state: "tracking", attachAcknowledged: true, lastError: "ack_mismatch" });
+  expect(f.client.jobStart).toHaveBeenCalledTimes(1);
+});
+
+it("accepts an unapplied observation only when its acknowledged terminal outcome agrees", async () => {
+  const f = fixture();
+  const bridge = f.make(async name => name === "observe_run"
+    ? { run: { ...f.run, status: "completed" }, duplicate: false, applied: false, observationId: randomUUID() }
+    : name === "get_task" ? f.view() : { run: { ...f.run } });
+  await bridge.start("fixture", "user", f.input, f.work); await bridge.pump();
+  expect(f.journal()).toMatchObject({ state: "delivered", attachAcknowledged: true });
+});
+
+it("classifies an unacknowledged v2 delivered journal as corrupt without replay or repair", async () => {
+  const f = fixture(); const bridge = f.make(); await bridge.start("fixture", "user", f.input, f.work);
+  f.update(entry => { entry.state = "delivered"; entry.attachAcknowledged = false; });
+  const evidence = readFileSync(f.journalPath(), "utf8");
+  await expect(f.make().start("fixture", "user", f.input, f.work)).rejects.toThrow("job_start_uncertain");
+  await bridge.pump();
+  expect(bridge.diagnostics().corruptCount).toBe(1);
+  expect(readFileSync(f.journalPath(), "utf8")).toBe(evidence);
+  expect(f.client.jobStart).toHaveBeenCalledTimes(1);
+});
+
+it("aborts and drains an in-flight correlated start without accepting its late receipt or replaying it", async () => {
+  const f = fixture(); let finish!: (value: { id: string }) => void;
+  const executor = new Promise<{ id: string }>(resolve => { finish = resolve; });
+  f.client.jobStart.mockImplementation(() => executor);
+  const bridge = f.make();
+  const outcome = bridge.start("fixture", "user", f.input, f.work).then(() => "unexpected-success", error => error.message);
+  expect(f.client.jobStart).toHaveBeenCalledTimes(1);
+  const options = (f.client.jobStart.mock.calls as unknown as unknown[][])[0]![3] as { signal: AbortSignal };
+  await bridge.close();
+  expect(options.signal.aborted).toBe(true);
+  expect(await outcome).toContain("job_start_uncertain");
+  const evidence = readFileSync(f.journalPath(), "utf8");
+  finish({ id: "late-job" }); await executor; await Promise.resolve();
+  expect(readFileSync(f.journalPath(), "utf8")).toBe(evidence);
+  expect(f.journal()).toMatchObject({ state: "job_start_uncertain", attachAcknowledged: false });
+  await expect(f.make().start("fixture", "user", f.input, f.work)).rejects.toThrow("job_start_uncertain");
+  expect(f.client.jobStart).toHaveBeenCalledTimes(1);
+});
+
+it("hashes environment keys in locale-independent UTF-16 code-unit order", () => {
+  const collation = vi.spyOn(String.prototype, "localeCompare").mockImplementation(() => { throw new Error("Locale-dependent canonicalization"); });
+  const input = { command: "synthetic", env: { "ä": "four", a: "three", _: "two", Z: "one" } };
+  const expected = createHash("sha256").update(JSON.stringify({ command: "synthetic", cwd: null, env: { Z: "one", _: "two", a: "three", "ä": "four" } })).digest("hex");
+  expect(jobInputHash(input)).toBe(expected);
+  expect(jobInputHash({ ...input, env: { a: "three", Z: "one", "ä": "four", _: "two" } })).toBe(expected);
+  expect(collation).not.toHaveBeenCalled();
 });

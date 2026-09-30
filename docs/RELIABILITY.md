@@ -16,13 +16,15 @@ Every batch route is resolved before dispatch. An explicit unavailable identity 
 
 The opt-in bridge is an executor-result adapter, not a task verifier. Use an absolute private journal directory, HTTPS or loopback HTTP, independent credentials and a ContextKeep reservation whose canonical input hash matches the command, working directory and sorted environment.
 
+Canonical input hashes sort environment keys by locale-independent UTF-16 code-unit order before JSON encoding. Producers must use the same explicit rule; historical journal hashes are never rewritten in place to make a conflicting start appear retryable.
+
 A durable exclusive reservation precedes the only executor start. Invalid/corrupt/partial records remain evidence, and a missing job receipt stays uncertain. Do not delete or rewrite a reservation to make a command retryable. A new intended execution uses a new key. Delivered records remain permanent deduplication tombstones; preserve them with backups even when output logs are rotated.
 
 Acknowledgements must be valid correlated JSON-RPC tool results with the expected run/job scope. An HTTP 200, empty object or unrelated response ID is not delivery. JSON and incremental SSE are supported, including a server keeping the stream open after the matching event. Byte and time budgets, cancellation and redirect rejection bound one attempt; transport uncertainty never causes a new executor start.
 
 Version-2 journals persist attachment acknowledgement, observed terminal facts and delivery separately. Version-1 journals remain readable, but missing historical proof is not invented. Reconciliation can confirm a terminal remote run only with exact correlation and a proven hash-checked attachment. When proof is insufficient, keep `proof_missing` pending and investigate read-only evidence; do not blindly mark the row delivered or overwrite a verified remote result.
 
-Authenticated health diagnostics report pending count/oldest age, corrupt count and safe error categories. A corrupt entry does not stop healthy entries. Processing has bounded concurrency, exponential retry backoff and bounded shutdown. Aggregate HTTP failures are not a measured command-failure rate.
+Authenticated health diagnostics report pending count/oldest age, corrupt count and safe error categories. A corrupt entry does not stop healthy entries. Processing has bounded concurrency, exponential retry backoff and bounded shutdown. Both HTTP and stdio shutdown abort and drain correlated start requests as well as receipt workers. A cancelled request does not prove that an already-received remote command did not execute: its uncertain reservation remains, and a late response cannot update the closed bridge. Version-2 delivered entries require durable attachment proof; the historical version-1 tombstone exception does not legitimize an unacknowledged version-2 entry. Aggregate HTTP failures are not a measured command-failure rate.
 
 ContextKeep owns atomic ordering between observations and independent verification. The bridge avoids known terminal/verified writes, but a client-side read alone cannot fence a simultaneous server-side write. Changes to that contract must be coordinated in the ContextKeep project, not silently invented by this controller.
 
