@@ -1,3 +1,4 @@
+import { jobSummarySchema } from "../../../packages/protocol/src/job-summary.ts";
 import { readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 
@@ -46,7 +47,7 @@ export class JobHistoryIndex {
           if (this.entries.get(id)?.stamp === stamp) continue;
           const meta = JSON.parse(await readFile(file, "utf8"));
           const after = await stat(file);
-          if (meta.id !== id || typeof meta.startedAt !== "string" || !["running", "cancelling", "completed", "cancelled", "lost"].includes(meta.state)) throw new Error("invalid_metadata");
+          if (!jobSummarySchema.safeParse(meta).success || meta.id !== id || typeof meta.startedAt !== "string" || !meta.startedAt) throw new Error("invalid_metadata");
           // A concurrent atomic replacement is retried on the next scan.
           this.entries.set(id, { id, startedAt: meta.startedAt, state: meta.state, stamp: after.ino === before.ino && after.mtimeMs === before.mtimeMs && after.ctimeMs === before.ctimeMs ? stamp : "changed" });
         } catch (error) {

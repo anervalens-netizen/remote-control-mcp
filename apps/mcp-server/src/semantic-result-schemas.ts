@@ -1,3 +1,4 @@
+import { jobSummarySchema } from "../../../packages/protocol/src/job-summary.ts";
 import { jobLineageResultSchema } from "../../../packages/protocol/src/project.ts";
 import { browserActionResultSchema, browserExecutionResultSchema } from "../../../packages/protocol/src/browser.ts";
 import { z } from "zod";
@@ -9,17 +10,7 @@ const route = { identity, context };
 const nonnegative = z.number().int().nonnegative();
 const stringOrNull = z.string().nullable();
 
-const jobSummary = z.object({
-  id: z.string().min(1),
-  state: z.enum(["running", "cancelling", "completed", "cancelled", "lost"]),
-  pid: z.number().int().positive().optional(),
-  processIdentity: z.string().optional(), trackedProcessCount: nonnegative.optional(),
-  terminationVerified: z.boolean().optional(), terminationForced: z.boolean().optional(),
-  terminationVerification: z.enum(["identity_bound_job", "posix_identity_set", "partial_windows_job", "unverified_windows_fallback"]).optional(),
-  terminationVerificationScope: z.enum(["whole_tree", "root_and_descendants_created_after_attach", "root_only", "unverified"]).optional(),
-  terminationReason: z.string().optional(), cancellationError: z.string().optional(), recoveryReason: z.string().optional(),
-  progress: z.unknown().optional(), progressInterrupted: z.boolean().optional(),
-}).passthrough();
+const jobSummary = jobSummarySchema;
 const process = z.object({ pid: nonnegative.optional(), ProcessId: nonnegative.optional() }).passthrough().refine((value) => value.pid !== undefined || value.ProcessId !== undefined, "process result must identify a PID");
 const fileEntry = z.object({ name: z.string(), path: z.string(), type: z.enum(["directory", "file", "symlink", "other"]), size: nonnegative }).passthrough();
 const searchResult = z.object({ path: z.string() }).passthrough();
