@@ -1,4 +1,4 @@
-import { closeSync, constants, fsyncSync, fstatSync, lstatSync, openSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { closeSync, constants, fsyncSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import { z } from "zod";
@@ -40,7 +40,12 @@ export function journalFile(directory: string, key: string): string {
   if (!hash.safeParse(key).success) throw new BridgeError("journal");
   return path.join(directory, key + ".json");
 }
-export function readEntry(directory: string, key: string): Entry {
+function syncDirectory(directory: string) {
+  if (process.platform === "win32") return;
+  const fd = openSync(directory, "r");
+  try { fsyncSync(fd); } finally { closeSync(fd); }
+}
+function rawEntry(directory: string, key: string) {
   let fd: number | undefined;
   try {
     const file = journalFile(directory, key);
@@ -48,59 +53,99 @@ export function readEntry(directory: string, key: string): Entry {
     fd = openSync(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
     const stat = fstatSync(fd);
     if (!stat.isFile() || stat.size > 64 * 1024) throw new Error();
-    const value: unknown = JSON.parse(readFileSync(fd, "utf8"));
+    return { raw: readFileSync(fd), stat };
+  } catch { throw new BridgeError("journal"); }
+  finally { if (fd !== undefined) closeSync(fd); }
+}
+function parseEntry(raw: Buffer, mtimeMs: number, key: string): Entry {
+  try {
+    const value: unknown = JSON.parse(raw.toString("utf8"));
     const parsed = z.union([v1, v2, v3]).parse(value);
     if (parsed.key !== key || (parsed.state !== "job_start_uncertain" && !parsed.jobId) ||
         (parsed.state === "job_start_uncertain" && (parsed.jobId || parsed.observed))) throw new Error();
-    // Legacy v1 delivery is retained as a historical no-replay tombstone, but
-    // v2/v3 delivered entries explicitly require durable hash-checked attachment proof.
     if (parsed.version !== 1 && parsed.state === "delivered" && !parsed.attachAcknowledged) throw new Error();
     if (parsed.version === 3) {
       if ((parsed.state === "historical_resolved") !== Boolean(parsed.historicalResolution)) throw new Error();
       if (parsed.state === "historical_resolved" && parsed.attachAcknowledged) throw new Error();
     }
     const entry: Entry = parsed.version === 1 ? {
-      ...parsed, version: 2, attachAcknowledged: false, createdAt: Math.max(0, stat.mtimeMs), attempts: 0, nextAttemptAt: 0,
+      ...parsed, version: 2, attachAcknowledged: false, createdAt: Math.max(0, mtimeMs), attempts: 0, nextAttemptAt: 0,
     } : parsed;
     if (entry.attachAcknowledged && !entry.jobId) throw new Error();
     return entry;
   } catch { throw new BridgeError("journal"); }
-  finally { if (fd !== undefined) closeSync(fd); }
 }
-export function saveEntry(directory: string, entry: Entry, create = false): void {
+export function readEntry(directory: string, key: string): Entry {
+  const { raw, stat } = rawEntry(directory, key);
+  return parseEntry(raw, stat.mtimeMs, key);
+}
+function withEntryLock<T>(directory: string, key: string, action: () => T): T {
+  const file = path.join(directory, key + ".lock");
+  let fd: number | undefined;
+  try {
+    try { fd = openSync(file, "wx", 0o600); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EEXIST") throw new BridgeError("journal");
+      throw error;
+    }
+    writeFileSync(fd, JSON.stringify({ pid: process.pid, createdAt: new Date().toISOString() }));
+    fsyncSync(fd);
+    syncDirectory(directory);
+    return action();
+  } finally {
+    if (fd !== undefined) {
+      closeSync(fd);
+      try { unlinkSync(file); syncDirectory(directory); }
+      catch { /* A stale lock fails closed until inspected. */ }
+    }
+  }
+}
+function saveEntryUnlocked(directory: string, entry: Entry, create = false): void {
   const file = journalFile(directory, entry.key), temporary = file + "." + randomUUID() + ".tmp";
   const fd = openSync(create ? file : temporary, "wx", 0o600);
   try { writeFileSync(fd, JSON.stringify(entry)); fsyncSync(fd); }
   finally { closeSync(fd); }
   if (!create) renameSync(temporary, file);
-  // Reservation is exclusive and durable before execution. Failed/partial files
-  // are evidence of uncertainty; never delete them to make a start retryable.
-  if (process.platform !== "win32") {
-    const dir = openSync(directory, "r");
-    try { fsyncSync(dir); } finally { closeSync(dir); }
-  }
+  syncDirectory(directory);
+}
+export function saveEntry(directory: string, entry: Entry, create = false): void {
+  return withEntryLock(directory, entry.key, () => saveEntryUnlocked(directory, entry, create));
 }
 
-
-export function historicallyResolveEntry(directory: string, input: {
+export function historicallyResolveEntry(directory: string, recoveryDirectory: string, input: {
   key: string; expectedHash: string; expectedJobId: string; expectedRunId: string;
   evidenceRecordId: string; resolvedAt?: string;
 }): Entry {
-  const file = journalFile(directory, input.key);
-  const original = readFileSync(file);
-  const entry = readEntry(directory, input.key);
-  if (entry.state !== "tracking" || entry.attachAcknowledged || !entry.jobId ||
-      entry.hash !== input.expectedHash || entry.jobId !== input.expectedJobId ||
-      entry.correlation.runId !== input.expectedRunId) throw new BridgeError("journal");
-  const resolvedAt = input.resolvedAt ?? new Date().toISOString();
-  const proof = historicalResolution.parse({
-    reason: "retrospective_verification", resolvedAt, evidenceRecordId: input.evidenceRecordId,
-    originalRecordSha256: createHash("sha256").update(original).digest("hex"),
+  if (!path.isAbsolute(directory) || !path.isAbsolute(recoveryDirectory) ||
+      path.resolve(directory) === path.resolve(recoveryDirectory)) throw new BridgeError("journal");
+  return withEntryLock(directory, input.key, () => {
+    const { raw, stat } = rawEntry(directory, input.key);
+    const entry = parseEntry(raw, stat.mtimeMs, input.key);
+    if (entry.state !== "tracking" || entry.attachAcknowledged || !entry.jobId ||
+        entry.hash !== input.expectedHash || entry.jobId !== input.expectedJobId ||
+        entry.correlation.runId !== input.expectedRunId) throw new BridgeError("journal");
+    const originalRecordSha256 = createHash("sha256").update(raw).digest("hex");
+    mkdirSync(recoveryDirectory, { recursive: true, mode: 0o700 });
+    const recoveryFile = path.join(recoveryDirectory, input.key + "." + originalRecordSha256 + ".before.json");
+    try {
+      const fd = openSync(recoveryFile, "wx", 0o600);
+      try { writeFileSync(fd, raw); fsyncSync(fd); }
+      finally { closeSync(fd); }
+      syncDirectory(recoveryDirectory);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST" ||
+          createHash("sha256").update(readFileSync(recoveryFile)).digest("hex") !== originalRecordSha256)
+        throw new BridgeError("journal");
+    }
+    const resolvedAt = input.resolvedAt ?? new Date().toISOString();
+    const proof = historicalResolution.parse({
+      reason: "retrospective_verification", resolvedAt, evidenceRecordId: input.evidenceRecordId, originalRecordSha256,
+    });
+    const resolved: Entry = {
+      ...entry, version: 3, state: "historical_resolved", attachAcknowledged: false,
+      attempts: 0, nextAttemptAt: 0, lastError: undefined, historicalResolution: proof,
+    };
+    saveEntryUnlocked(directory, resolved);
+    return resolved;
   });
-  const resolved: Entry = {
-    ...entry, version: 3, state: "historical_resolved", attachAcknowledged: false,
-    attempts: 0, nextAttemptAt: 0, lastError: undefined, historicalResolution: proof,
-  };
-  saveEntry(directory, resolved);
-  return resolved;
 }
