@@ -81,7 +81,7 @@ export class ContextKeepBridge {
   private keys() { return readdirSync(this.config.directory).filter(f => /^[a-f0-9]{64}\.json$/.test(f)).sort().map(f => f.slice(0, -5)); }
   private index(entry: Entry, saved = false) {
     this.corrupt.delete(entry.key);
-    if (entry.state === "delivered") this.pending.delete(entry.key);
+    if (entry.state === "delivered" || entry.state === "historical_resolved") this.pending.delete(entry.key);
     else this.pending.set(entry.key, {
       state: entry.state, createdAt: entry.createdAt, nextAttemptAt: entry.nextAttemptAt, lastError: entry.lastError,
       saveRetry: saved ? undefined : this.pending.get(entry.key)?.saveRetry,

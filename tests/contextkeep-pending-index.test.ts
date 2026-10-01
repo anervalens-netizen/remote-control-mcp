@@ -27,7 +27,7 @@ function fixture() {
     id: string; projectId: string; taskId: string; externalJobId: string; device: string;
     identity: string; revision: number; status: string; verification: string;
   }>();
-  function entry(label: string, state: journal.Entry["state"] = "tracking"): journal.Entry {
+  function entry(label: string, state: Exclude<journal.Entry["state"], "historical_resolved"> = "tracking"): journal.Entry {
     const correlation = { projectId: randomUUID(), taskId: randomUUID(), runId: randomUUID(), leaseToken: randomUUID() };
     const value: journal.Entry = {
       version: 2, key: createHash("sha256").update(JSON.stringify(["fixture", "user", label])).digest("hex"),
