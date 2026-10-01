@@ -7,7 +7,7 @@ describe('bounded tool observations', () => {
     for (let i=1;i<=6;i++) d.record('exec', {device:'fixture',command:'private-command'}, i, i===3?'error':'success');
     d.record('exec',{device:'private-token-in-name'},7,'cancelled');d.record('search',{},8,'partial');
     const s=d.snapshot();expect(s.series).toHaveLength(2);expect(s.overflowCalls).toBe(1);
-    expect(s.series[0]).toMatchObject({count:6,errors:1,sampledCalls:3,p50Ms:5,p95Ms:6});
+    expect(s.series[0]).toMatchObject({count:6,errors:1,sampledCalls:3,p50Ms:5,p95Ms:6,averageMs:5,maxMs:6,lifetimeAverageMs:3.5});
     expect(JSON.stringify(s)).not.toMatch(/private-command|private-token-in-name/);
   });
   it('distinguishes functional failure and partial results from HTTP success',()=>{
@@ -17,6 +17,7 @@ describe('bounded tool observations', () => {
     expect(toolOutcome({}, {devices:[{online:false}]})).toBe('partial');
     expect(toolOutcome({}, {ok:false,kind:'cancelled'})).toBe('cancelled');
     expect(toolOutcome({}, {ok:true})).toBe('success');
+    expect(toolOutcome({}, {devices:[{online:true,platform:'android',metricsStatus:'not_applicable'}]})).toBe('success');
   });
 });
 describe('optional truthful progress',()=>{

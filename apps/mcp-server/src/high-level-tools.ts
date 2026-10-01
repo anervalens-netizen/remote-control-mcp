@@ -107,10 +107,10 @@ export function registerHighLevelTools(server: McpServer, client: AgentClient): 
           };
           const androidContext = context === undefined ? "user" : runContext;
           if (androidContext === "system") {
-            return { device, online: status.online, connectivity: status.online ? "reachable" : "unknown", observedAt: new Date().toISOString(), metricsStatus: "unavailable", platform: "android", context: "system", contextAvailable: false, readiness: status.readiness, readinessReason: status.readinessReason, error: "system context is not configured for android-reverse" };
+            return { device, online: status.online, connectivity: status.online ? "reachable" : "unknown", observedAt: new Date().toISOString(), metricsStatus: "not_applicable", platform: "android", context: "system", contextAvailable: false, readiness: status.readiness, readinessReason: status.readinessReason, error: "system context is not configured for android-reverse" };
           }
           return {
-            device, online: status.online, connectivity: status.online ? "reachable" : "unknown", observedAt: new Date().toISOString(), metricsStatus: "unavailable", hostname: status.state?.model ?? status.name, platform: "android", arch: null,
+            device, online: status.online, connectivity: status.online ? "reachable" : "unknown", observedAt: new Date().toISOString(), metricsStatus: "not_applicable", hostname: status.state?.model ?? status.name, platform: "android", arch: null,
             uptimeSeconds: null, cpuCount: null, cpuModel: null, memoryUsedPercent: null, rootUsedPercent: null, rootAvailableBytes: null,
             readiness: status.readiness, readinessReason: status.readinessReason, context: "user", contextAvailable: true,
             network: status.state?.network ?? null, batteryPercent: status.state?.batteryPercent ?? null,

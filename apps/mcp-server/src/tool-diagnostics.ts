@@ -39,7 +39,7 @@ export class ToolDiagnostics {
         const samples = [...v.samples].sort((a, b) => a - b);
         const percentile = (p: number) => round(samples[Math.max(0, Math.ceil(samples.length * p) - 1)] ?? 0);
         return { tool: v.tool, device: v.device, count: v.count, errors: v.errors, partial: v.partial, cancelled: v.cancelled,
-          averageMs: round(v.totalMs / v.count), maxMs: round(v.maxMs), sampledCalls: samples.length, p50Ms: percentile(.5), p95Ms: percentile(.95), p99Ms: percentile(.99) };
+          averageMs: round(samples.reduce((sum, sample) => sum + sample, 0) / Math.max(1, samples.length)), maxMs: round(samples.at(-1) ?? 0), lifetimeAverageMs: round(v.totalMs / v.count), lifetimeMaxMs: round(v.maxMs), sampledCalls: samples.length, p50Ms: percentile(.5), p95Ms: percentile(.95), p99Ms: percentile(.99) };
       }) };
   }
 }

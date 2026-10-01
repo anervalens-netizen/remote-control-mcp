@@ -908,7 +908,7 @@ export async function jobHistoryPage(query: HistoryQuery = {}) {
     try { items.push(await jobStatusAsync(id)); }
     catch { unreadableCount++; }
   }
-  return { items, nextCursor: page.nextCursor, partial: page.partial || unreadableCount > 0, corruptCount: page.corruptCount, unreadableCount };
+  return { items, nextCursor: page.nextCursor, partial: page.partial || unreadableCount > 0, corruptCount: page.corruptCount, unavailableCount: page.unavailableCount, unreadableCount };
 }
 export async function jobListAsync(limit = 100) {
   return (await jobHistoryPage({ limit })).items;

@@ -98,6 +98,7 @@ export function registerExtraRoutes(app: FastifyInstance): void {
     const abort = () => { if (!reply.raw.writableFinished) controller.abort(); };
     request.raw.once("aborted", abort);
     reply.raw.once("close", abort);
+    if (request.raw.aborted || reply.raw.destroyed) abort();
     try { return await search(parsed.data, controller.signal); }
     catch (error) { return searchInputFailure(reply, error); }
     finally { request.raw.removeListener("aborted", abort); reply.raw.removeListener("close", abort); }
