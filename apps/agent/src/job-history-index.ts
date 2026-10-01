@@ -4,6 +4,20 @@ import path from "node:path";
 type Entry = { id: string; startedAt: string; state: string; stamp: string };
 export type HistoryQuery = { limit?: number; cursor?: string; state?: string };
 const compare = (a: Pick<Entry, "startedAt" | "id">, b: Pick<Entry, "startedAt" | "id">) => b.startedAt.localeCompare(a.startedAt) || b.id.localeCompare(a.id);
+export class HistoryCursorError extends Error {
+  readonly statusCode = 400;
+  constructor() { super("Invalid job history cursor"); this.name = "HistoryCursorError"; }
+}
+export function decodeHistoryCursor(value?: string): Pick<Entry, "startedAt" | "id"> | undefined {
+  if (value === undefined) return undefined;
+  if (!value || value.length > 4096 || !/^[A-Za-z0-9_-]+$/.test(value)) throw new HistoryCursorError();
+  let cursor: unknown;
+  try { cursor = JSON.parse(Buffer.from(value, "base64url").toString("utf8")); } catch { throw new HistoryCursorError(); }
+  if (!cursor || typeof cursor !== "object" || Array.isArray(cursor)) throw new HistoryCursorError();
+  const object = cursor as Record<string, unknown>;
+  if (typeof object.id !== "string" || !object.id || typeof object.startedAt !== "string" || !object.startedAt) throw new HistoryCursorError();
+  return { id: object.id, startedAt: object.startedAt };
+}
 /** Rebuildable process-local index. JSON receipts remain the authority. */
 export class JobHistoryIndex {
   private entries = new Map<string, Entry>();
@@ -44,12 +58,8 @@ export class JobHistoryIndex {
     return [...this.entries.values()].filter(entry => entry.state === "running" || entry.state === "cancelling").map(entry => entry.id);
   }
   async page(query: HistoryQuery = {}) {
+    const cursor = decodeHistoryCursor(query.cursor);
     await this.refresh();
-    let cursor: Pick<Entry, "startedAt" | "id"> | undefined;
-    if (query.cursor) {
-      try { cursor = JSON.parse(Buffer.from(query.cursor, "base64url").toString("utf8")); } catch { throw new Error("Invalid job history cursor"); }
-      if (!cursor || typeof cursor.id !== "string" || typeof cursor.startedAt !== "string") throw new Error("Invalid job history cursor");
-    }
     const limit = Math.max(1, Math.min(Math.floor(query.limit ?? 100), 1000));
     const sorted = [...this.entries.values()].filter(entry => (!query.state || entry.state === query.state) && (!cursor || compare(entry, cursor) > 0)).sort(compare);
     const items = sorted.slice(0, limit);

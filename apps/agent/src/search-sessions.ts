@@ -514,24 +514,33 @@ export function searchStop(id: string) {
   return { id, status: meta.status, available: meta.resultsCount };
 }
 
-export function searchSessions() {
+function collectSearchSessions() {
   const valid: Array<{ id: string; status: Status; createdAt: string; updatedAt: string; available: number; limited: boolean; error: string | null; recoveryReason: string | null }> = [];
-  for (const name of readdirSync(searchRoot).filter(name => name.endsWith(".json"))) {
+  let corruptCount = 0; let unavailableCount = 0;
+  const names = readdirSync(searchRoot).filter(name => name.endsWith(".json"));
+  for (const name of names) {
     const id = name.slice(0, -5);
     try {
       const meta = sessions.get(id)?.meta ?? readMeta(id);
-      if (meta.id !== id || typeof meta.createdAt !== "string" || !["running", "done", "stopped", "error", "lost"].includes(meta.status)) continue;
+      if (meta.id !== id || !id || typeof meta.createdAt !== "string" || typeof meta.updatedAt !== "string"
+        || !["running", "done", "stopped", "error", "lost"].includes(meta.status)
+        || !Number.isSafeInteger(meta.resultsCount) || meta.resultsCount < 0 || typeof meta.limited !== "boolean"
+        || (meta.error != null && typeof meta.error !== "string")
+        || (meta.recoveryReason != null && typeof meta.recoveryReason !== "string")) {
+        corruptCount++; continue;
+      }
       valid.push({ id, status: meta.status, createdAt: meta.createdAt, updatedAt: meta.updatedAt, available: meta.resultsCount, limited: meta.limited, error: meta.error ?? null, recoveryReason: meta.recoveryReason ?? null });
-    } catch { /* Isolate and preserve corrupt metadata; never delete it. */ }
+    } catch (error) {
+      // Concurrent deletion is unavailable, not evidence of corrupt metadata.
+      if ((error as NodeJS.ErrnoException).code === "ENOENT" || !existsSync(metaPath(id))) unavailableCount++;
+      else corruptCount++;
+    }
   }
-  return valid.sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id));
+  valid.sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id));
+  return { items: valid, partial: corruptCount > 0 || unavailableCount > 0, corruptCount, unavailableCount };
 }
-
-export function searchSessionsDiagnostics() {
-  const items = searchSessions();
-  const metadataCount = readdirSync(searchRoot).filter(name => name.endsWith(".json")).length;
-  return { items, partial: items.length < metadataCount, corruptCount: Math.max(0, metadataCount - items.length) };
-}
+export function searchSessions() { return collectSearchSessions().items; }
+export function searchSessionsDiagnostics() { return collectSearchSessions(); }
 
 async function waitClosed(session: Session, timeoutMs: number): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;

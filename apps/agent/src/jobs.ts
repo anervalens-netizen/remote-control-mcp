@@ -1,4 +1,4 @@
-import { JobHistoryIndex, type HistoryQuery } from "./job-history-index.ts";
+import { JobHistoryIndex, decodeHistoryCursor, type HistoryQuery } from "./job-history-index.ts";
 import { JobStartDeduplicator, type JobStartInput } from "./job-start-dedup.ts";
 import { jobRecoveryPayload, type JobRecoveryDetails } from "../../../packages/protocol/src/job-recovery.ts";
 import { jobLineageSchema } from "../../../packages/protocol/src/project.ts";
@@ -895,6 +895,7 @@ export function jobList(limit = 100) {
 
 const historyIndex = new JobHistoryIndex(jobsRoot);
 export async function jobHistoryPage(query: HistoryQuery = {}) {
+  decodeHistoryCursor(query.cursor);
   const active = await historyIndex.activeIds();
   let nextActive = 0;
   await Promise.all(Array.from({ length: Math.min(4, active.length) }, async () => {

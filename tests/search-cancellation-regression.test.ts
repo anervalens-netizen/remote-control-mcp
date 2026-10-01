@@ -13,12 +13,14 @@ it("preserves a corrupt search receipt while listing and reading valid sessions"
     await writeFile(path.join(root, "valid.txt"), "needle\n");
     id = (await searchStart({ path: root, pattern: "needle" })).id;
     await writeFile(broken, "{broken");
+    const missing = path.join(ensureStateDir("search"), "missing-fields.json");
+    await writeFile(missing, JSON.stringify({ id: "missing-fields", createdAt: "fixture", status: "done" }));
     const result = searchSessionsDiagnostics();
-    expect(result).toMatchObject({ partial: true, corruptCount: 1 });
+    expect(result).toMatchObject({ partial: true, corruptCount: 2 });
     expect(result.items.some(item => item.id === id)).toBe(true);
     expect(searchResults(id).id).toBe(id);
     expect(await readFile(broken, "utf8")).toBe("{broken");
-  } finally { if (id) await searchRemove(id, true); await rm(broken, { force: true }); await rm(root, { recursive: true, force: true }); }
+  } finally { if (id) await searchRemove(id, true); await rm(broken, { force: true }); await rm(path.join(ensureStateDir("search"), "missing-fields.json"), { force: true }); await rm(root, { recursive: true, force: true }); }
 });
 it.skipIf(process.platform === "win32")("reaps the synchronous child even when it ignores SIGTERM", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "rcmcp-child-"));
