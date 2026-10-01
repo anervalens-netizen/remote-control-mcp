@@ -35,6 +35,10 @@ function requireTransferCapability(info: Info, allowLegacyAgent?: boolean, role:
 
 function deadlineOptions(deadline: ReturnType<typeof createDeadline>): AgentRequestOptions {
   const timeoutMs = deadline.remainingMs();
+  // remainingMs() can expire the deadline before its timer callback runs.
+  // Do not dispatch another operation with an already-aborted signal (or 0,
+  // which otherwise means an explicitly disabled per-request timeout).
+  deadline.signal?.throwIfAborted();
   return { signal: deadline.signal, ...(timeoutMs === undefined ? {} : { timeoutMs }) };
 }
 

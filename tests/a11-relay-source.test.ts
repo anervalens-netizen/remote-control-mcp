@@ -165,7 +165,12 @@ it("enforces expectedVersion even with versioned=false and keeps ordinary reads 
   const { source } = await fixture();
   const initial = fsReadResultSchema.parse(await fsRead({ path: source, versioned: true, length: 0 }));
   await writeFile(source, newBytes); await utimes(source, mtime, mtime);
-  await expect(fsRead({ path: source, versioned: false, expectedVersion: initial.sourceVersion, length: 65536 })).rejects.toThrow(/Source changed/);
+  // Keep a failing receipt small enough to retain both versions in CI output.
+  // Equal metadata after an equal-size rewrite is a source-qualification gap,
+  // not permission to skip the rejection assertion or change the fixture size.
+  const checkedRead = fsRead({ path: source, versioned: false, expectedVersion: initial.sourceVersion, length: 65536 })
+    .then(({ sourceVersion }) => ({ sourceVersion }));
+  await expect(checkedRead, `reserved sourceVersion=${initial.sourceVersion}`).rejects.toThrow(/Source changed/);
   expect((await fsRead({ path: source, length: 65536 })).data).toBe("B".repeat(65536));
   await expect(fsRead({ path: source, versioned: true, tailBytes: 1 })).rejects.toThrow(/byte paging/);
   expect(z.object(fsReadFields).safeParse({ path: source, expectedVersion: "invalid" }).success).toBe(false);
