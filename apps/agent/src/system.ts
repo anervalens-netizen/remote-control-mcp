@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { statfs } from "node:fs/promises";
 import os from "node:os";
 import process from "node:process";
 import { promisify } from "node:util";
@@ -11,10 +12,14 @@ function psLiteral(value: string): string {
   return `'${value.replaceAll("'", "''")}'`;
 }
 
-async function powershellJson(script: string): Promise<unknown> {
+async function powershellJson(script: string, timeoutMs?: number): Promise<unknown> {
   const { stdout } = await execFileAsync("powershell.exe", [
     "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script,
-  ], { maxBuffer: 32 * 1024 * 1024, windowsHide: true });
+  ], {
+    maxBuffer: 32 * 1024 * 1024,
+    windowsHide: true,
+    ...(timeoutMs === undefined ? {} : { timeout: timeoutMs }),
+  });
   return stdout.trim() ? JSON.parse(stdout) : null;
 }
 
@@ -75,25 +80,134 @@ export async function serviceLogs(input: { name: string; scope?: Scope; lines?: 
   return { name: input.name, scope, lines: stdout.split("\n").filter(Boolean) };
 }
 
-async function filesystemMetrics(): Promise<unknown[]> {
-  if (process.platform === "win32") {
-    const raw = await powershellJson("$d=@(Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3' | Select-Object DeviceID,FileSystem,Size,FreeSpace,VolumeName); ConvertTo-Json -InputObject $d -Compress");
-    const disks = Array.isArray(raw) ? raw : raw ? [raw] : [];
-    return disks.map((disk: any) => ({
-      source: disk.DeviceID, type: disk.FileSystem ?? null,
-      sizeBytes: Number(disk.Size ?? 0), usedBytes: Number(disk.Size ?? 0) - Number(disk.FreeSpace ?? 0),
-      availableBytes: Number(disk.FreeSpace ?? 0), volume: disk.VolumeName ?? null, mount: disk.DeviceID,
-    }));
-  }
+type FilesystemRecord = Record<string, unknown>;
+type FilesystemSnapshot = {
+  filesystems: FilesystemRecord[];
+  warnings: string[];
+  sampledAt: string;
+  sampledAtMs: number;
+};
 
-  const { stdout } = await execFileAsync("df", ["-B1", "--output=source,fstype,size,used,avail,pcent,target"], { maxBuffer: 8 * 1024 * 1024 });
-  return stdout.split("\n").slice(1).filter(Boolean).map((line) => {
+const FILESYSTEM_CACHE_MS = 1000;
+const COLLECTOR_TIMEOUT_MS = 1500;
+const filesystemCache = new Map<string, FilesystemSnapshot>();
+const filesystemPending = new Map<string, Promise<FilesystemSnapshot>>();
+
+function rootMount(): string {
+  return process.platform === "win32" ? (process.env.SystemDrive || "C:") : "/";
+}
+
+function rootPath(): string {
+  const root = rootMount();
+  return process.platform === "win32" ? `${root}\\` : root;
+}
+
+export function diskUsage(sizeBytes: number, usedBytes: number, availableBytes: number): string | null {
+  if (!Number.isFinite(sizeBytes) || sizeBytes <= 0 || !Number.isFinite(usedBytes) || usedBytes < 0 || !Number.isFinite(availableBytes) || availableBytes < 0) return null;
+  const denominator = usedBytes + availableBytes;
+  if (denominator <= 0) return null;
+  return `${Math.min(100, Math.max(0, Math.round(usedBytes / denominator * 100)))}%`;
+}
+
+export function parseDfMetrics(stdout: string): FilesystemRecord[] {
+  return stdout.split("\n").slice(1).filter(Boolean).flatMap((line) => {
     const parts = line.trim().split(/\s+/);
-    return {
+    if (parts.length < 7 || !parts.slice(2, 5).every((value) => Number.isFinite(Number(value)))) return [];
+    return [{
       source: parts[0], type: parts[1], sizeBytes: Number(parts[2]), usedBytes: Number(parts[3]),
       availableBytes: Number(parts[4]), usedPercent: parts[5], mount: parts.slice(6).join(" "),
-    };
+    }];
   });
+}
+
+async function collectRootFilesystem(): Promise<FilesystemSnapshot> {
+  const sampledAtMs = Date.now();
+  const warnings: string[] = [];
+  const mount = rootMount();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const value = await Promise.race([
+      statfs(rootPath()),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error("filesystem_probe_timeout")), COLLECTOR_TIMEOUT_MS);
+        timer.unref();
+      }),
+    ]);
+    const sizeBytes = value.blocks * value.bsize;
+    const usedBytes = (value.blocks - value.bfree) * value.bsize;
+    const availableBytes = value.bavail * value.bsize;
+    return {
+      filesystems: [{
+        source: mount, type: null, sizeBytes, usedBytes, availableBytes,
+        usedPercent: diskUsage(sizeBytes, usedBytes, availableBytes), mount,
+        collector: "native-statfs",
+      }],
+      warnings,
+      sampledAt: new Date(sampledAtMs).toISOString(),
+      sampledAtMs,
+    };
+  } catch (error) {
+    const kind = error instanceof Error && error.message === "filesystem_probe_timeout" ? "filesystem_probe_timeout" : "filesystem_probe_unavailable";
+    warnings.push(kind);
+    return { filesystems: [], warnings, sampledAt: new Date(sampledAtMs).toISOString(), sampledAtMs };
+  } finally { if (timer) clearTimeout(timer); }
+}
+
+async function collectFullFilesystems(): Promise<FilesystemSnapshot> {
+  const sampledAtMs = Date.now();
+  const warnings: string[] = [];
+  let filesystems: FilesystemRecord[] = [];
+  if (process.platform === "win32") {
+    try {
+      const raw = await powershellJson("$d=@(Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3' | Select-Object DeviceID,FileSystem,Size,FreeSpace,VolumeName); ConvertTo-Json -InputObject $d -Compress", COLLECTOR_TIMEOUT_MS);
+      const disks = Array.isArray(raw) ? raw : raw ? [raw] : [];
+      filesystems = disks.map((disk: any) => {
+        const sizeBytes = Number(disk.Size ?? 0);
+        const availableBytes = Number(disk.FreeSpace ?? 0);
+        const usedBytes = Math.max(0, sizeBytes - availableBytes);
+        return {
+          source: disk.DeviceID, type: disk.FileSystem ?? null, sizeBytes, usedBytes, availableBytes,
+          usedPercent: diskUsage(sizeBytes, usedBytes, availableBytes), volume: disk.VolumeName ?? null, mount: disk.DeviceID,
+        };
+      });
+    } catch (error) {
+      warnings.push((error as NodeJS.ErrnoException & { killed?: boolean }).killed ? "filesystem_probe_timeout" : "filesystem_probe_unavailable");
+    }
+  } else {
+    try {
+      const { stdout } = await execFileAsync("df", ["-B1", "--output=source,fstype,size,used,avail,pcent,target"], {
+        maxBuffer: 8 * 1024 * 1024,
+        timeout: COLLECTOR_TIMEOUT_MS,
+      });
+      filesystems = parseDfMetrics(stdout);
+    } catch (error) {
+      const partial = error as NodeJS.ErrnoException & { stdout?: string | Buffer; killed?: boolean };
+      const stdout = typeof partial.stdout === "string" ? partial.stdout : Buffer.isBuffer(partial.stdout) ? partial.stdout.toString("utf8") : "";
+      filesystems = parseDfMetrics(stdout);
+      warnings.push(partial.killed ? "filesystem_probe_timeout" : "filesystem_probe_partial_failure");
+    }
+  }
+  if (filesystems.length === 0 && warnings.length === 0) warnings.push("filesystem_probe_empty");
+  return { filesystems, warnings, sampledAt: new Date(sampledAtMs).toISOString(), sampledAtMs };
+}
+
+async function filesystemMetrics(profile: "light" | "full"): Promise<{ snapshot: FilesystemSnapshot; cached: boolean }> {
+  const key = `${profile}:${rootMount()}`;
+  const now = Date.now();
+  const cached = filesystemCache.get(key);
+  if (cached && now - cached.sampledAtMs < FILESYSTEM_CACHE_MS) return { snapshot: cached, cached: true };
+  let pending = filesystemPending.get(key);
+  const joined = Boolean(pending);
+  if (!pending) {
+    pending = (profile === "light" ? collectRootFilesystem() : collectFullFilesystems())
+      .then((snapshot) => {
+        if (snapshot.filesystems.length > 0 || snapshot.warnings.length === 0) filesystemCache.set(key, snapshot);
+        return snapshot;
+      })
+      .finally(() => filesystemPending.delete(key));
+    filesystemPending.set(key, pending);
+  }
+  return { snapshot: await pending, cached: joined };
 }
 
 export type LightSystemMetrics = {
@@ -107,19 +221,27 @@ export type LightSystemMetrics = {
   cpuModel: string | null;
   totalMemoryBytes: number;
   freeMemoryBytes: number;
-  rootFilesystem: Record<string, unknown> | null;
+  rootFilesystem: FilesystemRecord | null;
+  observedAt: string;
+  filesystemSampledAt: string;
+  filesystemAgeMs: number;
+  filesystemCached: boolean;
+  metricsStatus: "ok" | "partial";
+  warnings: string[];
 };
 export type FullSystemMetrics = Omit<LightSystemMetrics, "profile"> & {
   profile: "full";
   networkInterfaces: ReturnType<typeof os.networkInterfaces>;
-  filesystems: Array<Record<string, unknown>>;
+  filesystems: FilesystemRecord[];
 };
 
 export async function systemMetrics(profile: "light"): Promise<LightSystemMetrics>;
 export async function systemMetrics(profile?: "full"): Promise<FullSystemMetrics>;
 export async function systemMetrics(profile: "light" | "full" = "full"): Promise<LightSystemMetrics | FullSystemMetrics> {
-  const filesystems = await filesystemMetrics() as Array<Record<string, unknown>>;
-  const rootFilesystem = filesystems.find((item) => item.mount === "/" || item.mount === "C:" || item.mount === "C:\\") ?? null;
+  const { snapshot, cached } = await filesystemMetrics(profile);
+  const root = rootMount();
+  const rootFilesystem = snapshot.filesystems.find((item) => item.mount === root || item.mount === rootPath()) ?? null;
+  const warnings = rootFilesystem ? [...snapshot.warnings] : [...snapshot.warnings, "root_filesystem_unavailable"];
   const base = {
     profile,
     hostname: os.hostname(), platform: process.platform, arch: process.arch,
@@ -127,7 +249,13 @@ export async function systemMetrics(profile: "light" | "full" = "full"): Promise
     cpuCount: os.cpus().length, cpuModel: os.cpus()[0]?.model ?? null,
     totalMemoryBytes: os.totalmem(), freeMemoryBytes: os.freemem(),
     rootFilesystem,
+    observedAt: new Date().toISOString(),
+    filesystemSampledAt: snapshot.sampledAt,
+    filesystemAgeMs: Math.max(0, Date.now() - snapshot.sampledAtMs),
+    filesystemCached: cached,
+    metricsStatus: warnings.length ? "partial" as const : "ok" as const,
+    warnings,
   };
   if (profile === "light") return { ...base, profile: "light" as const };
-  return { ...base, profile: "full" as const, networkInterfaces: os.networkInterfaces(), filesystems };
+  return { ...base, profile: "full" as const, networkInterfaces: os.networkInterfaces(), filesystems: snapshot.filesystems };
 }

@@ -31,7 +31,7 @@ it("advertises and forwards traversal options on both MCP search surfaces", asyn
       for (const key of Object.keys(options)) expect(schema.properties).toHaveProperty(key);
       const response = await client.callTool({ name: name!, arguments: { device: "pc", context: "user", ...options } });
       expect(response.isError).not.toBe(true);
-      expect(calls.at(-1)).toEqual(["pc", route, options, "user"]);
+      expect(calls.at(-1)).toEqual(route === "/v1/search" ? ["pc", route, options, "user", { signal: expect.any(AbortSignal) }] : ["pc", route, options, "user"]);
       const count = calls.length;
       const invalid = await client.callTool({ name: name!, arguments: { device: "pc", ...options, maxFileSizeBytes: -1 } });
       expect(invalid.isError).toBe(true);

@@ -6,6 +6,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { AgentClient } from "./agent-client.ts";
 import { mapLimit, settledLimit } from "./concurrency.ts";
+import { fleetProbeBudget, probeFleetHost } from "./fleet-probe.ts";
 import { advancedClient } from "./advanced-client.ts";
 import { elevationSchema, executionInputSchema, executionLabel, identitySchema, legacyContextSchema, resolveExecutionContext } from "./execution-identity.ts";
 
@@ -92,8 +93,8 @@ export function registerHighLevelTools(server: McpServer, client: AgentClient): 
   server.registerTool("fleet_status", {
     description: "Compact health/resource summary for all or selected devices. Android reverse devices report controller readiness instead of unavailable host metrics.",
     annotations: { readOnlyHint: true, openWorldHint: false },
-    inputSchema: { devices: z.array(z.string().min(1)).max(64).optional(), context: z.enum(["system", "user"]).optional(), concurrency: z.number().int().min(1).max(32).optional() },
-  }, async ({ devices, context, concurrency }) => {
+    inputSchema: { devices: z.array(z.string().min(1)).max(64).optional(), context: z.enum(["system", "user"]).optional(), concurrency: z.number().int().min(1).max(32).optional(), probeTimeoutMs: z.number().int().min(100).max(30000).optional() },
+  }, async ({ devices, context, concurrency, probeTimeoutMs }, extra) => {
     const names = devices?.length ? devices : client.devices.map((item) => item.name);
     const runContext = context ?? "system";
     const results = await mapLimit(names, concurrency, async (device) => {
@@ -106,34 +107,22 @@ export function registerHighLevelTools(server: McpServer, client: AgentClient): 
           };
           const androidContext = context === undefined ? "user" : runContext;
           if (androidContext === "system") {
-            return { device, online: status.online, platform: "android", context: "system", contextAvailable: false, readiness: status.readiness, readinessReason: status.readinessReason, error: "system context is not configured for android-reverse" };
+            return { device, online: status.online, connectivity: status.online ? "reachable" : "unknown", observedAt: new Date().toISOString(), metricsStatus: "unavailable", platform: "android", context: "system", contextAvailable: false, readiness: status.readiness, readinessReason: status.readinessReason, error: "system context is not configured for android-reverse" };
           }
           return {
-            device, online: status.online, hostname: status.state?.model ?? status.name, platform: "android", arch: null,
+            device, online: status.online, connectivity: status.online ? "reachable" : "unknown", observedAt: new Date().toISOString(), metricsStatus: "unavailable", hostname: status.state?.model ?? status.name, platform: "android", arch: null,
             uptimeSeconds: null, cpuCount: null, cpuModel: null, memoryUsedPercent: null, rootUsedPercent: null, rootAvailableBytes: null,
             readiness: status.readiness, readinessReason: status.readinessReason, context: "user", contextAvailable: true,
             network: status.state?.network ?? null, batteryPercent: status.state?.batteryPercent ?? null,
             screenOn: status.state?.screenOn ?? null, keyguardLocked: status.state?.keyguardLocked ?? null, accessibility: status.state?.accessibility ?? null,
           };
         }
-        const metrics = await advancedClient.metrics(client, device, runContext, "light") as Record<string, unknown>;
-        const platform = String(metrics.platform ?? "unknown");
-        const root = metrics.rootFilesystem && typeof metrics.rootFilesystem === "object"
-          ? metrics.rootFilesystem as Record<string, unknown>
-          : (Array.isArray(metrics.filesystems)
-            ? (metrics.filesystems as Array<Record<string, unknown>>).find((item) => item.mount === "/" || item.mount === "C:")
-            : null) ?? null;
-        const total = Number(metrics.totalMemoryBytes ?? 0); const free = Number(metrics.freeMemoryBytes ?? 0);
-        return {
-          device, online: true, hostname: metrics.hostname ?? null, platform, arch: metrics.arch ?? null,
-          uptimeSeconds: metrics.uptimeSeconds ?? null, cpuCount: metrics.cpuCount ?? null, cpuModel: metrics.cpuModel ?? null,
-          memoryUsedPercent: total > 0 ? Math.round((1 - free / total) * 1000) / 10 : null,
-          rootUsedPercent: root?.usedPercent ?? null, rootAvailableBytes: root?.availableBytes ?? null,
-        };
+        return await probeFleetHost(client, device, runContext, fleetProbeBudget(probeTimeoutMs), extra.signal);
       } catch (error) {
-        return { device, online: false, error: error instanceof Error ? error.message : String(error) };
+        extra.signal.throwIfAborted();
+        return { device, online: false, connectivity: "unknown", observedAt: new Date().toISOString(), metricsStatus: "unavailable", error: error instanceof Error ? error.message : String(error) };
       }
-    });
+    }, extra.signal);
     return text({ devices: results });
   });
 

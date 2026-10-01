@@ -1,3 +1,4 @@
+import { JobHistoryIndex, type HistoryQuery } from "./job-history-index.ts";
 import { JobStartDeduplicator, type JobStartInput } from "./job-start-dedup.ts";
 import { jobRecoveryPayload, type JobRecoveryDetails } from "../../../packages/protocol/src/job-recovery.ts";
 import { jobLineageSchema } from "../../../packages/protocol/src/project.ts";
@@ -892,20 +893,24 @@ export function jobList(limit = 100) {
     .sort((a, b) => b.startedAt.localeCompare(a.startedAt)).slice(0, Math.max(1, Math.min(limit, 1000)));
 }
 
-export async function jobListAsync(limit = 100) {
-  const items = jobList(limit);
-  if (process.platform !== "win32") return items;
-  let next = 0;
-  await Promise.all(Array.from({ length: Math.min(4, items.length) }, async () => {
-    while (next < items.length) {
-      const index = next++;
-      const item = items[index]!;
-      if (item.state !== "running" && item.state !== "cancelling") continue;
-      try { items[index] = await jobStatusAsync(item.id); }
-      catch (error) { if (existsSync(metaPath(item.id))) throw error; }
-    }
+const historyIndex = new JobHistoryIndex(jobsRoot);
+export async function jobHistoryPage(query: HistoryQuery = {}) {
+  const active = await historyIndex.activeIds();
+  let nextActive = 0;
+  await Promise.all(Array.from({ length: Math.min(4, active.length) }, async () => {
+    while (nextActive < active.length) { const id = active[nextActive++]!; try { await jobStatusAsync(id); } catch { /* preserve unavailable receipt */ } }
   }));
-  return items;
+  const page = await historyIndex.page(query);
+  const items: Array<ReturnType<typeof summary>> = [];
+  let unreadableCount = 0;
+  for (const id of page.ids) {
+    try { items.push(await jobStatusAsync(id)); }
+    catch { unreadableCount++; }
+  }
+  return { items, nextCursor: page.nextCursor, partial: page.partial || unreadableCount > 0, corruptCount: page.corruptCount, unreadableCount };
+}
+export async function jobListAsync(limit = 100) {
+  return (await jobHistoryPage({ limit })).items;
 }
 
 export async function jobRemove(id: string, force = false) {

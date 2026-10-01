@@ -12,9 +12,9 @@ import type { FastifyInstance, FastifyReply } from "fastify";
 import { z } from "zod";
 import { search } from "./search.ts";
 import { SearchInputError } from "./search-common.ts";
-import { searchRemove, searchResults, searchSessions, searchStart, searchStop } from "./search-sessions.ts";
+import { searchRemove, searchResults, searchSessions, searchSessionsDiagnostics, searchStart, searchStop } from "./search-sessions.ts";
 import { serviceLogs, serviceManage, systemMetrics } from "./system.ts";
-import { JobRecoveryError, jobCancel, jobLineage, jobListAsync, jobOutput, jobRemove, jobStart, jobStatusAsync } from "./jobs.ts";
+import { JobRecoveryError, jobCancel, jobLineage, jobHistoryPage, jobListAsync, jobOutput, jobRemove, jobStart, jobStatusAsync } from "./jobs.ts";
 import { repoCheckpoint, repoFetch, repoGitPath, repoPull, repoPush, repoSnapshot } from "./repo.ts";
 import { dockerSnapshot, dockerSummary } from "./docker.ts";
 import { findProcesses } from "./processes.ts";
@@ -94,8 +94,13 @@ export function registerExtraRoutes(app: FastifyInstance): void {
   app.post("/v1/search", async (request, reply) => {
     const parsed = searchSchema.safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: "invalid_request", details: parsed.error.issues });
-    try { return await search(parsed.data); }
+    const controller = new AbortController();
+    const abort = () => { if (!reply.raw.writableFinished) controller.abort(); };
+    request.raw.once("aborted", abort);
+    reply.raw.once("close", abort);
+    try { return await search(parsed.data, controller.signal); }
     catch (error) { return searchInputFailure(reply, error); }
+    finally { request.raw.removeListener("aborted", abort); reply.raw.removeListener("close", abort); }
   });
   app.post("/v1/search/start", async (request, reply) => {
     const parsed = searchSchema.safeParse(request.body);
@@ -113,7 +118,7 @@ export function registerExtraRoutes(app: FastifyInstance): void {
     if (!parsed.success) return reply.code(400).send({ error: "invalid_request", details: parsed.error.issues });
     return searchStop(parsed.data.id);
   });
-  app.get("/v1/search/sessions", async () => searchSessions());
+  app.get("/v1/search/sessions", async (request) => (request.query as { diagnostics?: string }).diagnostics === "true" ? searchSessionsDiagnostics() : searchSessions());
   app.post("/v1/search/remove", async (request, reply) => { const parsed = searchRemoveSchema.safeParse(request.body); if (!parsed.success) return reply.code(400).send({ error: "invalid_request", details: parsed.error.issues }); return searchRemove(parsed.data.id, parsed.data.force); });
   app.post("/v1/service", async (request, reply) => {
     const parsed = serviceSchema.safeParse(request.body);
@@ -154,6 +159,11 @@ export function registerExtraRoutes(app: FastifyInstance): void {
   app.post("/v1/jobs/remove", async (request, reply) => {
     const parsed = jobRemoveSchema.safeParse(request.body); if (!parsed.success) return reply.code(400).send({ error: "invalid_request", details: parsed.error.issues });
     return jobRemove(parsed.data.id, parsed.data.force);
+  });
+  app.get("/v1/jobs/history", async (request, reply) => {
+    const parsed = z.object({ limit: z.coerce.number().int().min(1).max(1000).optional(), cursor: z.string().max(4096).optional(), state: z.enum(["running", "cancelling", "completed", "cancelled", "lost"]).optional() }).safeParse(request.query);
+    if (!parsed.success) return reply.code(400).send({ error: "invalid_request" });
+    return jobHistoryPage(parsed.data);
   });
   app.get("/v1/jobs", async (request) => { const q = request.query as { limit?: string }; return jobListAsync(q.limit ? Number(q.limit) : undefined); });
 

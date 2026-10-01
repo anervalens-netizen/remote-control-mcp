@@ -165,6 +165,7 @@ export const toolResultSchemas = {
   job_output_since: jobFollow,
   job_cancel: z.object({ ...jobSummary.shape, ...route }).passthrough(),
   job_list: jobList,
+  job_history: jobList.extend({ nextCursor: z.string().nullable(), partial: z.boolean(), corruptCount: nonnegative, unreadableCount: nonnegative }),
   job_lineage: jobLineageResultSchema.extend(route),
   job_remove: z.object({ id: z.string(), removed: z.literal(true), ...route }).passthrough(),
   repo_git_path: z.object({ root: stringOrNull, gitDir: stringOrNull, commonGitDir: stringOrNull, gitPath: z.string(), resolved: stringOrNull }).passthrough(),

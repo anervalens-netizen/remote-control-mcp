@@ -13,7 +13,7 @@ export function registerAdvancedTools(server: McpServer, client: AgentClient): v
   server.registerTool("search", {
     description: "Fast ripgrep-backed file or content search on a remote computer.",
     inputSchema: searchInputSchema,
-  }, async ({ device, context, ...input }) => text(await advancedClient.search(client, device, input, context)));
+  }, async ({ device, context, ...input }, extra) => text(await advancedClient.search(client, device, input, context, extra.signal)));
 
   server.registerTool("service_manage", {
     description: "Inspect or control a Linux systemd or Windows Service Manager service.",

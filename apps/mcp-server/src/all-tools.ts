@@ -1,3 +1,4 @@
+import { diagnosticsFor } from "./tool-diagnostics.ts";
 import { registerBrowserTools } from "./browser-tools.ts";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { AgentClient } from "./agent-client.ts";
@@ -16,7 +17,7 @@ import { installDefaultToolOutputContracts } from "./tool-contract-defaults.ts";
 import { registerAndroidTools } from "./android-tools.ts";
 
 export function registerTools(server: McpServer, client: AgentClient): void {
-  installDefaultToolOutputContracts(server);
+  installDefaultToolOutputContracts(server, diagnosticsFor(client));
   registerCoreTools(server, client);
   registerBrowserTools(server, client);
   registerAdvancedTools(server, client);

@@ -40,6 +40,21 @@ type FileSearchResult = Array<{ path: string }> | {
   countTruncated?: true;
 };
 
+function bindCancellation(child: ReturnType<typeof spawn>, signal?: AbortSignal) {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const abort = () => {
+    child.kill("SIGTERM");
+    timer ??= setTimeout(() => { child.kill("SIGKILL"); }, 500);
+    timer.unref();
+  };
+  signal?.addEventListener("abort", abort, { once: true });
+  if (signal?.aborted) abort();
+  const cleanup = () => { signal?.removeEventListener("abort", abort); if (timer) clearTimeout(timer); };
+  child.once("close", cleanup);
+  child.once("error", cleanup);
+  return cleanup;
+}
+
 async function collectFileResults(
   file: string,
   args: string[],
@@ -47,8 +62,10 @@ async function collectFileResults(
   resultBase: string,
   matcher: (value: string) => boolean,
   maxResults: number,
+  signal?: AbortSignal,
 ): Promise<FileSearchResult> {
   const child = spawn(file, args, { cwd, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+  bindCancellation(child, signal);
   child.stdout.setEncoding("utf8");
   child.stderr.setEncoding("utf8");
   const results: Array<{ path: string }> = [];
@@ -98,6 +115,7 @@ async function collectFileResults(
     child.once("error", reject);
     child.once("close", resolve);
   });
+  signal?.throwIfAborted();
   if (!limited && pending) parseLine(pending);
   if (!limited && code !== 0 && code !== 1) throw classifyRipgrepFailure(code, stderr);
   if (limited) {
@@ -117,15 +135,17 @@ function resultIsClipped(result: Record<string, unknown>): boolean {
   return result.textTruncated === true || result.submatchesTruncated === true;
 }
 
-export async function search(input: SearchInput) {
+export async function search(input: SearchInput, signal?: AbortSignal) {
+  signal?.throwIfAborted();
   const maxResults = input.maxResults ?? 100;
   const { args, cwd, resultBase } = buildSearchArgs(input);
   if (input.mode === "files") {
     const matcher = createFileMatcher(input);
-    return collectFileResults(rgPath, args, cwd, resultBase, matcher, maxResults);
+    return collectFileResults(rgPath, args, cwd, resultBase, matcher, maxResults, signal);
   }
 
   const child = spawn(rgPath, args, { cwd, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+  bindCancellation(child, signal);
   child.stdout.setEncoding("utf8");
   child.stderr.setEncoding("utf8");
   const results: Array<Record<string, unknown>> = [];
@@ -161,12 +181,13 @@ export async function search(input: SearchInput) {
         child.kill("SIGTERM");
         return;
       }
-      results.push(resultRecord);
-      contentTruncated ||= candidateWouldTruncate;
       if (results.length >= maxResults) {
         limited = true;
         child.kill("SIGTERM");
+        return;
       }
+      results.push(resultRecord);
+      contentTruncated ||= candidateWouldTruncate;
     } catch (error) {
       parseError = error instanceof Error ? error : new Error(String(error));
       child.kill("SIGTERM");
@@ -191,6 +212,7 @@ export async function search(input: SearchInput) {
     child.once("error", reject);
     child.once("close", resolve);
   });
+  signal?.throwIfAborted();
   if (!limited && !parseError && pending) parseLine(pending);
   if (parseError) throw parseError;
   if (!limited && code !== 0 && code !== 1) throw classifyRipgrepFailure(code, stderr);

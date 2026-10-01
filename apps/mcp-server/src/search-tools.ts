@@ -39,8 +39,8 @@ export function registerSearchSessionTools(server: McpServer, client: AgentClien
 
   server.registerTool("search_sessions", {
     description: "List persistent remote search sessions on a computer/context.",
-    inputSchema: { device: z.string().min(1), context: contextSchema },
-  }, async ({ device, context }) => text(await advancedClient.searchSessions(client, device, context)));
+    inputSchema: { device: z.string().min(1), context: contextSchema, diagnostics: z.boolean().optional() },
+  }, async ({ device, context, diagnostics }) => text(await advancedClient.searchSessions(client, device, context, diagnostics)));
 
   server.registerTool("search_remove", {
     description: "Remove persisted search metadata/results; force can stop an active search first.",

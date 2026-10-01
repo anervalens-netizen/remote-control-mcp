@@ -1,3 +1,4 @@
+import { startToolProgress, toolOutcome, type ToolDiagnostics } from "./tool-diagnostics.ts";
 import { withErrorOutputContract } from "./error-output-contract.ts";
 import { withToolErrors } from "./tool-errors.ts";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -9,7 +10,7 @@ const installedServers = new WeakSet<object>();
 // infer read-only from a name: mixed/action tools deliberately have no default.
 const readOnlyTools = new Set([
   "devices_list", "device_info", "device_contexts", "fs_read", "fs_list", "batch_read",
-  "job_status", "job_output", "job_output_since", "job_wait", "job_list", "job_lineage",
+  "job_status", "job_output", "job_output_since", "job_wait", "job_list", "job_history", "job_lineage",
   "pty_output", "search_results", "search_status", "service_inspect", "service_logs",
   "network_snapshot", "android_status",
 ]);
@@ -121,7 +122,7 @@ export function structuredFromContent(content: unknown): Record<string, unknown>
 }
 
 /** Install semantic output contracts and bound duplicated structured payloads once per MCP server. */
-export function installDefaultToolOutputContracts(server: McpServer): void {
+export function installDefaultToolOutputContracts(server: McpServer, diagnostics?: ToolDiagnostics): void {
   if (installedServers.has(server)) return;
   const target = server as any;
   const original = target.registerTool.bind(server);
@@ -130,13 +131,23 @@ export function installDefaultToolOutputContracts(server: McpServer): void {
     if (!schema) throw new Error(`Missing semantic output contract for registered tool: ${name}`);
     const advertisedSchema = withErrorOutputContract(schema);
     const wrappedCallback = async (...args: any[]) => {
-      const result = await withToolErrors(() => callback(...args));
-      if (!result || typeof result !== "object") return result;
-      const current = (result as any).structuredContent;
-      const structured = current && typeof current === "object" && !Array.isArray(current)
-        ? current as Record<string, unknown>
-        : structuredFromContent((result as any).content);
-      return { ...result, structuredContent: compactStructuredContent(structured, STRUCTURED_CONTENT_MAX_BYTES, advertisedSchema) };
+      const started = performance.now();
+      const extra = args[1];
+      const stopProgress = startToolProgress(name, extra);
+      let outcome: ReturnType<typeof toolOutcome> = "error";
+      try {
+        const result = await withToolErrors(() => callback(...args));
+        if (!result || typeof result !== "object") return result;
+        const current = (result as any).structuredContent;
+        const structured = current && typeof current === "object" && !Array.isArray(current)
+          ? current as Record<string, unknown>
+          : structuredFromContent((result as any).content);
+        outcome = toolOutcome(result, structured, extra?.signal);
+        return { ...result, structuredContent: compactStructuredContent(structured, STRUCTURED_CONTENT_MAX_BYTES, advertisedSchema) };
+      } finally {
+        stopProgress();
+        diagnostics?.record(name, args[0], performance.now() - started, outcome);
+      }
     };
     const annotations = readOnlyTools.has(name)
       ? { readOnlyHint: true, destructiveHint: false, idempotentHint: true, ...config?.annotations }

@@ -1,3 +1,5 @@
+import { monitorEventLoopDelay } from "node:perf_hooks";
+import { diagnosticsFor } from "./tool-diagnostics.ts";
 import { agentInstructions } from "./instructions.ts";
 import { contextKeepBridgeDiagnostics } from "./contextkeep-bridge.ts";
 import { randomUUID } from "node:crypto";
@@ -71,6 +73,7 @@ export function createMcpHttpServer(client: AgentClient, options: {
   maxBodyBytes?: number | null;
 } = {}) {
   const startedAt = new Date().toISOString();
+  const eventLoop = monitorEventLoopDelay({ resolution: 20 });
   const instanceId = randomUUID();
   const sessions = new Map<string, Session>();
   const sessionIdleMs = options.sessionIdleMs ?? 15 * 60 * 1000;
@@ -164,6 +167,8 @@ export function createMcpHttpServer(client: AgentClient, options: {
             failed: requestsFailed,
             averageDurationMs: requestsTotal > 1 ? Math.round(requestDurationMsTotal / Math.max(1, requestsTotal - requestsInFlight)) : 0,
           },
+          toolDiagnostics: diagnosticsFor(client).snapshot(),
+          eventLoop: { unit: "milliseconds", resolutionMs: 20, meanMs: Number.isFinite(eventLoop.mean) ? eventLoop.mean / 1e6 : null, p95Ms: eventLoop.percentile(95) / 1e6, p99Ms: eventLoop.percentile(99) / 1e6, maxMs: eventLoop.max / 1e6 },
           memory: { rssBytes: memory.rss, heapUsedBytes: memory.heapUsed, heapTotalBytes: memory.heapTotal, externalBytes: memory.external },
           devices: client.devices.map((device) => ({ name: device.name, contexts: client.configuredContexts(device.name) })),
         }));
@@ -242,8 +247,10 @@ export function createMcpHttpServer(client: AgentClient, options: {
     }
   });
 
+  eventLoop.enable();
   http.once("close", () => {
     clearInterval(cleanup);
+    eventLoop.disable();
     for (const session of sessions.values()) void session.server.close();
     sessions.clear();
   });

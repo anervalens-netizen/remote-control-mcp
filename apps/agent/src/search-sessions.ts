@@ -235,14 +235,15 @@ recoverPersisted();
 function pushResult(session: Session, result: unknown): void {
   if (session.meta.status !== "running") return;
   const limit = session.meta.input.maxResults ?? 10_000;
-  if (session.meta.resultsCount >= limit) return;
-  appendFileSync(session.meta.resultsPath, `${JSON.stringify(result)}\n`, { encoding: "utf8", mode: 0o600 });
-  session.meta.resultsCount += 1;
+  if (session.meta.limited) return;
   if (session.meta.resultsCount >= limit) {
     session.meta.limited = true;
     writeMeta(session.meta);
     session.child.kill("SIGTERM");
+    return;
   }
+  appendFileSync(session.meta.resultsPath, `${JSON.stringify(result)}\n`, { encoding: "utf8", mode: 0o600 });
+  session.meta.resultsCount += 1;
 }
 
 function failSession(session: Session, error: unknown): void {
@@ -514,15 +515,22 @@ export function searchStop(id: string) {
 }
 
 export function searchSessions() {
-  return readdirSync(searchRoot).filter((name) => name.endsWith(".json")).map((name) => {
+  const valid: Array<{ id: string; status: Status; createdAt: string; updatedAt: string; available: number; limited: boolean; error: string | null; recoveryReason: string | null }> = [];
+  for (const name of readdirSync(searchRoot).filter(name => name.endsWith(".json"))) {
     const id = name.slice(0, -5);
-    const meta = sessions.get(id)?.meta ?? readMeta(id);
-    return {
-      id, status: meta.status, createdAt: meta.createdAt, updatedAt: meta.updatedAt,
-      available: meta.resultsCount, limited: meta.limited, error: meta.error ?? null,
-      recoveryReason: meta.recoveryReason ?? null,
-    };
-  }).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    try {
+      const meta = sessions.get(id)?.meta ?? readMeta(id);
+      if (meta.id !== id || typeof meta.createdAt !== "string" || !["running", "done", "stopped", "error", "lost"].includes(meta.status)) continue;
+      valid.push({ id, status: meta.status, createdAt: meta.createdAt, updatedAt: meta.updatedAt, available: meta.resultsCount, limited: meta.limited, error: meta.error ?? null, recoveryReason: meta.recoveryReason ?? null });
+    } catch { /* Isolate and preserve corrupt metadata; never delete it. */ }
+  }
+  return valid.sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id));
+}
+
+export function searchSessionsDiagnostics() {
+  const items = searchSessions();
+  const metadataCount = readdirSync(searchRoot).filter(name => name.endsWith(".json")).length;
+  return { items, partial: items.length < metadataCount, corruptCount: Math.max(0, metadataCount - items.length) };
 }
 
 async function waitClosed(session: Session, timeoutMs: number): Promise<boolean> {

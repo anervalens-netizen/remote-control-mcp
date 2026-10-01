@@ -13,7 +13,7 @@ it("publishes an output contract for every registered MCP tool", async () => {
   await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
   try {
     const listed = await client.listTools();
-    expect(listed.tools).toHaveLength(89);
+    expect(listed.tools).toHaveLength(90);
     expect(listed.tools.filter((tool) => !tool.outputSchema).map((tool) => tool.name)).toEqual([]);
   } finally {
     await client.close();

@@ -35,9 +35,9 @@ async function jobHarness(client: AgentClient) {
 }
 
 describe("M16 contract lane", () => {
-  it("keeps all 89 core contracts plus four optional Android contracts and rejects empty results", () => {
+  it("keeps all 90 core contracts plus four optional Android contracts and rejects empty results", () => {
     const names = Object.keys(toolResultSchemas);
-    expect(names.filter(name => !name.startsWith("android_"))).toHaveLength(89);
+    expect(names.filter(name => !name.startsWith("android_"))).toHaveLength(90);
     expect(names.filter(name => name.startsWith("android_")).sort()).toEqual([
       "android_action", "android_command_status", "android_observe", "android_status",
     ]);

@@ -102,3 +102,40 @@ alone. The authenticated health response exposes aggregate pending age/count,
 corruption count and safe error categories, never commands or lease credentials.
 The bridge avoids writing to known terminal/verified runs; concurrent observation
 and verification ordering ultimately depends on the ContextKeep write contract.
+
+## Performance and history observations
+
+`fleet_status` probes authenticated host info and light metrics in parallel within
+one read-only budget (`probeTimeoutMs`, default 1500 ms; configurable through
+`RCMCP_HEALTH_PROBE_TIMEOUT_MS`). A responding agent remains reachable when its
+metrics fail. No response means connectivity and power state are unknown. Caller
+cancellation reaches active probes and prevents queued probes from starting.
+These budgets do not change effectful execution deadlines or replay behavior.
+
+Light metrics use native root-filesystem statistics, with a one-second shared
+sample and in-flight deduplication. Filesystem timestamps, age, warnings and
+partial status describe freshness explicitly. Full collectors are bounded and
+retain valid partial data. Root disk percentage is also populated on Windows.
+
+Synchronous search cancellation terminates and reaps its child; persistent
+searches and durable jobs remain independent of a cancelled start/wait request.
+A result set exactly at `maxResults` is complete unless another match or a byte
+limit demonstrates truncation. `search_sessions` retains its legacy array;
+`diagnostics=true` returns an additive envelope with items and corruption counts.
+Unreadable metadata is isolated and preserved.
+
+`job_list` retains its array contract. `job_history` returns items, `nextCursor`,
+state filtering and partial/corruption counts. Its process-local index is derived
+from metadata and rebuilds after restart; receipt, lineage and idempotency files
+remain authoritative. Pages order by descending start time then ID. Use the
+returned cursor until null to access histories exceeding 1000 entries. Paging is
+a live view: additions newer than the cursor appear on a fresh first page;
+deletions do not cause duplicate entries. It is not a snapshot transaction.
+Only selected receipts and active jobs are reconciled, rather than summarizing
+every historical job synchronously.
+
+Authenticated controller health includes bounded per-tool/device timing and
+outcome samples and event-loop delay. It stores no raw commands, arguments,
+outputs or exception messages. Clients supplying a progress token may receive
+elapsed/stage notifications for fleet probes and job waits; those values are
+elapsed time, never estimated completion percentages.

@@ -93,6 +93,13 @@ export function registerJobTools(server: McpServer, client: AgentClient): void {
       const target = resolveExecutionContext(client, device, { context, identity, elevation }, "system");
       return routedText(await client.jobs(device, limit, target), target);
     });
+  server.registerTool("job_history", { description: "Page durable history using a stable time/id cursor. Metadata remains authoritative; corrupt receipts are retained and counted.", inputSchema: executionInputSchema({ device: z.string().min(1), limit: z.number().int().min(1).max(1000).optional(), cursor: z.string().max(4096).optional(), state: z.enum(["running", "cancelling", "completed", "cancelled", "lost"]).optional() }) },
+    async ({ device, context, identity, elevation, ...query }) => {
+      const target = resolveExecutionContext(client, device, { context, identity, elevation }, "system");
+      const params = new URLSearchParams();
+      for (const [key, value] of Object.entries(query)) if (value !== undefined) params.set(key, String(value));
+      return routedText(await client.requestRoute(device, `/v1/jobs/history?${params}`, undefined, target), target);
+    });
   server.registerTool("job_remove", { description: "Remove durable job metadata and output files; force can cancel a running job first.", inputSchema: executionInputSchema({ device: z.string().min(1), id: z.string().min(1), force: z.boolean().optional() }) },
     async ({ device, id, force, context, identity, elevation }) => {
       const target = resolveExecutionContext(client, device, { context, identity, elevation }, "system");
