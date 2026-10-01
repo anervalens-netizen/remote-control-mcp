@@ -100,6 +100,27 @@ export function compactStructuredContent(
   return { structuredContentTruncated: true };
 }
 
+/** Compact pages by whole items and advance from the last actually delivered row. */
+export function compactHistoryPage(value: Record<string, unknown>, maxBytes = STRUCTURED_CONTENT_MAX_BYTES): Record<string, unknown> {
+  if (jsonBytes(value) <= maxBytes) return value;
+  if (!Array.isArray(value.items)) throw new Error("Invalid job history page");
+  const items = value.items as Array<Record<string, unknown>>;
+  let low = 1; let high = items.length; let best: Record<string, unknown> | undefined;
+  while (low <= high) {
+    const count = Math.floor((low + high) / 2);
+    const last = items[count - 1]!;
+    const nextCursor = count < items.length
+      ? Buffer.from(JSON.stringify({ id: last.id, startedAt: last.startedAt })).toString("base64url")
+      : value.nextCursor;
+    const candidate = truncatedEnvelope({ ...value, items: items.slice(0, count), nextCursor }, jsonBytes(value), maxBytes);
+    candidate.structuredContentNotice = "Page shortened at a whole-item boundary; nextCursor resumes after the last delivered item. Full legacy page remains in content.";
+    if (jsonBytes(candidate) <= maxBytes) { best = candidate; low = count + 1; }
+    else high = count - 1;
+  }
+  if (!best) throw new Error("A job history item exceeds the structured output budget; use job_status for that receipt. No pagination cursor was advanced.");
+  return best;
+}
+
 export function structuredFromContent(content: unknown): Record<string, unknown> {
   if (!Array.isArray(content)) return { result: content };
   const types = [...new Set(content.map((item: any) => typeof item?.type === "string" ? item.type : "unknown"))];
@@ -143,6 +164,10 @@ export function installDefaultToolOutputContracts(server: McpServer, diagnostics
           ? current as Record<string, unknown>
           : structuredFromContent((result as any).content);
         outcome = toolOutcome(result, structured, extra?.signal);
+        if (name === "job_history" && !(result as any).isError) {
+          try { return { ...result, structuredContent: compactHistoryPage(structured) }; }
+          catch (error) { outcome = "error"; return withToolErrors(() => { throw error; }); }
+        }
         return { ...result, structuredContent: compactStructuredContent(structured, STRUCTURED_CONTENT_MAX_BYTES, advertisedSchema) };
       } finally {
         stopProgress();

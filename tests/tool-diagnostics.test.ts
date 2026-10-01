@@ -17,6 +17,7 @@ describe('bounded tool observations', () => {
     expect(toolOutcome({}, {devices:[{online:false}]})).toBe('partial');
     expect(toolOutcome({}, {ok:false,kind:'cancelled'})).toBe('cancelled');
     expect(toolOutcome({}, {ok:true})).toBe('success');
+    expect(toolOutcome({}, {items:[{ok:true},{ok:false}]})).toBe('partial');
     expect(toolOutcome({}, {devices:[{online:true,platform:'android',metricsStatus:'not_applicable'}]})).toBe('success');
   });
 });

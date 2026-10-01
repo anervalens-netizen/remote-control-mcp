@@ -164,7 +164,9 @@ it("rejects an old directory source before creating any destination directories"
 it("enforces expectedVersion even with versioned=false and keeps ordinary reads available", async () => {
   const { source } = await fixture();
   const initial = fsReadResultSchema.parse(await fsRead({ path: source, versioned: true, length: 0 }));
-  await writeFile(source, newBytes); await utimes(source, mtime, mtime);
+  // Make the generation change explicit even when the host filesystem clock
+  // gives two rapid same-size writes identical ctime ticks.
+  await writeFile(source, newBytes); await utimes(source, mtime, new Date("2021-01-01T00:00:00.000Z"));
   await expect(fsRead({ path: source, versioned: false, expectedVersion: initial.sourceVersion, length: 65536 })).rejects.toThrow(/Source changed/);
   expect((await fsRead({ path: source, length: 65536 })).data).toBe("B".repeat(65536));
   await expect(fsRead({ path: source, versioned: true, tailBytes: 1 })).rejects.toThrow(/byte paging/);

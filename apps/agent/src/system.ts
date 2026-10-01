@@ -124,15 +124,8 @@ async function collectRootFilesystem(): Promise<FilesystemSnapshot> {
   const sampledAtMs = Date.now();
   const warnings: string[] = [];
   const mount = rootMount();
-  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    const value = await Promise.race([
-      statfs(rootPath()),
-      new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error("filesystem_probe_timeout")), COLLECTOR_TIMEOUT_MS);
-        timer.unref();
-      }),
-    ]);
+    const value = await statfs(rootPath());
     const sizeBytes = value.blocks * value.bsize;
     const usedBytes = (value.blocks - value.bfree) * value.bsize;
     const availableBytes = value.bavail * value.bsize;
@@ -150,7 +143,7 @@ async function collectRootFilesystem(): Promise<FilesystemSnapshot> {
     const kind = error instanceof Error && error.message === "filesystem_probe_timeout" ? "filesystem_probe_timeout" : "filesystem_probe_unavailable";
     warnings.push(kind);
     return { filesystems: [], warnings, sampledAt: new Date(sampledAtMs).toISOString(), sampledAtMs };
-  } finally { if (timer) clearTimeout(timer); }
+  }
 }
 
 async function collectFullFilesystems(): Promise<FilesystemSnapshot> {
@@ -207,7 +200,23 @@ async function filesystemMetrics(profile: "light" | "full"): Promise<{ snapshot:
       .finally(() => filesystemPending.delete(key));
     filesystemPending.set(key, pending);
   }
-  return { snapshot: await pending, cached: joined };
+  if (profile === "full") return { snapshot: await pending, cached: joined };
+  // statfs cannot be cancelled. Keep the raw operation in the shared map until
+  // it settles; only the caller's wait is bounded, preventing thread-pool floods.
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const snapshot = await Promise.race([
+      pending,
+      new Promise<FilesystemSnapshot>((resolve) => {
+        timer = setTimeout(() => {
+          const sampledAtMs = Date.now();
+          resolve({ filesystems: [], warnings: ["filesystem_probe_timeout"], sampledAt: new Date(sampledAtMs).toISOString(), sampledAtMs });
+        }, COLLECTOR_TIMEOUT_MS);
+        timer.unref();
+      }),
+    ]);
+    return { snapshot, cached: joined };
+  } finally { if (timer) clearTimeout(timer); }
 }
 
 export type LightSystemMetrics = {

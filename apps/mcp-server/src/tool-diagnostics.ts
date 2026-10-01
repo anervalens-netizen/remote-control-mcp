@@ -53,6 +53,7 @@ export function toolOutcome(result: unknown, structured: Record<string, unknown>
   if (signal?.aborted || structured.kind === "cancelled") return "cancelled";
   if ((result as { isError?: boolean } | null)?.isError || structured.ok === false || typeof structured.code === "number" && structured.code !== 0) return "error";
   if (structured.partial === true || Array.isArray(structured.errors) && structured.errors.length > 0) return "partial";
+  if (Array.isArray(structured.items) && structured.items.some(item => item && item.ok === false)) return "partial";
   if (Array.isArray(structured.devices) && structured.devices.some(d => d && (d.online === false || d.metricsStatus === "unavailable" || d.metricsStatus === "partial"))) return "partial";
   return "success";
 }
