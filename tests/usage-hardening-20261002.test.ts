@@ -54,7 +54,8 @@ describe("usage hardening 2026-10-02",()=>{
 
   it("resolves keyed project retries before consulting mutable project manifests",async()=>{
     const root=await temp();
-    await writeFile(path.join(root,"package.json"),JSON.stringify({scripts:{build:`${process.execPath.replaceAll("\\\\","/")} -e "process.stdout.write(\'built\')"`}}));
+    await writeFile(path.join(root,"build.cjs"),"process.stdout.write(\"built\")");
+    await writeFile(path.join(root,"package.json"),JSON.stringify({scripts:{build:"node build.cjs"}}));
     const key="project-"+randomUUID();
     const input={path:root,action:"build" as const,mode:"job" as const,idempotencyKey:key};
     const first=await projectRun(input); const firstJob=first.result as {id:string}; jobs.push(firstJob.id);
@@ -117,6 +118,7 @@ describe("usage hardening 2026-10-02",()=>{
     (client.info as any)=async()=>({runtime:{capabilities:["project","deploy-phases"]}});
     (client.requestRoute as any)=async()=>{dispatched++;return {ok:true};};
     await expect(client.projectRun("pc",{path:"/tmp",command:"printf project",mode:"job",idempotencyKey:"stable"},"user")).rejects.toMatchObject({kind:"context",route:"/v1/info"});
+    await expect(client.projectRun("pc",{path:"/tmp",command:"printf project",mode:"exec",idempotencyKey:"stable"},"user")).rejects.toMatchObject({kind:"context",route:"/v1/info"});
     await expect(client.deployRun("pc",{apply:"printf deploy",idempotencyKey:"stable"},"system")).rejects.toMatchObject({kind:"context",route:"/v1/info"});
     expect(dispatched).toBe(0);
   });

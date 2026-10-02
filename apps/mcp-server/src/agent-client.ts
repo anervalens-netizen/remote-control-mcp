@@ -410,7 +410,7 @@ export class AgentClient {
   projectRun(name: string, input: ProjectRunInput, context: AgentEndpointContext = "user", options: AgentRequestOptions = {}): Promise<unknown> {
     const timeoutMs = input.mode === "exec" ? input.timeoutMs === 0 ? 0 : withTimeoutGrace(input.timeoutMs ?? DEFAULT_HTTP_TIMEOUT_MS) : undefined;
     const requestOptions = { ...options, timeoutMs: options.timeoutMs ?? timeoutMs };
-    if (input.idempotencyKey && (input.mode ?? "job") === "job" && !input.dryRun) {
+    if (input.idempotencyKey && !input.dryRun) {
       return this.requireHighLevelIdempotency(name, context, requestOptions)
         .then(() => this.request(name, "/v1/project/run", input, context, requestOptions));
     }
