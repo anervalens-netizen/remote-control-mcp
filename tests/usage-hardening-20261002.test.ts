@@ -9,16 +9,17 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import Fastify from "fastify";
 import { JobStartDeduplicator } from "../apps/agent/src/job-start-dedup.ts";
-import { jobCancel, jobRemove, jobStartKeyStatus } from "../apps/agent/src/jobs.ts";
+import { jobCancel, jobRemove, jobStart, jobStartKeyStatus } from "../apps/agent/src/jobs.ts";
 import { jobFollow } from "../apps/agent/src/job-follow.ts";
 import { projectRun } from "../apps/agent/src/project-run.ts";
 import { deployRun } from "../apps/agent/src/deploy.ts";
 import { nativeCommand } from "../apps/agent/src/shell-quote.ts";
 import { registerExtraRoutes } from "../apps/agent/src/extra-routes.ts";
 import { probeFleetHost } from "../apps/mcp-server/src/fleet-probe.ts";
-import { AgentRequestError, type AgentClient } from "../apps/mcp-server/src/agent-client.ts";
+import { AgentClient, AgentRequestError } from "../apps/mcp-server/src/agent-client.ts";
 import { toolErrorDetails } from "../apps/mcp-server/src/tool-errors.ts";
 import { registerJobTools } from "../apps/mcp-server/src/job-tools.ts";
+import { registerHighLevelTools } from "../apps/mcp-server/src/high-level-tools.ts";
 import { installDefaultToolOutputContracts } from "../apps/mcp-server/src/tool-contract-defaults.ts";
 
 const roots:string[]=[];
@@ -93,6 +94,61 @@ describe("usage hardening 2026-10-02",()=>{
   it("keeps typed agent causes in structured tool errors",()=>{
     const error=new AgentRequestError("missing","pc","user","/v1/fs/read","http",500,undefined,false,undefined,"ENOENT");
     expect(toolErrorDetails(error)).toMatchObject({device:"pc",context:"user",route:"/v1/fs/read",kind:"http",status:500,agentCode:"ENOENT"});
+  });
+
+  it("does not return unrelated plain jobs for repeated high-level key collisions",async()=>{
+    const root=await temp();
+    const projectKey="collision-project-"+randomUUID();
+    const plainProject=await jobStart({command:nativeCommand([process.execPath,"-e","process.stdout.write('plain')"]),idempotencyKey:projectKey}); jobs.push(plainProject.id);
+    const projectInput={path:root,command:nativeCommand([process.execPath,"-e","process.stdout.write('project')"]),mode:"job" as const,idempotencyKey:projectKey};
+    await expect(projectRun(projectInput)).rejects.toMatchObject({code:"job_start_conflict",jobId:plainProject.id});
+    await expect(projectRun(projectInput)).rejects.toMatchObject({code:"job_start_conflict",jobId:plainProject.id});
+
+    const deployKey="collision-deploy-"+randomUUID();
+    const plainDeploy=await jobStart({command:nativeCommand([process.execPath,"-e","process.stdout.write('plain')"]),idempotencyKey:deployKey}); jobs.push(plainDeploy.id);
+    const deployInput={apply:nativeCommand([process.execPath,"-e","process.stdout.write('deploy')"]),idempotencyKey:deployKey};
+    await expect(deployRun(deployInput)).rejects.toMatchObject({code:"job_start_conflict",jobId:plainDeploy.id});
+    await expect(deployRun(deployInput)).rejects.toMatchObject({code:"job_start_conflict",jobId:plainDeploy.id});
+  });
+
+  it("refuses keyed high-level execution when an older agent lacks the capability",async()=>{
+    const client=new AgentClient([{name:"pc",url:"http://unused.invalid"}] as any);
+    let dispatched=0;
+    (client.info as any)=async()=>({runtime:{capabilities:["project","deploy-phases"]}});
+    (client.requestRoute as any)=async()=>{dispatched++;return {ok:true};};
+    await expect(client.projectRun("pc",{path:"/tmp",command:"printf project",mode:"job",idempotencyKey:"stable"},"user")).rejects.toMatchObject({kind:"context",route:"/v1/info"});
+    await expect(client.deployRun("pc",{apply:"printf deploy",idempotencyKey:"stable"},"system")).rejects.toMatchObject({kind:"context",route:"/v1/info"});
+    expect(dispatched).toBe(0);
+  });
+
+  it("preserves typed causes for raw-file HTTP failures",async()=>{
+    const previous=globalThis.fetch;
+    (globalThis as any).fetch=async()=>new Response(JSON.stringify({error:"Internal Server Error",message:"missing",code:"ENOENT"}),{status:500,headers:{"content-type":"application/json"}});
+    try {
+      const client=new AgentClient([{name:"pc",url:"http://fixture.invalid"}] as any);
+      await expect(client.rawFile("pc","/missing","system",1000)).rejects.toMatchObject({kind:"http",status:500,agentCode:"ENOENT"});
+    } finally {
+      (globalThis as any).fetch=previous;
+    }
+  });
+
+  it("routes keyed command-only deploy through the durable deploy endpoint",async()=>{
+    let deployCalls=0, snapshotCalls=0, directStarts=0;
+    const fake={
+      devices:[{name:"pc"}],
+      configuredContexts:()=>({system:true,user:true,desktop:false}),
+      deployRun:async(_device:string,input:any)=>{deployCalls++;expect(input.idempotencyKey).toBe("stable-key");return {started:true,plan:{},before:null,job:{id:"durable"}};},
+      repoSnapshot:async()=>{snapshotCalls++;return {head:"unexpected"};},
+      jobStart:async()=>{directStarts++;return {id:"unexpected"};},
+    } as unknown as AgentClient;
+    const server=new McpServer({name:"usage-hardening-high-level",version:"1"});installDefaultToolOutputContracts(server);registerHighLevelTools(server,fake);
+    const client=new Client({name:"usage-hardening-high-level-client",version:"1"});
+    const [st,ct]=InMemoryTransport.createLinkedPair();await Promise.all([server.connect(st),client.connect(ct)]);
+    try {
+      const result=await client.callTool({name:"deploy_run",arguments:{device:"pc",command:"printf keyed",repoPath:"/repo",idempotencyKey:"stable-key"}});
+      expect(json(result)).toMatchObject({started:true,context:"system",job:{id:"durable"}});
+      expect(deployCalls).toBe(1);expect(snapshotCalls).toBe(0);expect(directStarts).toBe(0);
+    } finally {await client.close();await server.close();}
   });
 
   it("routes job_list history and job_status key lookup through already exposed tools",async()=>{

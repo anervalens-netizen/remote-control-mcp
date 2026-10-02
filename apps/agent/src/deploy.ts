@@ -1,5 +1,5 @@
 import type { DeployInput } from "../../../packages/protocol/src/project.ts";
-import { existingJobForKey, jobStart, immutableStateFile } from "./jobs.ts";
+import { jobStart, immutableStateFile } from "./jobs.ts";
 import { repoSnapshot, type RepoSnapshotFull } from "./repo.ts";
 import { nativeCommand } from "./shell-quote.ts";
 import { resolveHighLevelKey } from "./high-level-idempotency.ts";
@@ -75,9 +75,12 @@ async function phase(name, command) {
 `;
 
 type DeployBefore = RepoSnapshotFull | null;
-function parseStoredBefore(value: unknown): DeployBefore {
-  if (value === null || (typeof value === "object" && !Array.isArray(value))) return value as DeployBefore;
-  throw new Error("Invalid stored deployment snapshot");
+type StoredDeployRun = { before: DeployBefore; jobCommand: string };
+function parseStoredDeployRun(value: unknown): StoredDeployRun {
+  if (!value || typeof value !== "object" || typeof (value as any).jobCommand !== "string") throw new Error("Invalid stored deployment execution");
+  const before = (value as any).before;
+  if (before !== null && (typeof before !== "object" || Array.isArray(before))) throw new Error("Invalid stored deployment snapshot");
+  return { before: before as DeployBefore, jobCommand: (value as any).jobCommand };
 }
 
 export async function deployRun(input: DeployInput) {
@@ -93,22 +96,26 @@ export async function deployRun(input: DeployInput) {
     return { started: false, dryRun: true, plan, before };
   }
   let before: DeployBefore;
-  let highLevelReplayed = false;
+  let jobCommand: string;
   if (input.idempotencyKey) {
-    const resolved = await resolveHighLevelKey<DeployBefore>({
+    const resolved = await resolveHighLevelKey<StoredDeployRun>({
       kind: "deploy_run", idempotencyKey: input.idempotencyKey,
       intent: { phases, cwd: cwd ?? null, repoPath: input.repoPath ?? null, env: input.env ?? {} },
-      create: () => input.repoPath ? repoSnapshot(input.repoPath, 3) : null,
-      parseValue: parseStoredBefore,
+      create: async () => {
+        const originalBefore = input.repoPath ? await repoSnapshot(input.repoPath, 3) : null;
+        const runner = immutableStateFile("deploy-runner", "cjs", deployRunner, 0o600);
+        return { before: originalBefore, jobCommand: nativeCommand([process.execPath, runner]) };
+      },
+      parseValue: parseStoredDeployRun,
     });
-    before = resolved.value; highLevelReplayed = resolved.replayed;
-    if (highLevelReplayed) {
-      const existing = await existingJobForKey(input.idempotencyKey);
-      if (existing) return { started: true, plan, before, job: existing };
-    }
-  } else before = input.repoPath ? await repoSnapshot(input.repoPath, 3) : null;
-  const runner = immutableStateFile("deploy-runner", "cjs", deployRunner, 0o600);
-  const job = await jobStart({ command: nativeCommand([process.execPath, runner]), ...(cwd ? { cwd } : {}),
+    before = resolved.value.before;
+    jobCommand = resolved.value.jobCommand;
+  } else {
+    before = input.repoPath ? await repoSnapshot(input.repoPath, 3) : null;
+    const runner = immutableStateFile("deploy-runner", "cjs", deployRunner, 0o600);
+    jobCommand = nativeCommand([process.execPath, runner]);
+  }
+  const job = await jobStart({ command: jobCommand, ...(cwd ? { cwd } : {}),
     env: { ...input.env, RCMCP_DEPLOY_INPUT: JSON.stringify(phases) }, ...(input.idempotencyKey ? { idempotencyKey: input.idempotencyKey } : {}) });
   return { started: true, plan, before, job };
 }

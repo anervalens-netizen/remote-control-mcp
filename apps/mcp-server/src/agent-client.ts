@@ -1,5 +1,5 @@
 import { jobRecoveryPayload, type JobRecoveryPayload } from "../../../packages/protocol/src/job-recovery.ts";
-import type { JobFollowInput, ProjectRunInput } from "../../../packages/protocol/src/project.ts";
+import type { DeployInput, JobFollowInput, ProjectRunInput } from "../../../packages/protocol/src/project.ts";
 import type { DesktopUiaInput, DesktopWindowsInput, DesktopBatchInput } from "../../../packages/protocol/src/desktop.ts";
 import { filterProcesses, summarizeDockerSnapshot, type DockerSnapshot } from "../../../packages/protocol/src/filtering.ts";
 import fs from "node:fs";
@@ -238,6 +238,17 @@ export class AgentClient {
     return this.requestRoute(name, "/v1/info", undefined, context, options);
   }
 
+  private async requireHighLevelIdempotency(name: string, context: AgentEndpointContext, options: AgentRequestOptions = {}): Promise<void> {
+    const info = await this.info(name, context, options) as { runtime?: { capabilities?: unknown } };
+    const capabilities = info?.runtime?.capabilities;
+    if (!Array.isArray(capabilities) || !capabilities.includes("high-level-idempotency-v1")) {
+      throw new AgentRequestError(
+        `${name} ${context} does not advertise high-level-idempotency-v1; keyed high-level execution was refused before dispatch`,
+        name, context, "/v1/info", "context",
+      );
+    }
+  }
+
   private requireAndroid(): AndroidController {
     if (!this.androidController) throw new Error("Android reverse controller is not configured");
     return this.androidController;
@@ -304,8 +315,8 @@ export class AgentClient {
     }
     if (!response.ok) {
       try {
-        const { diagnostic, truncated } = await readAgentError(response, 64 * 1024);
-        throw new AgentRequestError(`${name} ${context} /v1/fs/raw failed: HTTP ${response.status}${diagnostic ? ` ${diagnostic}` : ""}`, name, context, "/v1/fs/raw", "http", response.status, undefined, truncated);
+        const { diagnostic, truncated, agentCode } = await readAgentError(response, 64 * 1024);
+        throw new AgentRequestError(`${name} ${context} /v1/fs/raw failed: HTTP ${response.status}${diagnostic ? ` ${diagnostic}` : ""}`, name, context, "/v1/fs/raw", "http", response.status, undefined, truncated, undefined, agentCode);
       } catch (error) {
         if (error instanceof AgentRequestError) throw error;
         if (deadline.timedOut()) throw new AgentRequestError(`${name} ${context} /v1/fs/raw timed out after ${timeoutMs}ms`, name, context, "/v1/fs/raw", "timeout");
@@ -368,7 +379,10 @@ export class AgentClient {
   jobFollow(name: string, input: JobFollowInput, context: AgentEndpointContext = "system", signal?: AbortSignal): Promise<unknown> {
     return this.request(name, "/v1/jobs/follow", input, context, { timeoutMs: withTimeoutGrace(input.waitMs ?? 30000), signal });
   }
-  deployRun(name: string, input: unknown, context: AgentEndpointContext = "system"): Promise<unknown> { return this.request(name, "/v1/deploy/run", input, context); }
+  async deployRun(name: string, input: DeployInput, context: AgentEndpointContext = "system", options: AgentRequestOptions = {}): Promise<unknown> {
+    if (input.idempotencyKey && !input.dryRun) await this.requireHighLevelIdempotency(name, context, options);
+    return this.request(name, "/v1/deploy/run", input, context, options);
+  }
   jobStatus(name: string, id: string, context: AgentEndpointContext = "system", options?: AgentRequestOptions): Promise<unknown> { return this.request(name, "/v1/jobs/status", { id }, context, options); }
   jobStatusByKey(name: string, idempotencyKey: string, context: AgentEndpointContext = "system", options?: AgentRequestOptions): Promise<unknown> { return this.request(name, "/v1/jobs/status", { idempotencyKey }, context, options); }
   jobOutput(name: string, input: unknown, context: AgentEndpointContext = "system"): Promise<unknown> { return this.request(name, "/v1/jobs/output", input, context); }
@@ -395,7 +409,12 @@ export class AgentClient {
   repoPush(name: string, input: unknown, context: AgentEndpointContext = "user"): Promise<unknown> { return this.gitNetworkRequest(name, "/v1/repo/push", input, context); }
   projectRun(name: string, input: ProjectRunInput, context: AgentEndpointContext = "user", options: AgentRequestOptions = {}): Promise<unknown> {
     const timeoutMs = input.mode === "exec" ? input.timeoutMs === 0 ? 0 : withTimeoutGrace(input.timeoutMs ?? DEFAULT_HTTP_TIMEOUT_MS) : undefined;
-    return this.request(name, "/v1/project/run", input, context, { ...options, timeoutMs: options.timeoutMs ?? timeoutMs });
+    const requestOptions = { ...options, timeoutMs: options.timeoutMs ?? timeoutMs };
+    if (input.idempotencyKey && (input.mode ?? "job") === "job" && !input.dryRun) {
+      return this.requireHighLevelIdempotency(name, context, requestOptions)
+        .then(() => this.request(name, "/v1/project/run", input, context, requestOptions));
+    }
+    return this.request(name, "/v1/project/run", input, context, requestOptions);
   }
   projectPlan(name: string, input: unknown, context: AgentEndpointContext = "user"): Promise<unknown> { return this.request(name, "/v1/project/plan", input, context); }
 

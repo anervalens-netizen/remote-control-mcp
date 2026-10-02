@@ -12,6 +12,7 @@ describe("capability handshake", () => {
     expect(runtime.checks).toHaveProperty("identity.privilege");
     expect(runtime.checks).toHaveProperty("identity.elevationAvailable");
     expect(runtime.capabilities).toContain("exec");
+    expect(runtime.capabilities).toContain("high-level-idempotency-v1");
   });
 
   it("returns per-endpoint partial results instead of discovering missing capabilities by failure later", async () => {

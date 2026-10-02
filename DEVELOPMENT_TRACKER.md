@@ -33,17 +33,14 @@ The release attestation script verifies tracked release bytes; actual runtime id
 An unavailable device, an uninstalled Android candidate, missing historical attachment proof, skipped interactive checks and untested power-loss recovery are not completed acceptance items. Keep issue #11 open until the required evidence is recorded or the owner explicitly changes scope. Do not infer closure from this source guide.
 
 
-## Usage hardening — issue #18
+## Usage hardening
 
-Owner-authorized implementation started 2026-10-02 from the adversarial usage review. Scope is additive/backward-compatible: truthful fleet readiness, connector-compatible durable history through `job_list` while retaining `job_history`, optional idempotency keys for durable `project_run`/`deploy_run`, read-only key lookup without replay, and bounded typed agent causes.
+Reusable requirements for high-level execution and connector compatibility:
+- Fleet health keeps transport reachability, runtime readiness and metrics availability as separate facts.
+- Durable high-level project/deployment operations may accept an optional stable key, but keyed execution must be refused when the target agent does not explicitly advertise the matching protocol capability.
+- A keyed retry resolves the original derived execution before consulting mutable project/repository state and still validates the underlying durable-job fingerprint; a key collision must never return unrelated work.
+- Read-only key inspection never starts or replays work.
+- Durable history remains cursor-safe after structured-output compaction, including compatibility access through `job_list`.
+- Typed agent causes may be preserved in bounded error metadata, without inferring retry safety from an HTTP status alone.
 
-Acceptance status:
-- [x] Isolated implementation worktree created from exact `origin/main` baseline `f3a35e9`.
-- [x] Targeted regressions pass, including real project/deploy duplicate-start prevention and conflict handling.
-- [x] Linux privacy/history guards, typecheck and full suite pass after first Codex remediation: 797 passed / 53 platform skips.
-- [ ] Native Windows exact-source qualification.
-- [ ] Official Codex Connector re-review and exact-head CI. First review on `ef19d0b` produced 2 P1 + 3 P2; all five are covered by the current remediation/regressions and require re-review on the new head.
-- [ ] Merge, exact-main CI and staged production rollout.
-- [ ] Live canaries for readiness, history fallback, idempotency/key lookup, typed errors and no-replay.
-
-ChatGPT app tool snapshots are an integration surface separate from the runtime. Server changes remain backward-compatible; a stale published action snapshot is not represented as a failed runtime deployment. Android physical qualification remains under issue #11 and is not reopened by issue #18.
+Implementation, review, CI and deployment state are tracked outside this public source guide.

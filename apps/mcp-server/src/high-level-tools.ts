@@ -268,7 +268,7 @@ export function registerHighLevelTools(server: McpServer, client: AgentClient): 
     inputSchema: { device: z.string().min(1), ...deployFields, context: legacyContextSchema, identity: identitySchema, elevation: elevationSchema },
   }, async ({ device, context, identity, elevation, ...input }) => withToolErrors(async () => {
     const runContext = resolveExecutionContext(client, device, { context, identity, elevation }, "system");
-    if (input.prepare || input.apply || input.verify || input.recover || input.dryRun) {
+    if (input.prepare || input.apply || input.verify || input.recover || input.dryRun || input.idempotencyKey) {
       return text({ ...await client.deployRun(device, input, runContext) as Record<string, unknown>, identity: executionLabel(runContext), context: runContext });
     }
     if (!input.command) throw new Error("command or apply is required");

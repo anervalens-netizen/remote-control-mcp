@@ -137,6 +137,7 @@ export function runtimeStatus() {
     "metrics", "network", "storage", "gpu", "packages", "power",
     ...(searchReady ? ["search"] : []),
     "fs-edit", "repo-checkpoint-selection", "repo-apply-patch", "project-multistack", "deploy-phases", "job-follow",
+    "high-level-idempotency-v1",
     ...(desktopEnabled ? ["desktop", "desktop-session", "desktop-batch", "desktop-helper", "desktop-window-enumeration", "desktop-uia", "clipboard", "browser"] : []),
     ...(elevationAvailable ? ["elevation"] : []),
     ...(interactiveAvailable ? ["interactive-session"] : []),
