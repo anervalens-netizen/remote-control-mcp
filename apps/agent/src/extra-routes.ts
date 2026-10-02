@@ -2,7 +2,7 @@ import { JobStartKeyError } from "./job-start-dedup.ts";
 import { powerSchema,wakeSchema } from "../../../packages/protocol/src/power.ts";
 import { sendWake } from "../../../packages/shared/src/wake.ts";
 import { projectRun } from "./project-run.ts";
-import { projectFields, projectRunFields, deployFields, jobFollowFields, jobLineageSchema } from "../../../packages/protocol/src/project.ts";
+import { projectFields, projectRunSchema, deployFields, jobFollowFields, jobLineageSchema } from "../../../packages/protocol/src/project.ts";
 import { deployRun } from "./deploy.ts";
 import { jobFollow } from "./job-follow.ts";
 import { repoCheckpointFields, repoPatchFields, fsEditFields } from "../../../packages/protocol/src/editing.ts";
@@ -232,7 +232,7 @@ export function registerExtraRoutes(app: FastifyInstance): void {
     finally { reply.raw.off("close", close); request.raw.off("aborted", close); }
   });
   app.post("/v1/project/run", async (request, reply) => {
-    const parsed = z.object(projectRunFields).safeParse(request.body);
+    const parsed = projectRunSchema.safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: "invalid_request", details: parsed.error.issues });
     const controller = new AbortController();
     const abort = () => { if (!reply.raw.writableEnded) controller.abort(new Error("Project caller disconnected; foreground execution cancelled")); };

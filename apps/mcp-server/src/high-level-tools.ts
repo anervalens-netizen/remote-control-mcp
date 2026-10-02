@@ -256,7 +256,9 @@ export function registerHighLevelTools(server: McpServer, client: AgentClient): 
 
   server.registerTool("project_run", {
     description: "Detect Node/Python/Go/Rust/.NET/Make and run install/check/test/build/typecheck/lint or script. command runs a raw shell task; executable runs any native program with literal args. Generated stack argv is literal; env is forwarded. Default action=check, mode=job; dryRun returns the exact plan without execution. Multi-stack repos can select stack.",
-    inputSchema: { device: z.string().min(1), ...projectRunFields, context: legacyContextSchema, identity: identitySchema, elevation: elevationSchema },
+    inputSchema: z.object({ device: z.string().min(1), ...projectRunFields, context: legacyContextSchema, identity: identitySchema, elevation: elevationSchema }).superRefine((value, ctx) => {
+      if (value.mode === "exec" && value.idempotencyKey !== undefined) ctx.addIssue({ code: "custom", path: ["idempotencyKey"], message: "idempotencyKey is supported only for durable project_run mode=job" });
+    }),
   }, async ({ device, context, identity, elevation, ...input }, extra) => withToolErrors(async () => {
     const runContext = resolveExecutionContext(client, device, { context, identity, elevation }, "user");
     const result = await client.projectRun(device, input, runContext, { signal: extra.signal }) as Record<string, unknown>;

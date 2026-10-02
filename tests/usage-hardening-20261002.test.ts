@@ -79,8 +79,31 @@ describe("usage hardening 2026-10-02",()=>{
     await expect(deployRun({repoPath:root,apply:apply+" ",idempotencyKey:key})).rejects.toMatchObject({code:"job_start_conflict"});
   });
 
-  it("preserves typed duplicate-start conflicts through the project HTTP route",async()=>{
+  it("rejects exec plus idempotencyKey as invalid input before execution",async()=>{
     const root=await temp();
+    const app=Fastify({logger:false}); registerExtraRoutes(app); await app.ready();
+    try {
+      const response=await app.inject({method:"POST",url:"/v1/project/run",payload:{path:root,command:"printf should-not-run",mode:"exec",idempotencyKey:"invalid-exec-key"}});
+      expect(response.statusCode).toBe(400);
+      expect(response.json()).toMatchObject({error:"invalid_request"});
+    } finally { await app.close(); }
+  });
+
+  it("uses locale-independent ordering for high-level keyed fingerprints",async()=>{
+    const key="locale-"+randomUUID();
+    const original=String.prototype.localeCompare;
+    String.prototype.localeCompare=function(){throw new Error("localeCompare must not participate in durable fingerprints");};
+    try {
+      const apply=nativeCommand([process.execPath,"-e","process.stdout.write('locale')"]);
+      const first=await deployRun({apply,env:{z:"1",A:"2","_":"3"},idempotencyKey:key}); jobs.push(first.job!.id);
+      const replay=await deployRun({apply,env:{"_":"3",A:"2",z:"1"},idempotencyKey:key});
+      expect(replay.job!.id).toBe(first.job!.id);
+    } finally {
+      String.prototype.localeCompare=original;
+    }
+  });
+
+  it("preserves typed duplicate-start conflicts through the project HTTP route",async()=>{    const root=await temp();
     await writeFile(path.join(root,"run.cjs"),"process.stdout.write(\"ok\")");
     const app=Fastify({logger:false}); registerExtraRoutes(app); await app.ready();
     try {

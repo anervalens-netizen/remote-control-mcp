@@ -13,7 +13,12 @@ export const projectRunFields = {
   timeoutMs: timeoutMsField.describe("Synchronous exec timeout; 0 disables it. Durable jobs use job_cancel.").optional(),
   maxOutputBytes: z.number().int().positive().max(64 * 1024 * 1024).describe("Synchronous exec output budget; durable jobs retain paginated logs.").optional(),
 };
-export type ProjectRunInput = z.infer<z.ZodObject<typeof projectRunFields>>;
+export const projectRunSchema = z.object(projectRunFields).superRefine((value, ctx) => {
+  if (value.mode === "exec" && value.idempotencyKey !== undefined) {
+    ctx.addIssue({ code: "custom", path: ["idempotencyKey"], message: "idempotencyKey is supported only for durable project_run mode=job" });
+  }
+});
+export type ProjectRunInput = z.infer<typeof projectRunSchema>;
 export type ProjectInput = z.infer<z.ZodObject<typeof projectFields>>;
 export const deployFields = {
   command: z.string().min(1).optional(), cwd: z.string().optional(), repoPath: z.string().optional(),
