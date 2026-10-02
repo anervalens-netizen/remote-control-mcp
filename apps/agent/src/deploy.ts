@@ -89,7 +89,8 @@ export async function deployRun(input: DeployInput) {
   if (!apply) throw new Error("apply (or command) is required");
   const phases = { ...(input.prepare ? { prepare: input.prepare } : {}), apply,
     ...(input.verify ? { verify: input.verify } : {}), ...(input.recover ? { recover: input.recover } : {}) };
-  const cwd = input.cwd ?? input.repoPath;
+  const phased = Boolean(input.prepare || input.apply || input.verify || input.recover);
+  const cwd = input.cwd ?? (phased ? input.repoPath : undefined);
   const plan = { phases, cwd: cwd ?? null, recoveryOnFailure: Boolean(input.recover) };
   if (input.dryRun) {
     const before = input.repoPath ? await repoSnapshot(input.repoPath, 3) : null;

@@ -79,8 +79,21 @@ describe("usage hardening 2026-10-02",()=>{
     await expect(deployRun({repoPath:root,apply:apply+" ",idempotencyKey:key})).rejects.toMatchObject({code:"job_start_conflict"});
   });
 
-  it("rejects exec plus idempotencyKey as invalid input before execution",async()=>{
+  it("does not change command-only deploy cwd when a stable key is added",async()=>{
     const root=await temp();
+    execFileSync("git",["init"],{cwd:root});
+    const key="deploy-cwd-"+randomUUID();
+    const command=nativeCommand([process.execPath,"-e","process.stdout.write('cwd')"]);
+    const preview=await deployRun({repoPath:root,command,idempotencyKey:key,dryRun:true});
+    expect(preview.plan.cwd).toBeNull();
+    const first=await deployRun({repoPath:root,command,idempotencyKey:key}); jobs.push(first.job!.id);
+    expect(first.plan.cwd).toBeNull();
+    const replay=await deployRun({repoPath:root,command,idempotencyKey:key});
+    expect(replay.job!.id).toBe(first.job!.id);
+    expect(replay.plan.cwd).toBeNull();
+  });
+
+  it("rejects exec plus idempotencyKey as invalid input before execution",async()=>{    const root=await temp();
     const app=Fastify({logger:false}); registerExtraRoutes(app); await app.ready();
     try {
       const response=await app.inject({method:"POST",url:"/v1/project/run",payload:{path:root,command:"printf should-not-run",mode:"exec",idempotencyKey:"invalid-exec-key"}});
@@ -103,7 +116,8 @@ describe("usage hardening 2026-10-02",()=>{
     }
   });
 
-  it("preserves typed duplicate-start conflicts through the project HTTP route",async()=>{    const root=await temp();
+  it("preserves typed duplicate-start conflicts through the project HTTP route",async()=>{
+    const root=await temp();
     await writeFile(path.join(root,"run.cjs"),"process.stdout.write(\"ok\")");
     const app=Fastify({logger:false}); registerExtraRoutes(app); await app.ready();
     try {
