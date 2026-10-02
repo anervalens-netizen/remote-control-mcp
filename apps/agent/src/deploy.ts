@@ -1,5 +1,5 @@
 import type { DeployInput } from "../../../packages/protocol/src/project.ts";
-import { jobStart, immutableStateFile } from "./jobs.ts";
+import { existingJobForKey, jobStart, immutableStateFile } from "./jobs.ts";
 import { repoSnapshot, type RepoSnapshotFull } from "./repo.ts";
 import { nativeCommand } from "./shell-quote.ts";
 import { resolveHighLevelKey } from "./high-level-idempotency.ts";
@@ -92,14 +92,21 @@ export async function deployRun(input: DeployInput) {
     const before = input.repoPath ? await repoSnapshot(input.repoPath, 3) : null;
     return { started: false, dryRun: true, plan, before };
   }
-  const before = input.idempotencyKey
-    ? (await resolveHighLevelKey<DeployBefore>({
-        kind: "deploy_run", idempotencyKey: input.idempotencyKey,
-        intent: { phases, cwd: cwd ?? null, repoPath: input.repoPath ?? null, env: input.env ?? {} },
-        create: () => input.repoPath ? repoSnapshot(input.repoPath, 3) : null,
-        parseValue: parseStoredBefore,
-      })).value
-    : input.repoPath ? await repoSnapshot(input.repoPath, 3) : null;
+  let before: DeployBefore;
+  let highLevelReplayed = false;
+  if (input.idempotencyKey) {
+    const resolved = await resolveHighLevelKey<DeployBefore>({
+      kind: "deploy_run", idempotencyKey: input.idempotencyKey,
+      intent: { phases, cwd: cwd ?? null, repoPath: input.repoPath ?? null, env: input.env ?? {} },
+      create: () => input.repoPath ? repoSnapshot(input.repoPath, 3) : null,
+      parseValue: parseStoredBefore,
+    });
+    before = resolved.value; highLevelReplayed = resolved.replayed;
+    if (highLevelReplayed) {
+      const existing = await existingJobForKey(input.idempotencyKey);
+      if (existing) return { started: true, plan, before, job: existing };
+    }
+  } else before = input.repoPath ? await repoSnapshot(input.repoPath, 3) : null;
   const runner = immutableStateFile("deploy-runner", "cjs", deployRunner, 0o600);
   const job = await jobStart({ command: nativeCommand([process.execPath, runner]), ...(cwd ? { cwd } : {}),
     env: { ...input.env, RCMCP_DEPLOY_INPUT: JSON.stringify(phases) }, ...(input.idempotencyKey ? { idempotencyKey: input.idempotencyKey } : {}) });

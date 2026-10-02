@@ -1,5 +1,5 @@
 import { JobHistoryIndex, decodeHistoryCursor, type HistoryQuery } from "./job-history-index.ts";
-import { JobStartDeduplicator, type JobStartInput } from "./job-start-dedup.ts";
+import { JobStartDeduplicator, JobStartKeyError, type JobStartInput } from "./job-start-dedup.ts";
 import { jobRecoveryPayload, type JobRecoveryDetails } from "../../../packages/protocol/src/job-recovery.ts";
 import { jobLineageSchema } from "../../../packages/protocol/src/project.ts";
 import { closeSync, existsSync, fsyncSync, openSync, readFileSync, readSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -582,6 +582,13 @@ export async function jobStartKeyStatus(idempotencyKey: string) {
       error: (error instanceof Error ? error.message : String(error)).slice(0, 1024),
     };
   }
+}
+
+export async function existingJobForKey(idempotencyKey: string) {
+  const status = await jobStartKeyStatus(idempotencyKey);
+  if (status.state === "not_found") return null;
+  if (status.state === "resolved") return status.job;
+  throw new JobStartKeyError("job_start_uncertain", "jobId" in status ? status.jobId : undefined);
 }
 
 async function startJobWithId(input: JobStartInput, id: string) {

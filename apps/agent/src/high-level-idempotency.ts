@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { closeSync, fsyncSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, fsyncSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { JobStartKeyError } from "./job-start-dedup.ts";
 import { ensureStateDir } from "./state.ts";
@@ -77,9 +77,10 @@ export async function resolveHighLevelKey<T>(options: {
   }
 
   const promise = Promise.resolve().then(async () => {
-    // Planning/snapshotting is read-only. Publish the durable reservation only
-    // after it succeeds so a crash in preflight cannot masquerade as an
-    // uncertain effect.
+    // A retry must resolve the prior derivation before consulting mutable
+    // project/repository state. If there is no reservation, preflight is
+    // read-only and the durable record is published only after it succeeds.
+    if (existsSync(file)) return parseReservation(file, kind, digest, parseValue);
     const value = await create();
     let fd: number;
     try {

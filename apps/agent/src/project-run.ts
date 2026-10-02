@@ -2,7 +2,7 @@ import { createRequire } from "node:module";
 import type { ProjectRunInput } from "../../../packages/protocol/src/project.ts";
 import { projectPlan } from "./project.ts";
 import { runCommand, runProcess } from "./exec.ts";
-import { immutableStateFile, jobStart } from "./jobs.ts";
+import { existingJobForKey, immutableStateFile, jobStart } from "./jobs.ts";
 import { resolveHighLevelKey } from "./high-level-idempotency.ts";
 import { nativeCommand } from "./shell-quote.ts";
 
@@ -16,13 +16,20 @@ export async function projectRun(input: ProjectRunInput, signal?: AbortSignal) {
   const mode = input.mode ?? "job";
   if (mode === "exec" && input.idempotencyKey) throw new Error("idempotencyKey is supported only for durable project_run mode=job");
   if (input.dryRun) return { plan: projectPlan(input, input.env), mode, dryRun: true };
-  const plan = mode === "job" && input.idempotencyKey
-    ? (await resolveHighLevelKey({
-        kind: "project_run", idempotencyKey: input.idempotencyKey,
-        intent: { path: input.path, action: input.action ?? "check", stack: input.stack ?? "auto", manager: input.manager ?? null, script: input.script ?? null, command: input.command ?? null, executable: input.executable ?? null, args: input.args ?? [], env: input.env ?? {} },
-        create: () => projectPlan(input, input.env), parseValue: parseStoredPlan,
-      })).value
-    : projectPlan(input, input.env);
+  let plan: ProjectPlan;
+  let highLevelReplayed = false;
+  if (mode === "job" && input.idempotencyKey) {
+    const resolved = await resolveHighLevelKey({
+      kind: "project_run", idempotencyKey: input.idempotencyKey,
+      intent: { path: input.path, action: input.action ?? "check", stack: input.stack ?? "auto", manager: input.manager ?? null, script: input.script ?? null, command: input.command ?? null, executable: input.executable ?? null, args: input.args ?? [], env: input.env ?? {} },
+      create: () => projectPlan(input, input.env), parseValue: parseStoredPlan,
+    });
+    plan = resolved.value; highLevelReplayed = resolved.replayed;
+    if (highLevelReplayed) {
+      const existing = await existingJobForKey(input.idempotencyKey);
+      if (existing) return { plan, mode, result: existing };
+    }
+  } else plan = projectPlan(input, input.env);
   if (mode === "exec") {
     const options = { cwd: input.path, env: input.env, timeoutMs: input.timeoutMs, maxOutputBytes: input.maxOutputBytes };
     const result = plan.argv
