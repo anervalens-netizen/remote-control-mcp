@@ -569,6 +569,21 @@ export async function jobStart(input: JobStartInput) {
   return jobStartDedup.run(input, id => startJobWithId(input, id), jobStatusAsync);
 }
 
+export async function jobStartKeyStatus(idempotencyKey: string) {
+  const reservation = jobStartDedup.lookup(idempotencyKey);
+  if (reservation.state !== "reserved") return reservation;
+  try {
+    return { state: "resolved" as const, jobId: reservation.jobId, job: await jobStatusAsync(reservation.jobId) };
+  } catch (error) {
+    return {
+      state: "uncertain" as const,
+      jobId: reservation.jobId,
+      reason: "job_receipt_unavailable" as const,
+      error: (error instanceof Error ? error.message : String(error)).slice(0, 1024),
+    };
+  }
+}
+
 async function startJobWithId(input: JobStartInput, id: string) {
   const executionMarker = "RCMCP_JOB_ID=" + id;
   const stdoutPath = outputPath(id, "stdout"); const stderrPath = outputPath(id, "stderr"); const donePath = exitPath(id);

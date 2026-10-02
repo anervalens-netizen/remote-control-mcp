@@ -31,3 +31,19 @@ Single public tracker: issue #11. Source changes and regressions address correla
 The release attestation script verifies tracked release bytes; actual runtime identity and live canaries remain separate acceptance evidence. Public workflows and their regression tests require hosted workers. Device inventories, history-repair maps, private runner registration state and deployment receipts are intentionally not recorded here.
 
 An unavailable device, an uninstalled Android candidate, missing historical attachment proof, skipped interactive checks and untested power-loss recovery are not completed acceptance items. Keep issue #11 open until the required evidence is recorded or the owner explicitly changes scope. Do not infer closure from this source guide.
+
+
+## Usage hardening — issue #18
+
+Owner-authorized implementation started 2026-10-02 from the adversarial usage review. Scope is additive/backward-compatible: truthful fleet readiness, connector-compatible durable history through `job_list` while retaining `job_history`, optional idempotency keys for durable `project_run`/`deploy_run`, read-only key lookup without replay, and bounded typed agent causes.
+
+Acceptance status:
+- [x] Isolated implementation worktree created from exact `origin/main` baseline `f3a35e9`.
+- [x] Targeted regressions pass, including real project/deploy duplicate-start prevention and conflict handling.
+- [x] Linux privacy/history guards, typecheck and full suite pass: 796 passed / 53 platform skips.
+- [ ] Native Windows exact-source qualification.
+- [ ] Official Codex Connector review and exact-head CI.
+- [ ] Merge, exact-main CI and staged production rollout.
+- [ ] Live canaries for readiness, history fallback, idempotency/key lookup, typed errors and no-replay.
+
+ChatGPT app tool snapshots are an integration surface separate from the runtime. Server changes remain backward-compatible; a stale published action snapshot is not represented as a failed runtime deployment. Android physical qualification remains under issue #11 and is not reopened by issue #18.

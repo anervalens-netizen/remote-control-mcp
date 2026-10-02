@@ -32,6 +32,8 @@ export async function startJobsMany(client: AgentClient, devices: string[], inpu
 export function registerJobTools(server: McpServer, client: AgentClient): void {
   const bridge=configuredContextKeepBridge(client);
   const startSchema = executionInputSchema({ contextKeep:z.object({projectId:z.string().uuid(),taskId:z.string().uuid(),runId:z.string().uuid(),leaseToken:z.string().uuid()}).optional(), device: z.string().min(1), command: z.string().min(1), idempotencyKey: z.string().min(1).max(200).optional(), cwd: z.string().optional(), env: z.record(z.string(), z.string()).optional() });
+  const jobStatusInputSchema = executionInputSchema({ device: z.string().min(1), id: z.string().min(1).optional(), idempotencyKey: z.string().min(1).max(200).optional() })
+    .refine(value => Number(Boolean(value.id)) + Number(Boolean(value.idempotencyKey)) === 1, { message: "Supply exactly one of id or idempotencyKey" });
   server.registerTool("job_start", { description: "Start a durable background job. Optional idempotencyKey prevents repeated starts for identical input; uncertain prior starts are never replayed automatically.", inputSchema: startSchema },
     async ({ device, context, identity, elevation, contextKeep, ...input }) => withToolErrors(async () => {
       const target = resolveExecutionContext(client, device, { context, identity, elevation }, "system");
@@ -59,10 +61,10 @@ export function registerJobTools(server: McpServer, client: AgentClient): void {
       const target = resolveExecutionContext(client, device, { context, identity, elevation }, "system");
       return routedText(await client.requestRoute(device, "/v1/jobs/lineage", input, target), target);
     });
-  server.registerTool("job_status", { description: "Get durable job status and output sizes.", inputSchema: executionInputSchema({ device: z.string().min(1), id: z.string().min(1) }) },
-    async ({ device, id, context, identity, elevation }) => {
+  server.registerTool("job_status", { description: "Get durable job status by job ID, or inspect an idempotency-key reservation without replaying it.", inputSchema: jobStatusInputSchema },
+    async ({ device, id, idempotencyKey, context, identity, elevation }) => {
       const target = resolveExecutionContext(client, device, { context, identity, elevation }, "system");
-      return routedText(await client.jobStatus(device, id, target), target);
+      return routedText(id ? await client.jobStatus(device, id, target) : await client.jobStatusByKey(device, idempotencyKey!, target), target);
     });
   server.registerTool("job_output", { description: "Read a bounded byte range from a durable job stdout or stderr; negative offsets tail from the end.", inputSchema: executionInputSchema({ device: z.string().min(1), id: z.string().min(1), stream: z.enum(["stdout", "stderr"]).optional(), offset: z.number().int().optional(), length: z.number().int().positive().max(1024 * 1024).optional(), encoding: z.enum(["utf8", "base64"]).optional() }) },
     async ({ device, context, identity, elevation, ...input }) => {
@@ -88,9 +90,16 @@ export function registerJobTools(server: McpServer, client: AgentClient): void {
       const target = resolveExecutionContext(client, device, { context, identity, elevation }, "system");
       return routedText(await client.jobCancel(device, id, target), target);
     });
-  server.registerTool("job_list", { description: "List recent durable jobs on a device.", inputSchema: executionInputSchema({ device: z.string().min(1), limit: z.number().int().positive().max(1000).optional() }) },
-    async ({ device, limit, context, identity, elevation }) => {
+  server.registerTool("job_list", { description: "List recent durable jobs, or page durable history with history=true/cursor/state. Use this history mode when a connector does not expose job_history.", inputSchema: executionInputSchema({ device: z.string().min(1), limit: z.number().int().positive().max(1000).optional(), history: z.boolean().optional(), cursor: z.string().max(4096).optional(), state: z.enum(["running", "cancelling", "completed", "cancelled", "lost"]).optional() }) },
+    async ({ device, limit, history, cursor, state, context, identity, elevation }) => {
       const target = resolveExecutionContext(client, device, { context, identity, elevation }, "system");
+      if (history || cursor !== undefined || state !== undefined) {
+        const params = new URLSearchParams();
+        if (limit !== undefined) params.set("limit", String(limit));
+        if (cursor !== undefined) params.set("cursor", cursor);
+        if (state !== undefined) params.set("state", state);
+        return routedText(await client.requestRoute(device, `/v1/jobs/history?${params}`, undefined, target), target);
+      }
       return routedText(await client.jobs(device, limit, target), target);
     });
   server.registerTool("job_history", { description: "Page durable history using a stable time/id cursor. Metadata remains authoritative; corrupt receipts are retained and counted.", inputSchema: executionInputSchema({ device: z.string().min(1), limit: z.number().int().min(1).max(1000).optional(), cursor: z.string().max(4096).optional(), state: z.enum(["running", "cancelling", "completed", "cancelled", "lost"]).optional() }) },

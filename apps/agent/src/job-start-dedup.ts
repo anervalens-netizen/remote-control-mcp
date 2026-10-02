@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { closeSync, fsyncSync, openSync, readFileSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, fsyncSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 export type JobStartInput = { command: string; cwd?: string; env?: Record<string,string>; idempotencyKey?: string };
 type Reservation = { version: 1; jobId: string; fingerprint: string };
@@ -22,6 +22,16 @@ export class JobStartDeduplicator {
   root: string;
   inFlight = new Map<string,{ fingerprint: string; promise: Promise<unknown> }>();
   constructor(root: string) { this.root=root; }
+  lookup(idempotencyKey: string): { state: "not_found" } | { state: "reserved"; jobId: string } | { state: "uncertain"; reason: "invalid_reservation" } {
+    if(!idempotencyKey.length||idempotencyKey.length>200)throw new Error("Job idempotencyKey must contain 1 to 200 characters");
+    const key=createHash("sha256").update(idempotencyKey).digest("hex"), file=path.join(this.root,key+".json");
+    if(!existsSync(file))return {state:"not_found"};
+    try {
+      const record=JSON.parse(readFileSync(file,"utf8")) as Reservation;
+      if(record.version!==1||!/^[-a-f0-9]{36}$/.test(record.jobId)||!/^[a-f0-9]{64}$/.test(record.fingerprint))throw new Error("Invalid reservation");
+      return {state:"reserved",jobId:record.jobId};
+    } catch { return {state:"uncertain",reason:"invalid_reservation"}; }
+  }
   async run<T>(input: JobStartInput, start: (id:string)=>Promise<T>, lookup: (id:string)=>Promise<T>): Promise<T> {
     if(input.idempotencyKey===undefined)return start(randomUUID());
     if(!input.idempotencyKey.length||input.idempotencyKey.length>200)throw new Error("Job idempotencyKey must contain 1 to 200 characters");

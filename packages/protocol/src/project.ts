@@ -9,6 +9,7 @@ export const projectFields = {
 export const projectRunFields = {
   ...projectFields, mode: z.enum(["exec", "job"]).optional(), dryRun: z.boolean().optional(),
   env: z.record(z.string(), z.string()).optional(),
+  idempotencyKey: z.string().min(1).max(200).optional(),
   timeoutMs: timeoutMsField.describe("Synchronous exec timeout; 0 disables it. Durable jobs use job_cancel.").optional(),
   maxOutputBytes: z.number().int().positive().max(64 * 1024 * 1024).describe("Synchronous exec output budget; durable jobs retain paginated logs.").optional(),
 };
@@ -18,7 +19,7 @@ export const deployFields = {
   command: z.string().min(1).optional(), cwd: z.string().optional(), repoPath: z.string().optional(),
   prepare: z.string().min(1).optional(), apply: z.string().min(1).optional(),
   verify: z.string().min(1).optional(), recover: z.string().min(1).optional(),
-  env: z.record(z.string(), z.string()).optional(), dryRun: z.boolean().optional(),
+  env: z.record(z.string(), z.string()).optional(), idempotencyKey: z.string().min(1).max(200).optional(), dryRun: z.boolean().optional(),
 };
 export type DeployInput = z.infer<z.ZodObject<typeof deployFields>>;
 export const jobFollowFields = {

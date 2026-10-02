@@ -27,6 +27,6 @@ export async function projectRun(input: ProjectRunInput, signal?: AbortSignal) {
     command = nativeCommand([process.execPath, runner]);
     env = { ...env, RCMCP_PROJECT_ARGV: JSON.stringify(plan.argv) };
   }
-  const result = await jobStart({ command, cwd: input.path, ...(env ? { env } : {}) });
+  const result = await jobStart({ command, cwd: input.path, ...(env ? { env } : {}), ...(input.idempotencyKey ? { idempotencyKey: input.idempotencyKey } : {}) });
   return { plan, mode, result };
 }

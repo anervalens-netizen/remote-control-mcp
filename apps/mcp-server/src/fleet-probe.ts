@@ -59,7 +59,7 @@ export async function probeFleetHost(
       connectivity: reachable ? "reachable" : "unknown",
       observedAt: new Date().toISOString(),
       probeBudgetMs: timeoutMs,
-      readiness: info?.readiness ?? null,
+      readiness: info?.readiness ?? (typeof info?.runtime?.ready === "boolean" ? (info.runtime.ready ? "ready" : "not_ready") : null),
       metricsStatus,
       hostname: metrics?.hostname ?? info?.hostname ?? null,
       platform: metrics?.platform ?? info?.platform ?? null,

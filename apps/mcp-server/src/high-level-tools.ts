@@ -273,7 +273,7 @@ export function registerHighLevelTools(server: McpServer, client: AgentClient): 
     }
     if (!input.command) throw new Error("command or apply is required");
     const before = input.repoPath ? await client.repoSnapshot(device, { path: input.repoPath, logCount: 3 }, runContext) : null;
-    const job = await client.jobStart(device, { command: input.command, ...(input.cwd === undefined ? {} : { cwd: input.cwd }), ...(input.env ? { env: input.env } : {}) }, runContext);
+    const job = await client.jobStart(device, { command: input.command, ...(input.cwd === undefined ? {} : { cwd: input.cwd }), ...(input.env ? { env: input.env } : {}), ...(input.idempotencyKey ? { idempotencyKey: input.idempotencyKey } : {}) }, runContext);
     return text({ before, identity: executionLabel(runContext), context: runContext, job });
   }));
 

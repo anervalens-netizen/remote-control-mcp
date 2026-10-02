@@ -85,6 +85,6 @@ export async function deployRun(input: DeployInput) {
   if (input.dryRun) return { started: false, dryRun: true, plan, before };
   const runner = immutableStateFile("deploy-runner", "cjs", deployRunner, 0o600);
   const job = await jobStart({ command: nativeCommand([process.execPath, runner]), ...(cwd ? { cwd } : {}),
-    env: { ...input.env, RCMCP_DEPLOY_INPUT: JSON.stringify(phases) } });
+    env: { ...input.env, RCMCP_DEPLOY_INPUT: JSON.stringify(phases) }, ...(input.idempotencyKey ? { idempotencyKey: input.idempotencyKey } : {}) });
   return { started: true, plan, before, job };
 }

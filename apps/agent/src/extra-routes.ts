@@ -14,7 +14,7 @@ import { search } from "./search.ts";
 import { SearchInputError } from "./search-common.ts";
 import { searchRemove, searchResults, searchSessions, searchSessionsDiagnostics, searchStart, searchStop } from "./search-sessions.ts";
 import { serviceLogs, serviceManage, systemMetrics } from "./system.ts";
-import { JobRecoveryError, jobCancel, jobLineage, jobHistoryPage, jobListAsync, jobOutput, jobRemove, jobStart, jobStatusAsync } from "./jobs.ts";
+import { JobRecoveryError, jobCancel, jobLineage, jobHistoryPage, jobListAsync, jobOutput, jobRemove, jobStart, jobStartKeyStatus, jobStatusAsync } from "./jobs.ts";
 import { repoCheckpoint, repoFetch, repoGitPath, repoPull, repoPush, repoSnapshot } from "./repo.ts";
 import { dockerSnapshot, dockerSummary } from "./docker.ts";
 import { findProcesses } from "./processes.ts";
@@ -65,6 +65,7 @@ const projectPlanSchema = z.object(projectFields);
 
 const jobStartSchema = z.object({ command: z.string().min(1), cwd: z.string().optional(), idempotencyKey: z.string().min(1).max(200).optional(), env: z.record(z.string(), z.string()).optional() });
 const jobIdSchema = z.object({ id: z.string().min(1) });
+const jobStatusSchema = z.object({ id: z.string().min(1).optional(), idempotencyKey: z.string().min(1).max(200).optional() }).refine(value => Number(Boolean(value.id)) + Number(Boolean(value.idempotencyKey)) === 1, { message: "Supply exactly one of id or idempotencyKey" });
 const jobOutputSchema = z.object({
   id: z.string().min(1), stream: z.enum(["stdout", "stderr"]).optional(), offset: z.number().int().optional(),
   length: z.number().int().positive().max(1024 * 1024).optional(), encoding: z.enum(["utf8", "base64"]).optional(),
@@ -146,8 +147,8 @@ export function registerExtraRoutes(app: FastifyInstance): void {
     return jobLineage(parsed.data);
   });
   app.post("/v1/jobs/status", async (request, reply) => {
-    const parsed = jobIdSchema.safeParse(request.body); if (!parsed.success) return reply.code(400).send({ error: "invalid_request", details: parsed.error.issues });
-    return jobStatusAsync(parsed.data.id);
+    const parsed = jobStatusSchema.safeParse(request.body); if (!parsed.success) return reply.code(400).send({ error: "invalid_request", details: parsed.error.issues });
+    return parsed.data.id ? jobStatusAsync(parsed.data.id) : jobStartKeyStatus(parsed.data.idempotencyKey!);
   });
   app.post("/v1/jobs/output", async (request, reply) => {
     const parsed = jobOutputSchema.safeParse(request.body); if (!parsed.success) return reply.code(400).send({ error: "invalid_request", details: parsed.error.issues });
@@ -216,6 +217,7 @@ export function registerExtraRoutes(app: FastifyInstance): void {
     try { return await deployRun(parsed.data); }
     catch (error) {
       if (error instanceof JobRecoveryError) return reply.code(500).send(error.toJSON());
+      if (error instanceof JobStartKeyError) return reply.code(409).send({ error: error.code, message: error.message, jobId: error.jobId });
       throw error;
     }
   });
@@ -241,6 +243,7 @@ export function registerExtraRoutes(app: FastifyInstance): void {
     try { return await projectRun(parsed.data, controller.signal); }
     catch (error) {
       if (error instanceof JobRecoveryError) return reply.code(500).send(error.toJSON());
+      if (error instanceof JobStartKeyError) return reply.code(409).send({ error: error.code, message: error.message, jobId: error.jobId });
       throw error;
     }
     finally {

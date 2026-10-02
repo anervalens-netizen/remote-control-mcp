@@ -8,6 +8,7 @@ export function toolErrorDetails(error: unknown) {
     ...(error instanceof AgentRequestError ? {
       device: error.device, context: error.context, route: error.route, kind: error.kind,
       ...(error.status === undefined ? {} : { status: error.status }),
+      ...(error.agentCode ? { agentCode: error.agentCode } : {}),
       ...(error.recovery ? { recovery: error.recovery } : {}),
       ...(error.jobStartFailure ? error.jobStartFailure : {}),
       ...(error.responseBodyTruncated ? { responseBodyTruncated: true } : {}),
