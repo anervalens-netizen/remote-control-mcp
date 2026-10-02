@@ -40,9 +40,9 @@ Owner-authorized implementation started 2026-10-02 from the adversarial usage re
 Acceptance status:
 - [x] Isolated implementation worktree created from exact `origin/main` baseline `f3a35e9`.
 - [x] Targeted regressions pass, including real project/deploy duplicate-start prevention and conflict handling.
-- [x] Linux privacy/history guards, typecheck and full suite pass: 796 passed / 53 platform skips.
+- [x] Linux privacy/history guards, typecheck and full suite pass after first Codex remediation: 797 passed / 53 platform skips.
 - [ ] Native Windows exact-source qualification.
-- [ ] Official Codex Connector review and exact-head CI.
+- [ ] Official Codex Connector re-review and exact-head CI. First review on `ef19d0b` produced 2 P1 + 3 P2; all five are covered by the current remediation/regressions and require re-review on the new head.
 - [ ] Merge, exact-main CI and staged production rollout.
 - [ ] Live canaries for readiness, history fallback, idempotency/key lookup, typed errors and no-replay.
 

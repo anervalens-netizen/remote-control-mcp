@@ -19,7 +19,18 @@ const jobManyItem = z.union([
   z.object({ device: z.string().min(1), identity, context, ok: z.literal(true), job: jobSummary }).passthrough(),
   z.object({ device: z.string().min(1), identity, context, ok: z.literal(false), error: z.string() }).passthrough(),
 ]);
-const jobList = z.object({ items: z.array(jobSummary), ...route }).passthrough();
+const jobList = z.object({
+  items: z.array(jobSummary),
+  nextCursor: z.string().nullable().optional(), partial: z.boolean().optional(),
+  corruptCount: nonnegative.optional(), unreadableCount: nonnegative.optional(),
+  ...route,
+}).passthrough();
+const routedJobSummary = z.object({ ...jobSummary.shape, ...route }).passthrough();
+const jobKeyLookup = z.union([
+  z.object({ state: z.literal("not_found"), ...route }).passthrough(),
+  z.object({ state: z.literal("resolved"), jobId: z.string().min(1), job: jobSummary, ...route }).passthrough(),
+  z.object({ state: z.literal("uncertain"), jobId: z.string().min(1).optional(), reason: z.enum(["invalid_reservation", "job_receipt_unavailable"]), error: z.string().optional(), ...route }).passthrough(),
+]);
 const jobOutput = z.object({
   id: z.string().min(1), stream: z.enum(["stdout", "stderr"]), offset: nonnegative,
   nextOffset: nonnegative, totalBytes: nonnegative, eof: z.boolean(), data: z.string(), ...route,
@@ -150,7 +161,7 @@ export const toolResultSchemas = {
       if (item.identity !== labels[item.context]) ctx.addIssue({ code: "custom", path: ["items", index, "identity"], message: "Identity must match the resolved context" });
     }
   }),
-  job_status: z.object({ ...jobSummary.shape, ...route }).passthrough(),
+  job_status: z.union([routedJobSummary, jobKeyLookup]),
   job_output: jobOutput,
   job_wait: jobFollow,
   job_output_since: jobFollow,

@@ -1,7 +1,8 @@
 import type { DeployInput } from "../../../packages/protocol/src/project.ts";
 import { jobStart, immutableStateFile } from "./jobs.ts";
-import { repoSnapshot } from "./repo.ts";
+import { repoSnapshot, type RepoSnapshotFull } from "./repo.ts";
 import { nativeCommand } from "./shell-quote.ts";
+import { resolveHighLevelKey } from "./high-level-idempotency.ts";
 
 // An immutable, self-contained runner continues across agent upgrades/restarts.
 export const deployRunner = String.raw`
@@ -73,6 +74,12 @@ async function phase(name, command) {
 })().catch(error => { process.stderr.write(String(error.stack || error) + "\n"); process.exitCode = 1; });
 `;
 
+type DeployBefore = RepoSnapshotFull | null;
+function parseStoredBefore(value: unknown): DeployBefore {
+  if (value === null || (typeof value === "object" && !Array.isArray(value))) return value as DeployBefore;
+  throw new Error("Invalid stored deployment snapshot");
+}
+
 export async function deployRun(input: DeployInput) {
   if (input.apply && input.command) throw new Error("Use apply or command for the deployment step, not both");
   const apply = input.apply ?? input.command;
@@ -80,9 +87,19 @@ export async function deployRun(input: DeployInput) {
   const phases = { ...(input.prepare ? { prepare: input.prepare } : {}), apply,
     ...(input.verify ? { verify: input.verify } : {}), ...(input.recover ? { recover: input.recover } : {}) };
   const cwd = input.cwd ?? input.repoPath;
-  const before = input.repoPath ? await repoSnapshot(input.repoPath, 3) : null;
   const plan = { phases, cwd: cwd ?? null, recoveryOnFailure: Boolean(input.recover) };
-  if (input.dryRun) return { started: false, dryRun: true, plan, before };
+  if (input.dryRun) {
+    const before = input.repoPath ? await repoSnapshot(input.repoPath, 3) : null;
+    return { started: false, dryRun: true, plan, before };
+  }
+  const before = input.idempotencyKey
+    ? (await resolveHighLevelKey<DeployBefore>({
+        kind: "deploy_run", idempotencyKey: input.idempotencyKey,
+        intent: { phases, cwd: cwd ?? null, repoPath: input.repoPath ?? null, env: input.env ?? {} },
+        create: () => input.repoPath ? repoSnapshot(input.repoPath, 3) : null,
+        parseValue: parseStoredBefore,
+      })).value
+    : input.repoPath ? await repoSnapshot(input.repoPath, 3) : null;
   const runner = immutableStateFile("deploy-runner", "cjs", deployRunner, 0o600);
   const job = await jobStart({ command: nativeCommand([process.execPath, runner]), ...(cwd ? { cwd } : {}),
     env: { ...input.env, RCMCP_DEPLOY_INPUT: JSON.stringify(phases) }, ...(input.idempotencyKey ? { idempotencyKey: input.idempotencyKey } : {}) });

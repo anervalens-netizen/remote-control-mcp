@@ -164,7 +164,13 @@ export function installDefaultToolOutputContracts(server: McpServer, diagnostics
           ? current as Record<string, unknown>
           : structuredFromContent((result as any).content);
         outcome = toolOutcome(result, structured, extra?.signal);
-        if (name === "job_history" && !(result as any).isError) {
+        const historyPage = name === "job_history" || (name === "job_list"
+          && Array.isArray(structured.items)
+          && Object.hasOwn(structured, "nextCursor")
+          && Object.hasOwn(structured, "partial")
+          && Object.hasOwn(structured, "corruptCount")
+          && Object.hasOwn(structured, "unreadableCount"));
+        if (historyPage && !(result as any).isError) {
           try { return { ...result, structuredContent: compactHistoryPage(structured) }; }
           catch (error) { outcome = "error"; return withToolErrors(() => { throw error; }); }
         }

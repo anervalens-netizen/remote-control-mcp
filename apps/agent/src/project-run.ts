@@ -3,12 +3,26 @@ import type { ProjectRunInput } from "../../../packages/protocol/src/project.ts"
 import { projectPlan } from "./project.ts";
 import { runCommand, runProcess } from "./exec.ts";
 import { immutableStateFile, jobStart } from "./jobs.ts";
+import { resolveHighLevelKey } from "./high-level-idempotency.ts";
 import { nativeCommand } from "./shell-quote.ts";
 
 const crossSpawnPath = createRequire(import.meta.url).resolve("cross-spawn");
+type ProjectPlan = ReturnType<typeof projectPlan>;
+function parseStoredPlan(value: unknown): ProjectPlan {
+  if (!value || typeof value !== "object" || typeof (value as any).command !== "string" || !("argv" in (value as any))) throw new Error("Invalid stored project plan");
+  return value as ProjectPlan;
+}
 export async function projectRun(input: ProjectRunInput, signal?: AbortSignal) {
-  const plan = projectPlan(input, input.env), mode = input.mode ?? "job";
-  if (input.dryRun) return { plan, mode, dryRun: true };
+  const mode = input.mode ?? "job";
+  if (mode === "exec" && input.idempotencyKey) throw new Error("idempotencyKey is supported only for durable project_run mode=job");
+  if (input.dryRun) return { plan: projectPlan(input, input.env), mode, dryRun: true };
+  const plan = mode === "job" && input.idempotencyKey
+    ? (await resolveHighLevelKey({
+        kind: "project_run", idempotencyKey: input.idempotencyKey,
+        intent: { path: input.path, action: input.action ?? "check", stack: input.stack ?? "auto", manager: input.manager ?? null, script: input.script ?? null, command: input.command ?? null, executable: input.executable ?? null, args: input.args ?? [], env: input.env ?? {} },
+        create: () => projectPlan(input, input.env), parseValue: parseStoredPlan,
+      })).value
+    : projectPlan(input, input.env);
   if (mode === "exec") {
     const options = { cwd: input.path, env: input.env, timeoutMs: input.timeoutMs, maxOutputBytes: input.maxOutputBytes };
     const result = plan.argv
