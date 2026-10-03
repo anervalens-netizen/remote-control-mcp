@@ -1,3 +1,5 @@
+import { ResultRecoveryStore } from "../apps/mcp-server/src/result-recovery.ts";
+import { withErrorOutputContract } from "../apps/mcp-server/src/error-output-contract.ts";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -228,10 +230,17 @@ describe("Issue #35 audit remediation", () => {
       })),
       pages: [],
     };
-    const compacted = compactStructuredContent(value, STRUCTURED_CONTENT_MAX_BYTES, toolResultSchemas.browser_action);
+    const store = new ResultRecoveryStore(); const slot = store.begin();
+    const resultRecovery = store.finish(slot.id, value);
+    const contract = withErrorOutputContract(toolResultSchemas.browser_action);
+    const compacted = compactStructuredContent({ ...value, resultRecovery }, STRUCTURED_CONTENT_MAX_BYTES, contract);
     expect(compacted.structuredContentTruncated).toBe(true);
     expect(Buffer.byteLength(JSON.stringify(compacted), "utf8")).toBeLessThanOrEqual(STRUCTURED_CONTENT_MAX_BYTES);
-    expect(() => toolResultSchemas.browser_action.parse(compacted)).not.toThrow();
+    expect(() => contract.parse(compacted)).not.toThrow();
+    expect(compacted).toMatchObject({ resultOmitted: true, resultRecovery });
+    const chunks: Buffer[] = []; let offset = 0;
+    while (true) { const page = store.read(slot.id, offset); if (!("data" in page)) throw new Error("missing recovery"); chunks.push(Buffer.from(page.data, "base64")); offset = page.nextOffset; if (page.eof) break; }
+    expect(JSON.parse(Buffer.concat(chunks).toString())).toEqual(value);
   });
 
   it("reports maxResults truncation for file-mode search while preserving the legacy array when exhaustive", async () => {

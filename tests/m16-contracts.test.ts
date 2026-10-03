@@ -1,3 +1,5 @@
+import { ResultRecoveryStore } from "../apps/mcp-server/src/result-recovery.ts";
+import { withErrorOutputContract } from "../apps/mcp-server/src/error-output-contract.ts";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -162,9 +164,16 @@ it("preserves truthful per-item routing when a large mixed batch is compacted", 
     device: `fixture-${index}`, identity: index === 99 ? "root" : "owner", context: index === 99 ? "system" : "user", ok: true,
     job: { id: `fixture-job-${index}`, state: "running", detail: "synthetic".repeat(1000) },
   }));
-  const compacted = compactStructuredContent({ items }, 4096, toolResultSchemas.job_start_many);
+  const store = new ResultRecoveryStore(); const slot = store.begin();
+  const resultRecovery = store.finish(slot.id, { items });
+  const contract = withErrorOutputContract(toolResultSchemas.job_start_many);
+  const compacted = compactStructuredContent({ items, resultRecovery }, 4096, contract);
   expect(compacted.structuredContentTruncated).toBe(true);
   expect(compacted).not.toHaveProperty("identity");
   expect(compacted).not.toHaveProperty("context");
-  expect(toolResultSchemas.job_start_many.safeParse(compacted).success).toBe(true);
+  expect(contract.safeParse(compacted).success).toBe(true);
+  expect(compacted).toMatchObject({ resultOmitted: true, resultRecovery });
+  const chunks: Buffer[] = []; let offset = 0;
+  while (true) { const page = store.read(slot.id, offset); if (!("data" in page)) throw new Error("missing recovery"); chunks.push(Buffer.from(page.data, "base64")); offset = page.nextOffset; if (page.eof) break; }
+  expect(JSON.parse(Buffer.concat(chunks).toString()).items).toEqual(items);
 });

@@ -33,6 +33,10 @@ Connect an MCP client to the configured controller's `/mcp` endpoint using the c
 
 ## Result and recovery contracts
 
+**Bounded MCP results:** final structured results validate against the advertised JSON Schema after compaction. Large results use explicit pages/previews or `resultOmitted`, with authenticated `result_recover` access to the original JSON. Text and structured previews share cursors and counts. Limits are 64 KiB structured and 256 KiB total tool result. For an ID known before effects, call `result_recovery_prepare` and pass its ID as `_meta.resultRecoveryId`; read it after delivery rejection without replay. Memory retention is up to 15 minutes/64 slots, not restart durability. Use keyed durable jobs for crash recovery. See [result contracts and limits](docs/RELIABILITY.md#bounded-results-and-delivery-recovery-r01r02r04).
+
+**Execution facts:** batch `ok`/`partial` describe agent requests. Additive `summary`/`executionPartial` cover all items, even omitted previews; exit status, signal, timeout, cancellation, uncertainty and effect verification remain distinct. A successful read of a failed job is still a successful read. Client acceptance is unknown to the controller.
+
 **RPC and raw-file reads:** redirects are rejected, including redirects to the same origin. A caller selects a configured endpoint; a redirect is not permission to send commands or import bytes elsewhere. Raw HTTP error bodies are consumed only up to a bounded read budget (64 KiB plus at most an incoming stream chunk), then cancelled. Diagnostics retain selected error fields, not unrelated credentials. HTTP errors are not automatically retried.
 
 **Secret installation:** activation must return an explicit successful receipt. `secret_install_failed` and `secret_install_uncertain` are structured errors, also used by template rendering. After activation is attempted, staging/recovery material is retained: inspect `destination`, `temporaryPath` and the optional `recovery` metadata before cleanup or retry. The response never includes secret bytes or arbitrary activation exception text. A staging failure before activation attempts cleanup and reports when cleanup remains pending.
@@ -124,7 +128,7 @@ limit demonstrates truncation. `search_sessions` retains its legacy array;
 `diagnostics=true` returns an additive envelope with items and corruption counts.
 Unreadable metadata is isolated and preserved.
 
-`job_list` retains its array contract. `job_history` returns items, `nextCursor`,
+`job_list` retains its legacy array for untruncated responses; oversized results use the documented bounded recovery envelope. `job_history` returns items, `nextCursor`,
 state filtering and partial/corruption counts. Its process-local index is derived
 from metadata and rebuilds after restart; receipt, lineage and idempotency files
 remain authoritative. Pages order by descending start time then ID. Use the

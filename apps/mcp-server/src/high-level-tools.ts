@@ -1,3 +1,5 @@
+import { executionFacts, summarizeExecution } from "../../../packages/protocol/src/execution-outcome.ts";
+import { settledExecution } from "./settled-execution.ts";
 import { withToolErrors } from "./tool-errors.ts";
 import { projectRunFields, deployFields } from "../../../packages/protocol/src/project.ts";
 import { repoCheckpointFields, repoPatchFields, fsEditFields } from "../../../packages/protocol/src/editing.ts";
@@ -45,7 +47,7 @@ export function registerHighLevelTools(server: McpServer, client: AgentClient): 
       const target = resolveExecutionContext(client, device, { context, identity, elevation }, "system");
       return { index, device, target, identity: executionLabel(target), request };
     });
-    const legacy = await settled(
+    const legacy = await settledExecution(
       planned,
       (item) => client.exec(item.device, item.request, item.target, { signal: extra.signal }),
       concurrency,
@@ -58,7 +60,9 @@ export function registerHighLevelTools(server: McpServer, client: AgentClient): 
         : { ...entry, device: plan.device, identity: plan.identity, context: plan.target };
     });
     const errors = routed.filter((entry): entry is Extract<(typeof routed)[number], { ok: false }> => !entry.ok);
-    return structured({ items: routed, errors, partial: errors.length > 0 }, legacy);
+    const summary = summarizeExecution(routed);
+    const enriched = routed.map(entry => entry.ok ? { ...entry, result: { ...(entry.result as Record<string, unknown>), ...executionFacts(entry.result as Record<string, unknown>) } } : entry);
+    return structured({ items: enriched, errors, partial: errors.length > 0, summary, executionPartial: summary.exit_zero !== summary.total }, enriched);
   });
 
   server.registerTool("batch_read", {

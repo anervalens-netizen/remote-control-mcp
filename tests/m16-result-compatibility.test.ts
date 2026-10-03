@@ -1,3 +1,6 @@
+import { ResultRecoveryStore } from "../apps/mcp-server/src/result-recovery.ts";
+import { withErrorOutputContract } from "../apps/mcp-server/src/error-output-contract.ts";
+import { z } from "zod";
 import { expect, it } from "vitest";
 import { summarizeDockerSnapshot } from "../packages/protocol/src/filtering.ts";
 import { toolResultSchemas } from "../apps/mcp-server/src/semantic-result-schemas.ts";
@@ -25,12 +28,17 @@ it("preserves Windows telemetry, created searches and truthful degraded outcomes
   expect(toolResultSchemas.pty_terminate.safeParse({ok:true,id:"session",state:"lost",exited:false,terminationVerified:false}).success).toBe(true);
 });
 
-it("keeps complete legacy payloads while bounding duplicated structuredContent", () => {
+it("uses explicit recovery instead of clipping unknown semantic fields", () => {
   const payload = { stdout: "x".repeat(256 * 1024), stderr: "", items: Array.from({ length: 200 }, (_, index) => ({ index, value: "y".repeat(1024) })) };
-  const compact = compactStructuredContent(payload);
+  const recovery = new ResultRecoveryStore();
+  const reservation = recovery.begin(); const resultRecovery = recovery.finish(reservation.id, payload);
+  const contract = withErrorOutputContract(z.object({ stdout:z.string(), stderr:z.string(), items:z.array(z.unknown()) }));
+  const compact = compactStructuredContent({ ...payload, resultRecovery }, STRUCTURED_CONTENT_MAX_BYTES, contract);
   expect(compact.structuredContentTruncated).toBe(true);
   expect(compact.structuredContentOriginalBytes).toBeGreaterThan(STRUCTURED_CONTENT_MAX_BYTES);
   expect(Buffer.byteLength(JSON.stringify(compact), "utf8")).toBeLessThan(STRUCTURED_CONTENT_MAX_BYTES + 4096);
-  expect((compact.stdout as string).length).toBeLessThan(payload.stdout.length);
+  expect(compact.resultOmitted).toBe(true);
+  expect(compact.resultRecovery).toEqual(resultRecovery);
+  expect(contract.safeParse(compact).success).toBe(true);
   expect(payload.stdout).toHaveLength(256 * 1024);
 });

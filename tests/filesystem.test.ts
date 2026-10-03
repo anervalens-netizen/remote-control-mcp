@@ -155,8 +155,12 @@ describe("filesystem primitives", () => {
     const file = path.join(root, "short-utf8.txt");
     await writeFile(file, "€tail", "utf8");
     const first = await fsRead({ path: file, length: 1 });
-    expect(first.bytesRead).toBe(1);
-    expect(first.nextOffset).toBe(1);
+    expect(first.data).toBe("€");
+    expect(first.bytesRead).toBe(3);
+    expect(first.nextOffset).toBe(3);
+    const next = await fsRead({ path: file, offset: first.nextOffset, length: 1 });
+    expect(next.data).toBe("t");
+    await expect(fsRead({ path: file, offset: 1, length: 1 })).rejects.toThrow(/inside a codepoint/);
     expect(first.eof).toBe(false);
   });
 

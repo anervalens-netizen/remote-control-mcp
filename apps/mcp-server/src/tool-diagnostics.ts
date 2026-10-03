@@ -1,7 +1,9 @@
+import { executionOutcome, executionOutcomes, type ExecutionOutcome } from "../../../packages/protocol/src/execution-outcome.ts";
 import { performance } from "node:perf_hooks";
 
 export type ToolOutcome = "success" | "error" | "partial" | "cancelled";
-type Series = { tool: string; device: string; count: number; errors: number; partial: number; cancelled: number; totalMs: number; maxMs: number; samples: number[]; next: number };
+export type ResultDiagnostic = { finalValidationFailed?: boolean; resultPreparationFailed?: boolean; execution?: Partial<Record<ExecutionOutcome, number>>; requestErrors?: number };
+type Series = { finalValidationFailures: number; resultPreparationFailures: number; execution: Record<ExecutionOutcome, number>; requestErrors: number; tool: string; device: string; count: number; errors: number; partial: number; cancelled: number; totalMs: number; maxMs: number; samples: number[]; next: number };
 const round = (n: number) => Math.round(n * 100) / 100;
 
 /** Bounded, process-local observations; never stores arguments, output or error messages. */
@@ -16,7 +18,7 @@ export class ToolDiagnostics {
     this.maxSeries = Math.max(1, Math.min(1024, Math.floor(maxSeries)));
     this.sampleLimit = Math.max(1, Math.min(1024, Math.floor(sampleLimit)));
   }
-  record(tool: string, args: unknown, elapsedMs: number, outcome: ToolOutcome): void {
+  record(tool: string, args: unknown, elapsedMs: number, outcome: ToolOutcome, detail: ResultDiagnostic = {}): void {
     const input = args && typeof args === "object" ? args as Record<string, unknown> : {};
     const device = typeof input.device === "string" ? (this.devices.has(input.device) ? input.device : "unknown")
       : Array.isArray(input.devices) || Array.isArray(input.items) ? "batch" : "controller";
@@ -24,21 +26,28 @@ export class ToolDiagnostics {
     let value = this.series.get(key);
     if (!value) {
       if (this.series.size >= this.maxSeries) { this.overflow++; return; }
-      value = { tool, device, count: 0, errors: 0, partial: 0, cancelled: 0, totalMs: 0, maxMs: 0, samples: [], next: 0 };
+      value = { finalValidationFailures: 0, resultPreparationFailures: 0, execution: Object.fromEntries(executionOutcomes.map(key => [key, 0])) as Record<ExecutionOutcome, number>, requestErrors: 0, tool, device, count: 0, errors: 0, partial: 0, cancelled: 0, totalMs: 0, maxMs: 0, samples: [], next: 0 };
       this.series.set(key, value);
     }
     const duration = Math.max(0, Number.isFinite(elapsedMs) ? elapsedMs : 0);
+    value.finalValidationFailures += Number(detail.finalValidationFailed === true);
+    value.resultPreparationFailures += Number(detail.resultPreparationFailed === true);
+    for (const key of executionOutcomes) {
+      const count = detail.execution?.[key];
+      if (Number.isSafeInteger(count) && count! >= 0) value.execution[key] += count!;
+    }
+    if (Number.isSafeInteger(detail.requestErrors) && detail.requestErrors! >= 0) value.requestErrors += detail.requestErrors!;
     value.count++; value.errors += Number(outcome === "error"); value.partial += Number(outcome === "partial");
     value.cancelled += Number(outcome === "cancelled"); value.totalMs += duration; value.maxMs = Math.max(value.maxMs, duration);
     if (value.samples.length < this.sampleLimit) value.samples.push(duration);
     else { value.samples[value.next] = duration; value.next = (value.next + 1) % this.sampleLimit; }
   }
   snapshot() {
-    return { observedAt: new Date().toISOString(), scope: "controller tool handlers; not client or total network latency", sampleWindow: "last completed calls per series", maxSeries: this.maxSeries, sampleLimit: this.sampleLimit, overflowCalls: this.overflow,
+    return { observedAt: new Date().toISOString(), scope: "controller handler and final validation; client acceptance unknown; effect verification not inferred", sampleWindow: "last completed calls per series", maxSeries: this.maxSeries, sampleLimit: this.sampleLimit, overflowCalls: this.overflow,
       series: [...this.series.values()].map(v => {
         const samples = [...v.samples].sort((a, b) => a - b);
         const percentile = (p: number) => round(samples[Math.max(0, Math.ceil(samples.length * p) - 1)] ?? 0);
-        return { tool: v.tool, device: v.device, count: v.count, errors: v.errors, partial: v.partial, cancelled: v.cancelled,
+        return { finalValidationFailures: v.finalValidationFailures, resultPreparationFailures: v.resultPreparationFailures, execution: { ...v.execution }, requestErrors: v.requestErrors, tool: v.tool, device: v.device, count: v.count, errors: v.errors, partial: v.partial, cancelled: v.cancelled,
           averageMs: round(samples.reduce((sum, sample) => sum + sample, 0) / Math.max(1, samples.length)), maxMs: round(samples.at(-1) ?? 0), lifetimeAverageMs: round(v.totalMs / v.count), lifetimeMaxMs: round(v.maxMs), sampledCalls: samples.length, p50Ms: percentile(.5), p95Ms: percentile(.95), p99Ms: percentile(.99) };
       }) };
   }
@@ -49,9 +58,15 @@ export function diagnosticsFor(client: { devices: Array<{ name: string }> }): To
   if (!value) { value = new ToolDiagnostics(client.devices.map(d => d.name)); instances.set(client, value); }
   return value;
 }
-export function toolOutcome(result: unknown, structured: Record<string, unknown>, signal?: AbortSignal): ToolOutcome {
+export function toolOutcome(result: unknown, structured: Record<string, unknown>, signal?: AbortSignal, tool?: string): ToolOutcome {
   if (signal?.aborted || structured.kind === "cancelled") return "cancelled";
-  if ((result as { isError?: boolean } | null)?.isError || structured.ok === false || typeof structured.code === "number" && structured.code !== 0) return "error";
+  if (tool === "exec") {
+    const execution = executionOutcome(structured);
+    if (execution === "cancelled") return "cancelled";
+    if (execution !== "exit_zero") return "error";
+  }
+  if (tool === "batch_exec" && structured.executionPartial === true) return "partial";
+  if ((result as { isError?: boolean } | null)?.isError || structured.ok === false || tool === undefined && typeof structured.code === "number" && structured.code !== 0) return "error";
   if (structured.partial === true || Array.isArray(structured.errors) && structured.errors.length > 0) return "partial";
   if (Array.isArray(structured.items) && structured.items.some(item => item && item.ok === false)) return "partial";
   if (Array.isArray(structured.devices) && structured.devices.some(d => d && (d.online === false || d.metricsStatus === "unavailable" || d.metricsStatus === "partial" || Array.isArray(d.errors) && d.errors.length > 0))) return "partial";

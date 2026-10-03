@@ -1,5 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import { executionFacts } from "../../../packages/protocol/src/execution-outcome.ts";
 import type { AgentClient } from "./agent-client.ts";
 import { execRequestFields, execResultSchema, executionRouteFields, fsReadFields } from "../../../packages/protocol/src/execution.ts";
 import { elevationSchema, executionInputSchema, executionLabel, identitySchema, legacyContextSchema, resolveExecutionContext } from "./execution-identity.ts";
@@ -43,7 +44,8 @@ export function registerTools(server: McpServer, client: AgentClient): void {
   }, async ({ device, context, identity, elevation, ...request }, extra) => {
     const target = resolveExecutionContext(client, device, { context, identity, elevation }, "system");
     const result = await client.exec(device, request, target, { signal: extra.signal }) as Record<string, unknown>;
-    return structured({ ...result, identity: executionLabel(target), context: target }, result);
+    const receipt = { ...result, ...executionFacts(result) };
+    return structured({ ...receipt, identity: executionLabel(target), context: target }, receipt);
   });
 
   server.registerTool("fs_read", {

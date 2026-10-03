@@ -17,6 +17,9 @@ it("compacts whole history items and never skips the unreturned tail", () => {
   }
   expect(seen).toEqual(all.map(item=>item.id));
 });
-it("does not silently skip a single oversized item",()=>{
- expect(()=>compactHistoryPage({items:[{id:'fixture',startedAt:'2026-01-01',command:'x'.repeat(70000)}],nextCursor:null})).toThrow(/No pagination cursor was advanced/);
+it("delivers a bounded oversized row with its ID and a usable cursor",()=>{
+ const page=compactHistoryPage({items:[{id:'fixture',state:'completed',startedAt:'2026-01-01',command:'x'.repeat(70000)}],nextCursor:null});
+ expect(page.items).toMatchObject([{id:'fixture',state:'completed',commandTruncated:true,detailsOmitted:true,detailsTool:'job_status'}]);
+ expect(page.nextCursor).toBeNull();
+ expect(Buffer.byteLength(JSON.stringify(page))).toBeLessThanOrEqual(65536);
 });

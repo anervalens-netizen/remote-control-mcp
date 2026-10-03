@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { executionOutcomeSchema, executionSummarySchema } from "./execution-outcome.ts";
 import { timeoutMsField } from "./deadline.ts";
 
 /** Shared by single-command and batch tools: one wire contract, literal environment. */
@@ -16,8 +17,14 @@ export const executionRouteFields = {
 };
 
 export const execResultSchema = z.object({
+  requestSucceeded: z.boolean().optional(),
+  executionOutcome: executionOutcomeSchema.optional(),
+  effectVerification: z.literal("unverified").optional(),
+  clientAcceptance: z.literal("unknown").optional(),
   code: z.number().int().nullable(),
   signal: z.string().nullable(),
+  stdoutReturnedBytes: z.number().int().nonnegative().optional(),
+  stderrReturnedBytes: z.number().int().nonnegative().optional(),
   stdout: z.string(),
   stderr: z.string(),
   durationMs: z.number().nonnegative(),
@@ -78,7 +85,7 @@ export const batchFailureSchema = z.object({
   error: z.string(),
   device: z.string(),
   ...executionRouteFields,
-});
+}).passthrough();
 
 export function batchResultSchema<T extends z.ZodType>(resultSchema: T) {
   return z.object({
@@ -87,6 +94,10 @@ export function batchResultSchema<T extends z.ZodType>(resultSchema: T) {
       batchFailureSchema,
     ])),
     errors: z.array(batchFailureSchema),
+    summary: executionSummarySchema.optional(),
+    executionPartial: z.boolean().optional(),
+    totalItems: z.number().int().nonnegative().optional(),
+    previewItems: z.number().int().nonnegative().optional(),
     partial: z.boolean().describe("True when one or more items failed; all dispatched operations have settled before return."),
   });
 }

@@ -67,7 +67,7 @@ describe("Android MCP integration", () => {
     const unknownId = crypto.randomUUID();
     const unknown = await client.callTool({ name: "android_command_status", arguments: { device: "phone-example", commandId: unknownId } });
     expect(unknown.isError).not.toBe(true);
-    expect(unknown.structuredContent).toEqual({ found: false, commandId: unknownId, command: null });
+    expect(unknown.structuredContent).toEqual({ found: false, commandId: unknownId, command: null, resultRecovery: { id: expect.any(String), expiresAt: expect.any(String), tool: "result_recover", scope: "controller_memory", noReplay: true } });
     const sessionId = crypto.randomUUID();
     const address = controller.address()!;
     const poll = fetch(`http://127.0.0.1:${address.port}/android/v1/poll`, {

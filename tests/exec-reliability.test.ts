@@ -36,6 +36,24 @@ describe("shared process-tree runner", () => {
 });
 
 describe("exec reliability", () => {
+  it.each([
+    { bytes: [255, 255, 65, 66, 67, 68], limit: 3, text: "\ufffd\ufffdA", truncated: true },
+    { bytes: [255, 255, 65, 66, 67, 68], limit: 6, text: "\ufffd\ufffdABCD", truncated: false },
+    { bytes: [...Buffer.from("A😀B")], limit: 4, text: "A", truncated: true },
+    { bytes: [...Buffer.from("A😀B")], limit: 5, text: "A😀", truncated: true },
+    { bytes: [...Buffer.from("A😀B")], limit: 6, text: "A😀B", truncated: false },
+    { bytes: [65, 0xf0, 0x9f], limit: 3, text: "A", truncated: true },
+  ])("counts retained raw stdout/stderr bytes after safe trimming: $bytes / $limit", async ({ bytes, limit, text, truncated }) => {
+    const result = await runProcess(process.execPath, ["-e",
+      `const b = Buffer.from(${JSON.stringify(bytes)}); process.stdout.write(b); process.stderr.write(b);`,
+    ], { maxOutputBytes: limit });
+    expect(result.code).toBe(0);
+    expect(result).toMatchObject({
+      stdout: text, stderr: text, stdoutBytes: bytes.length, stderrBytes: bytes.length,
+      stdoutTruncated: truncated, stderrTruncated: truncated,
+    });
+  });
+
   it("returns a controlled error for a missing cwd", async () => {
     await expect(runCommand({ command: "echo never", cwd: "/definitely/missing/rcmcp-cwd" })).rejects.toThrow();
     const next = await runCommand({ command: process.platform === "win32" ? "Write-Output alive" : "echo alive" });

@@ -10,7 +10,7 @@ it('preserves required success fields and accepts explicit structured failures',
  expect(contract.safeParse({ok:true,error:'not a failure'}).success).toBe(false);
  expect(contract.safeParse({ok:false,error:'failure',code:'job_start_uncertain'}).success).toBe(true);
  const json=z.toJSONSchema(contract);
- expect(json.type).toBe('object');expect(json.anyOf).toHaveLength(2);
+ expect(json.type).toBe('object');expect(json.anyOf).toHaveLength(3);
  expect(JSON.stringify(json.anyOf)).toContain('required');
  expect(withErrorOutputContract(toolResultSchemas.job_start)).toBe(contract);
 });

@@ -198,6 +198,11 @@ export async function fsRead(input: FsReadInput) {
           fileSignature(await stat(input.path, { bigint: true })) !== sourceVersion) throw new Error("Source changed during versioned read");
     };
     await verify();
+    if ((input.encoding ?? "utf8") === "utf8" && (input.offset ?? 0) > 0) {
+      const first = Buffer.alloc(1);
+      const probe = await file.read(first, 0, 1, input.offset);
+      if (probe.bytesRead && (first[0]! & 0xc0) === 0x80) throw new Error("UTF-8 offset is inside a codepoint; use the previous nextOffset or base64 for arbitrary byte offsets");
+    }
     const info = await file.stat();
     if (info.size === 0 && (lineMode || (input.tailBytes ?? 0) > 0)) {
       const probe = Buffer.alloc(1);
@@ -231,12 +236,18 @@ export async function fsRead(input: FsReadInput) {
     const available = knownSize ? Math.max(0, info.size - offset) : undefined;
     const requested = input.length ?? DEFAULT_READ_BYTES;
     const toRead = available === undefined ? requested : Math.min(requested, available);
-    const buffer = Buffer.alloc(Math.max(toRead, 0));
+    const buffer = Buffer.alloc(Math.max(toRead, 0) + ((input.encoding ?? "utf8") === "utf8" && toRead > 0 ? 3 : 0));
     const { bytesRead: rawBytesRead } = toRead > 0 ? await file.read(buffer, 0, toRead, offset) : { bytesRead: 0 };
     let bytesRead = rawBytesRead;
     const moreBytesMayExist = knownSize ? offset + rawBytesRead < info.size : rawBytesRead === toRead;
-    if (input.length === undefined && (input.encoding ?? "utf8") === "utf8" && rawBytesRead > 0 && moreBytesMayExist) {
+    if ((input.encoding ?? "utf8") === "utf8" && rawBytesRead > 0 && moreBytesMayExist) {
       bytesRead = utf8SafeLength(buffer.subarray(0, rawBytesRead));
+      if (bytesRead === 0) {
+        // Tiny pages still make progress by delivering one complete codepoint.
+        const needed = utf8LeadingCodePointLength(buffer);
+        const extra = await file.read(buffer, rawBytesRead, needed - rawBytesRead, offset + rawBytesRead);
+        bytesRead = utf8SafeLength(buffer.subarray(0, rawBytesRead + extra.bytesRead));
+      }
     }
     const data = buffer.subarray(0, bytesRead);
     const nextOffset = offset + bytesRead;

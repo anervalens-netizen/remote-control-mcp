@@ -47,7 +47,7 @@ describe("E2 contracts", () => {
     const results = await startJobsMany(fake, ["server", "offline", "Gaming"], { command: "echo ok" }, "system");
     expect(results).toEqual([
       { device: "server", context: "system", ok: true, job: { id: "server-job", state: "running" } },
-      { device: "offline", context: "system", ok: false, error: "connection refused" },
+      { device: "offline", context: "system", ok: false, error: "connection refused", requestSucceeded: false, clientAcceptance: "unknown" },
       { device: "Gaming", context: "system", ok: true, job: { id: "Gaming-job", state: "running" } },
     ]);
   });

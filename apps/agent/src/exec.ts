@@ -1,3 +1,4 @@
+import { utf8SafeLength } from "./state.ts";
 import { createDeadline } from "../../../packages/protocol/src/deadline.ts";
 import crossSpawn from "cross-spawn";
 import { spawn } from "node:child_process";
@@ -200,19 +201,20 @@ export async function runProcess(
     });
   });
 
+  const stdout = safeOutput(stdoutChunks), stderr = safeOutput(stderrChunks);
   return {
     code: result.code,
     signal: result.signal,
-    stdout: Buffer.concat(stdoutChunks).toString("utf8"),
-    stderr: Buffer.concat(stderrChunks).toString("utf8"),
+    stdout: stdout.text,
+    stderr: stderr.text,
     durationMs: Math.round(performance.now() - started),
     timedOut,
     ...(cancellationRequested ? { cancellationRequested: true } : {}),
     ...(cancellationRequested && terminationVerified === true ? { cancelled: true } : {}),
     stdoutBytes,
     stderrBytes,
-    stdoutTruncated: stdoutBytes > stdoutSaved,
-    stderrTruncated: stderrBytes > stderrSaved,
+    stdoutTruncated: stdoutBytes > stdout.retainedBytes,
+    stderrTruncated: stderrBytes > stderr.retainedBytes,
     ...(timedOut || cancellationRequested ? {
       terminationVerified: terminationVerified === true,
       terminationForced,
@@ -234,4 +236,12 @@ export async function runCommand(request: ExecRequest, signal?: AbortSignal): Pr
     maxOutputBytes: request.maxOutputBytes,
     signal,
   });
+}
+
+function safeOutput(chunks: Buffer[]): { text: string; retainedBytes: number } {
+  const bytes = Buffer.concat(chunks);
+  const retainedBytes = utf8SafeLength(bytes);
+  // Replacement characters can encode to more bytes than the invalid input.
+  // Truncation must compare raw byte counts, including boundary trimming.
+  return { text: bytes.subarray(0, retainedBytes).toString("utf8"), retainedBytes };
 }

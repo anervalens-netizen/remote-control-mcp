@@ -1,3 +1,4 @@
+import { toolErrorDetails } from "./tool-errors.ts";
 export const DEFAULT_BATCH_CONCURRENCY = 8;
 
 export function boundedConcurrency(requested: number | undefined, itemCount: number, fallback = DEFAULT_BATCH_CONCURRENCY): number {
@@ -59,6 +60,6 @@ export async function settledLimit<T>(
 ) {
   return mapLimit(items, concurrency, async (item, index) => {
     try { return { index, ok: true as const, result: await fn(item, index) }; }
-    catch (error) { return { index, ok: false as const, error: error instanceof Error ? error.message : String(error) }; }
+    catch (error) { return { ...toolErrorDetails(error), index, ok: false as const }; }
   }, signal);
 }
