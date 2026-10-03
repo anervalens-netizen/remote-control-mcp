@@ -1,3 +1,4 @@
+import { recordStage, diagnosticContext } from "../../../packages/protocol/src/diagnostic-context.ts";
 import { jobRecoveryPayload, type JobRecoveryPayload } from "../../../packages/protocol/src/job-recovery.ts";
 import type { DeployInput, JobFollowInput, ProjectRunInput } from "../../../packages/protocol/src/project.ts";
 import type { DesktopUiaInput, DesktopWindowsInput, DesktopBatchInput } from "../../../packages/protocol/src/desktop.ts";
@@ -180,6 +181,7 @@ export class AgentClient {
   }
 
   async requestRoute<T>(name: string, route: string, body: unknown | undefined, context: AgentEndpointContext = "system", options: AgentRequestOptions = {}): Promise<T> {
+    const requestStarted = performance.now();
     const endpoint = this.endpoint(name, context, route);
     const headers: Record<string, string> = {};
     if (body !== undefined) headers["content-type"] = "application/json";
@@ -206,6 +208,9 @@ export class AgentClient {
         throw new AgentRequestError(`${name} ${context} ${route} invalid JSON response: ${detail}`, name, context, route, "protocol");
       }
     } catch (error) {
+      const kind = error instanceof AgentRequestError ? error.kind : options.signal?.aborted && !deadline.timedOut() ? "cancelled" : deadline.timedOut() ? "timeout" : "network";
+      const trace = diagnosticContext.getStore();
+      if (trace) trace.agentErrors[kind] = (trace.agentErrors[kind] ?? 0) + 1;
       if (error instanceof AgentRequestError) throw error;
       if (options.signal?.aborted && !deadline.timedOut()) {
         throw new AgentRequestError(`${name} ${context} ${route} cancelled by caller`, name, context, route, "cancelled");
@@ -216,6 +221,7 @@ export class AgentClient {
       const detail = error instanceof Error ? error.message : String(error);
       throw new AgentRequestError(`${name} ${context} ${route} network failure: ${detail}`, name, context, route, "network");
     } finally {
+      recordStage("agentRequest", performance.now() - requestStarted);
       deadline.dispose();
     }
   }

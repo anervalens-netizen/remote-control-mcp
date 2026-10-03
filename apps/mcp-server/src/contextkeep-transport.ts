@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { CallToolResultSchema, JSONRPCMessageSchema } from "@modelcontextprotocol/sdk/types.js";
 
-export const errorCategories = ["transport", "timeout", "cancelled", "http", "content_type", "too_large", "invalid_response", "rpc_error", "tool_error", "ack_mismatch", "proof_missing", "remote_conflict", "journal", "executor"] as const;
+export const errorCategories = ["transport", "timeout", "cancelled", "http", "content_type", "too_large", "invalid_response", "rpc_error", "tool_error", "ack_mismatch", "proof_missing", "lookup_in_progress", "remote_conflict", "journal", "executor"] as const;
 export type ErrorCategory = typeof errorCategories[number];
 export class BridgeError extends Error {
   readonly category: ErrorCategory;

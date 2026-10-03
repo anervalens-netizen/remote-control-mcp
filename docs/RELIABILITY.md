@@ -162,13 +162,166 @@ always means inspect existing durable evidence, never replay. Use `job_start`
 with a stable agent idempotency key and `job_output` for restart-safe execution
 and complete durable output.
 
-This wave does not implement a durable batch manifest, operation fingerprint,
-per-item restart reconciliation, crash/power-loss result delivery, ContextKeep
-receipt reconciliation (R05), journal/index/watcher optimization (R06–R08), or
-full client/platform qualification (R09–R12). Those require separate acceptance;
-controller-memory recovery is not evidence that they are complete.
+Controller-memory result recovery remains distinct from the durable batch
+recovery below. Physical power-loss durability and client/platform qualification
+remain separate acceptance work (R11–R12).
 
 Controller compaction is compatible with existing agent result fields. The
 source-side UTF-8 fix requires the updated agent; a new controller cannot
 reconstruct codepoints already replaced by an older agent. Agent/controller
 rollout and live acceptance remain separate from source tests.
+
+
+## Durable batch recovery (R03)
+
+`batch_exec` defaults to durable mode and requires an `operationKey` chosen by
+its caller before effects. Configure the controller's existing `RCMCP_STATE_DIR`
+as an absolute private path and preserve it across releases. The controller
+uses `batch-operations` below that directory and the agent's existing keyed-job
+reservations and output files. Every route is resolved before dispatch; every
+agent identity must advertise `job-key-recovery-v1` before the first start.
+Upgrade agents before enabling durable batches on a new controller. Old agents
+fail closed before command dispatch.
+
+The complete bounded manifest and permanent operation reservation precede the
+first start. Each item records its route, route configuration hash, fingerprint,
+working-directory hash, deterministic agent key, timestamps, state, job ID and
+output reference. Command/environment values and stdout are absent. Fingerprints
+cover ordered items, resolved routes, command, cwd and environment sorted by
+code-unit key order. Concurrency is scheduling, not command identity. Identity
+configuration changes cannot redirect recovery to a different endpoint.
+
+An existing key with different inputs conflicts. An existing key with identical
+inputs only reconciles existing work, including after a controller crash; it
+never starts even the remaining `not_started` items. Use
+`batch_recover({operationKey})` or `batch_recover({operationId})` to inspect the
+same manifest plus read-only agent status/key lookups. A key lookup must prove
+the original agent input fingerprint and matching job ID before its result is
+associated with the batch; a collision remains explicit conflict. Unknown/corrupt/missing
+records remain unavailable or uncertain. A missing agent reservation does not
+turn `start_uncertain` into `not_started`. Recovery never calls exec/start.
+`lastCheckedAt` and `observation` distinguish current observation from retained
+facts. Recovery does not write over the dispatch writer's manifest.
+Recovery reads use at most four concurrent requests. Cancellation of either
+`batch_recover` or an identical-key `batch_exec` retry stops queued lookups and
+forwards the caller signal to active status/key requests, which are drained.
+Cancellation rejects the recovery call after draining active reads. It neither
+cancels durable jobs nor changes their stored manifest.
+
+Durable batch results are admission/recovery inventories, not synchronous exec
+receipts. States are `not_started`, `start_uncertain`, `running`, `terminal` and
+`failed`; `executionState` and `exitCode` retain the agent outcome. Verification
+is always `unknown`. Read full output using `job_output`/`job_wait` with the
+recorded device, context and job ID; each stream reference begins at cursor 0.
+Cancellation prevents new starts, drains started requests and records remaining
+items. It does not kill jobs. Termination requires a separate explicit
+`job_cancel`. Synchronous `timeoutMs`/`maxOutputBytes` are rejected in durable
+mode before effects rather than silently ignored.
+
+For deliberate compatibility, `mode:"legacy"` retains synchronous batch exec,
+its existing timeouts and output contract, plus a visible generated operation
+ID and `restartRecoverable:false`. It does not accept an operation key. Its
+memory result recovery cannot survive restart. Existing clients must explicitly
+select this mode or migrate to keyed durable jobs; omission of a key in default
+mode fails before effects. Owner/raw exec and execution identities are unchanged.
+
+Manifests are at most 128 KiB, batches at most 64 items, and permanent operation
+slots at most 512 per configured state directory. Aggregate admission/persistence
+checks enforce a 64 MiB ceiling including orphan staging files. Capacity
+exhaustion fails before further starts; no age-based eviction frees a key for
+reuse. Reservations and tombstones are recovery evidence, not disposable logs.
+Archive/migrate state only through an explicit owner-controlled retention plan
+that preserves no-replay keys. Abandoned admission locks fail closed. SIGKILL
+tests are not physical power-loss or arbitrary disk-loss certification.
+
+## Bridge convergence and journal cost (R05–R06)
+
+Bridge diagnostics distinguish transient errors, lookup in progress, missing or
+conflicting proof, reconciliation required and terminal-negative evidence.
+Bounded pending details include age, last/next attempt, actual attempt/retry
+counts and a separately capped backoff exponent. Retry failures are durably counted; unchanged successful polls are counted in
+process memory until the next durable fact. Counters introduced after a legacy
+receipt cannot reconstruct its earlier retry history. Successful unchanged
+running polls update only process-local scheduling, except that the first
+successful running poll after failures persists one reset of the backoff and
+error category. Subsequent healthy polls make zero scheduling writes. A saved
+reset survives disk reconciliation and restart. A failed reset write retains
+the last durable failure count and uses process-local journal-write retry
+backoff. Restart before a saved reset recovers the old durable count and due
+time, not that process-local delay. Reservation, attachment ACK,
+terminal observation and delivery remain durable; retry failures still persist
+backoff and categories. Restart can poll sooner, never execute again. Diagnostics
+count durable writes and scheduling writes avoided and expose the last directory
+snapshot's age and 60-second external reconciliation bound.
+
+Directory snapshots explicitly count locks and locks without JSON receipts.
+Neither age nor a dead PID authorizes deletion. `reconcile-contextkeep-lock.ts`
+requires all writers fenced, the exact lock hash, original bounded receipt bytes,
+a matching receipt hash, and the complete CK evidence tuple. It durably backs up
+receipt and lock, publishes a historical no-replay tombstone, and archives the
+lock. Missing/mismatched evidence fails closed. A failed or crashed reconciliation
+can retain a reconciliation lock and requires inspection, not automatic cleanup.
+
+`resolve-contextkeep-history.ts` now requires an absolute evidence JSON file in
+addition to its original identifiers. Evidence binds journal SHA-256, project,
+task, run, job, revision, evidence-record ID, terminal status and verification.
+New historical resolutions require that tuple; existing v1/v2/v3 journals remain
+readable. Original bytes are backed up before replacement. Historical resolution
+is not an attachment ACK and preserves negative executor/CK evidence. Known
+failed/lost outcomes and failed verification cannot be rewritten as passed.
+Validated terminal remote evidence is retained on ordinary reconciliation too.
+No production cohort is modified by this source feature.
+
+## Incremental history and shared observation (R07–R08)
+
+Own metadata transitions/removals update the process-local history index after
+successful persistence. Directory namespace and generation checks detect external additions and
+deletions even when filesystem timestamps collide. Metadata reconciliation runs after one second; an unconditional content sweep
+after 30 seconds bounds same-size edits whose filesystem timestamps also collide.
+Intervals start after a scan finishes and apply on the next query; scan duration
+is additional. Generation changes can trigger earlier reconciliation. `freshness` states the last
+reconciliation timestamp, age and bound. Active reconciliation updates filters
+before page selection. The warm unchanged activeIds/page pair performs no
+receipt stats/JSON reads. It still lists directory names, performs directory stats, scans
+in-memory entries and sorts matching rows; this is not a persistent database.
+The synthetic `scripts/benchmark-history.ts` measures both the previous warm
+2N-stat pattern and the new index on 100/1k/5k/10k/100k receipts. It does not open
+configured agent state. Existing tie/cursor/delete/corruption semantics remain.
+
+Each agent identity/state directory shares a status sample and in-flight status
+read per job for 200 ms. Across device/identity boundaries observers are separate.
+Up to 1024 active subscribers share polls; no output queue is retained. Each
+subscriber reads its own bounded output pages and cursors. Slow readers do not
+retain copies for other readers. Cancelling a follower releases only that
+subscriber; the job and other followers continue. The last release removes the
+observer; a new observer or restarted agent reads authoritative disk state.
+Distinct cursors still require distinct output reads and HTTP requests.
+
+## Observable diagnostic stages (R09)
+
+Bounded process-local traces correlate request, operation, job and CK project/
+task/run separately using hashes. They retain no commands, arguments, credentials
+or private output. Observable durations include handler, agent request, intentional
+execution wait, persistence, reconciliation, result preparation and final schema
+validation; total bytes cover the final tool result before RPC/HTTP framing.
+Stages overlap: remote wait is part of the agent request, and validation is part
+of preparation. An unobservable pre-handler queue is `queueMs:null`, not zero.
+CK retry/persistence counts, persistence time, last pump duration and
+reconciliation freshness are available in bridge diagnostics. Agent error kinds
+include timeout separately from caller cancellation. Final validation/preparation failures remain explicit counters.
+
+`diagnostic_wait_report` accepts a bounded request identifier and a client or
+orchestrator source for an explicit caller-reported wait expiry. This is separate
+from controller-to-agent request timeout and from observed caller cancellation.
+A disconnect does not prove a client timer expired. Neither this report nor a
+validated result proves client/UI/platform acceptance, which remains unknown.
+
+## Remaining work
+
+R10 resource fencing, cross-session writer conflict handling and measured shared
+backpressure are not implemented by these changes. R11 still needs the complete
+negotiated MCP/SDK, client/session/transport and old/new deployment compatibility
+matrix, including real connector catalog refresh. R12 still needs native Windows
+and physical-device qualification, exact release review/CI, supported rollout,
+recovery-copy checks, runtime identity and post-deployment functional evidence.
+Source tests and synthetic SIGKILL/I/O injection do not close those packages.

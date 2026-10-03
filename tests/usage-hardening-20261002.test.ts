@@ -8,7 +8,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import Fastify from "fastify";
-import { JobStartDeduplicator } from "../apps/agent/src/job-start-dedup.ts";
+import { JobStartDeduplicator, jobStartFingerprint } from "../apps/agent/src/job-start-dedup.ts";
 import { jobCancel, jobRemove, jobStart, jobStartKeyStatus } from "../apps/agent/src/jobs.ts";
 import { jobFollow } from "../apps/agent/src/job-follow.ts";
 import { projectRun } from "../apps/agent/src/project-run.ts";
@@ -49,7 +49,7 @@ describe("usage hardening 2026-10-02",()=>{
     expect(store.lookup(key)).toEqual({state:"not_found"});
     const start=async(id:string)=>({id});
     const receipt=await store.run({command:"synthetic",idempotencyKey:key},start,async id=>({id}));
-    expect(store.lookup(key)).toEqual({state:"reserved",jobId:receipt.id});
+    expect(store.lookup(key)).toEqual({state:"reserved",jobId:receipt.id,fingerprint:jobStartFingerprint({command:"synthetic"})});
   });
 
   it("resolves keyed project retries before consulting mutable project manifests",async()=>{

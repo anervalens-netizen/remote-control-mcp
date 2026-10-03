@@ -68,7 +68,7 @@ async function recover(client: Client, id: string) {
 it.each([false, true])('real SDK accepts large/small batches, complete summaries and exact recovery (HTTP=%s)', async http => {
   const h = await harness(http);
   const items = Array.from({ length: 64 }, (_, i) => ({ device: 'fixture', identity: 'owner', command: i === 63 ? 'fail' : 'big' }));
-  const r: any = await h.client.callTool({ name: 'batch_exec', arguments: { items, concurrency: 4 } });
+  const r: any = await h.client.callTool({ name: 'batch_exec', arguments: { mode: "legacy", items, concurrency: 4 } });
   expect(r.isError).not.toBe(true); expect(h.calls()).toBe(64);
   expect(r.structuredContent.summary).toMatchObject({ total: 64, exit_zero: 63, exit_nonzero: 1, requestErrors: 0, effectVerification: 'unverified', clientAcceptance: 'unknown' });
   expect(r.structuredContent).toMatchObject({ partial: false, executionPartial: true, totalItems: 64, structuredContentTruncated: true });
@@ -77,7 +77,7 @@ it.each([false, true])('real SDK accepts large/small batches, complete summaries
   expect(Buffer.byteLength(JSON.stringify(r))).toBeLessThanOrEqual(TOTAL_RESULT_MAX_BYTES);
   const full = await recover(h.client, r.structuredContent.resultRecovery.id);
   expect(full.structuredContent.items).toHaveLength(64); expect(full.structuredContent.items[63].result.code).toBe(7); expect(h.calls()).toBe(64);
-  const small: any = await h.client.callTool({ name: 'batch_exec', arguments: { items: [{ device: 'fixture', command: 'small' }] } });
+  const small: any = await h.client.callTool({ name: 'batch_exec', arguments: { mode: "legacy", items: [{ device: 'fixture', command: 'small' }] } });
   expect(small.isError).not.toBe(true); expect(small.structuredContent.summary.exit_zero).toBe(1);
   expect(h.diagnostics.snapshot().series.find(s => s.tool === 'batch_exec')).toMatchObject({ count: 2, partial: 1, errors: 0 });
 }, 20000);
@@ -85,7 +85,7 @@ it.each([false, true])('real SDK accepts large/small batches, complete summaries
 it('distinguishes execution, request failures and unverified effects over the SDK', async () => {
   const h = await harness();
   const commands = ['small', 'fail', 'signal', 'timeout', 'unknown', 'cancel', 'exception'];
-  const r: any = await h.client.callTool({ name: 'batch_exec', arguments: { items: commands.map(command => ({ device: 'fixture', command })) } });
+  const r: any = await h.client.callTool({ name: 'batch_exec', arguments: { mode: "legacy", items: commands.map(command => ({ device: 'fixture', command })) } });
   expect(r.isError).not.toBe(true);
   expect(r.structuredContent.summary).toEqual({ total: 7, requestSucceeded: 6, requestErrors: 1, exit_zero: 1, exit_nonzero: 1, signal: 1, timeout: 1, cancelled: 0, uncertain: 3, not_started: 0, effectVerification: 'unverified', clientAcceptance: 'unknown' });
   expect(r.structuredContent.errors[0]).toMatchObject({ index: 6, kind: 'http', status: 403, agentCode: 'EACCES', executionOutcome: 'uncertain' });

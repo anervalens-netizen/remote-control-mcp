@@ -1,8 +1,20 @@
+import { SharedJobObserver } from "./shared-job-observer.ts";
 import { setTimeout as delay } from "node:timers/promises";
 import type { JobFollowInput } from "../../../packages/protocol/src/project.ts";
 import { jobOutput, jobStatusAsync } from "./jobs.ts";
 import { utf8SafeLength, utf8LeadingCodePointLength } from "./state.ts";
 
+async function subscriberSample<T>(sample: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+  signal?.throwIfAborted();
+  if (!signal) return sample();
+  let abort: () => void = () => {};
+  const cancelled = new Promise<never>((_resolve, reject) => {
+    abort = () => reject(signal.reason ?? new Error("Job follower cancelled"));
+    signal.addEventListener("abort", abort, { once: true });
+  });
+  try { return await Promise.race([sample(), cancelled]); }
+  finally { signal.removeEventListener("abort", abort); }
+}
 function page(id: string, stream: "stdout" | "stderr", offset: number, length: number, encoding: "utf8" | "base64", terminal: boolean) {
   const raw = jobOutput({ id, stream, offset, length: Math.max(4, length), encoding: "base64" });
   const bytes = Buffer.from(raw.data, "base64");
@@ -19,11 +31,15 @@ function page(id: string, stream: "stdout" | "stderr", offset: number, length: n
   return { stream, offset: raw.offset, nextOffset: raw.offset + count, totalBytes: raw.totalBytes,
     eof: raw.offset + count >= raw.totalBytes, data: data.toString(encoding), bytes: count, encoding };
 }
+export const jobObservers = new SharedJobObserver(jobStatusAsync);
 export async function jobFollow(input: JobFollowInput, signal?: AbortSignal) {
   const start = performance.now(), waitMs = input.waitMs ?? 30000;
   const cursor = input.cursor ?? { stdout: 0, stderr: 0 };
   const encoding = input.encoding ?? "utf8", maxBytes = input.maxBytes ?? 64 * 1024;
-  let status = await jobStatusAsync(input.id);
+  signal?.throwIfAborted();
+  const observer = jobObservers.acquire(input.id);
+  try {
+  let status = await subscriberSample(observer.sample, signal);
   while (status.state === "running" || status.state === "cancelling") {
     signal?.throwIfAborted();
     if (input.until === "output" && (status.stdoutBytes > cursor.stdout || status.stderrBytes > cursor.stderr)) {
@@ -32,7 +48,7 @@ export async function jobFollow(input: JobFollowInput, signal?: AbortSignal) {
     const remaining = waitMs - (performance.now() - start);
     if (remaining <= 0) break;
     await delay(Math.min(remaining, 200), undefined, { signal });
-    status = await jobStatusAsync(input.id);
+    status = await subscriberSample(observer.sample, signal);
   }
   const terminal = status.state !== "running" && status.state !== "cancelling";
   const stdout = page(input.id, "stdout", cursor.stdout, maxBytes, encoding, terminal);
@@ -40,4 +56,5 @@ export async function jobFollow(input: JobFollowInput, signal?: AbortSignal) {
   return { ...status, terminal, waitExpired: !terminal && performance.now() - start >= waitMs,
     stdout, stderr, cursor: { stdout: stdout.nextOffset, stderr: stderr.nextOffset },
     outputComplete: terminal && stdout.eof && stderr.eof, waitedMs: Math.round(performance.now() - start) };
+  } finally { observer.release(); }
 }

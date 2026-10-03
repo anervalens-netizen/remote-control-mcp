@@ -1,8 +1,13 @@
+import { resultMetadataFields } from "./result-recovery.ts";
+import type { Trace } from "../../../packages/protocol/src/diagnostic-context.ts";
+import { correlationHash } from "../../../packages/protocol/src/diagnostic-context.ts";
+import { z } from "zod";
+import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { executionOutcome, executionOutcomes, type ExecutionOutcome } from "../../../packages/protocol/src/execution-outcome.ts";
 import { performance } from "node:perf_hooks";
 
 export type ToolOutcome = "success" | "error" | "partial" | "cancelled";
-export type ResultDiagnostic = { finalValidationFailed?: boolean; resultPreparationFailed?: boolean; execution?: Partial<Record<ExecutionOutcome, number>>; requestErrors?: number };
+export type ResultDiagnostic = { trace?: Trace; finalValidationFailed?: boolean; resultPreparationFailed?: boolean; execution?: Partial<Record<ExecutionOutcome, number>>; requestErrors?: number };
 type Series = { finalValidationFailures: number; resultPreparationFailures: number; execution: Record<ExecutionOutcome, number>; requestErrors: number; tool: string; device: string; count: number; errors: number; partial: number; cancelled: number; totalMs: number; maxMs: number; samples: number[]; next: number };
 const round = (n: number) => Math.round(n * 100) / 100;
 
@@ -13,12 +18,24 @@ export class ToolDiagnostics {
   private readonly devices: Set<string>;
   private readonly series = new Map<string, Series>();
   private overflow = 0;
+  private readonly traces: Array<{ tool: string; trace: Trace }> = [];
+  private readonly waitReports: Array<{ requestHash: string; source: "client" | "orchestrator"; observedAt: string }> = [];
+  private waitExpiryReports = 0;
+  reportWaitExpiry(requestId: string, source: "client" | "orchestrator") {
+    this.waitExpiryReports++;
+    this.waitReports.push({ requestHash: correlationHash(requestId), source, observedAt: new Date().toISOString() });
+    if (this.waitReports.length > this.sampleLimit) this.waitReports.shift();
+  }
   constructor(devices: string[] = [], maxSeries = 256, sampleLimit = 128) {
     this.devices = new Set(devices);
     this.maxSeries = Math.max(1, Math.min(1024, Math.floor(maxSeries)));
     this.sampleLimit = Math.max(1, Math.min(1024, Math.floor(sampleLimit)));
   }
   record(tool: string, args: unknown, elapsedMs: number, outcome: ToolOutcome, detail: ResultDiagnostic = {}): void {
+    if (detail.trace) {
+      this.traces.push({ tool, trace: structuredClone(detail.trace) });
+      if (this.traces.length > this.sampleLimit) this.traces.shift();
+    }
     const input = args && typeof args === "object" ? args as Record<string, unknown> : {};
     const device = typeof input.device === "string" ? (this.devices.has(input.device) ? input.device : "unknown")
       : Array.isArray(input.devices) || Array.isArray(input.items) ? "batch" : "controller";
@@ -43,7 +60,9 @@ export class ToolDiagnostics {
     else { value.samples[value.next] = duration; value.next = (value.next + 1) % this.sampleLimit; }
   }
   snapshot() {
-    return { observedAt: new Date().toISOString(), scope: "controller handler and final validation; client acceptance unknown; effect verification not inferred", sampleWindow: "last completed calls per series", maxSeries: this.maxSeries, sampleLimit: this.sampleLimit, overflowCalls: this.overflow,
+    return { observedAt: new Date().toISOString(), traces: structuredClone(this.traces), waitExpiryReports: this.waitExpiryReports,
+      waitReports: [...this.waitReports], waitExpiryScope: "Explicit caller reports only; caller disconnect is not proof of expiry. RC agent request timeout is separate. UI/platform cause and acceptance are unknown.",
+      stageScope: "Durations may overlap; agentRequest includes remote execution/wait. queueMs=null means pre-handler queue is not observable.", scope: "controller handler and final validation; client acceptance unknown; effect verification not inferred", sampleWindow: "last completed calls per series", maxSeries: this.maxSeries, sampleLimit: this.sampleLimit, overflowCalls: this.overflow,
       series: [...this.series.values()].map(v => {
         const samples = [...v.samples].sort((a, b) => a - b);
         const percentile = (p: number) => round(samples[Math.max(0, Math.ceil(samples.length * p) - 1)] ?? 0);
@@ -93,4 +112,16 @@ export function startToolProgress(name: string, extra?: ProgressExtra): () => vo
   const stop = () => { active = false; clearInterval(timer); extra.signal?.removeEventListener("abort", stop); };
   extra.signal?.addEventListener("abort", stop, { once: true });
   notify(); return stop;
+}
+
+export function registerWaitDiagnostics(server: McpServer, diagnostics: ToolDiagnostics) {
+  server.registerTool("diagnostic_wait_report", {
+    description: "Record an explicit client/orchestrator wait-expiry report for correlation. This is caller-reported evidence, not proof of handler timeout or platform acceptance.",
+    inputSchema: z.object({ requestId: z.string().min(1).max(200), source: z.enum(["client", "orchestrator"]) }).strict(),
+    outputSchema: z.object({ recorded: z.literal(true), evidence: z.literal("caller_reported"), clientAcceptance: z.literal("unknown"), ...resultMetadataFields }).strict(),
+  }, async ({ requestId, source }) => {
+    diagnostics.reportWaitExpiry(requestId, source);
+    const value = { recorded: true as const, evidence: "caller_reported" as const, clientAcceptance: "unknown" as const };
+    return { content: [{ type: "text" as const, text: JSON.stringify(value) }], structuredContent: value };
+  });
 }

@@ -1,3 +1,7 @@
+import { resultMetadataFields } from "./result-recovery.ts";
+import { withErrorOutputContract } from "./error-output-contract.ts";
+import { configuredBatchStore, durableBatchSchema } from "./durable-batch.ts";
+import { randomUUID } from "node:crypto";
 import { executionFacts, summarizeExecution } from "../../../packages/protocol/src/execution-outcome.ts";
 import { settledExecution } from "./settled-execution.ts";
 import { withToolErrors } from "./tool-errors.ts";
@@ -33,13 +37,14 @@ async function settled<T>(items: T[], fn: (item: T, index: number) => Promise<un
 
 export function registerHighLevelTools(server: McpServer, client: AgentClient): void {
   server.registerTool("batch_exec", {
-    description: "Execute many independent shell commands in parallel. Each item supports the same identity/context/elevation/env routing contract as exec.",
+    description: "Start a recoverable durable batch with a caller-known operationKey. Reuse only recovers; it never starts remaining items. Use batch_recover and job_output. Explicit mode=legacy retains synchronous exec without restart recovery.",
     inputSchema: z.object({
+      operationKey: z.string().min(1).max(200).optional(), mode: z.enum(["durable", "legacy"]).optional(),
       items: z.array(executionInputSchema({ device: z.string().min(1), ...execRequestFields })).min(1).max(64),
       concurrency: z.number().int().min(1).max(32).optional(),
     }).strict(),
-    outputSchema: batchResultSchema(execResultSchema),
-  }, async ({ items, concurrency }, extra) => {
+    outputSchema: withErrorOutputContract(z.union([batchResultSchema(execResultSchema).extend({ operationId: z.string().optional(), restartRecoverable: z.literal(false).optional() }), durableBatchSchema.extend(resultMetadataFields)])),
+  }, async ({ items, concurrency, operationKey, mode }, extra) => {
     // Resolve every route before dispatch. One invalid/unavailable target must not
     // allow earlier items to produce effects before the batch is rejected.
     const planned = items.map((item, index) => {
@@ -47,6 +52,13 @@ export function registerHighLevelTools(server: McpServer, client: AgentClient): 
       const target = resolveExecutionContext(client, device, { context, identity, elevation }, "system");
       return { index, device, target, identity: executionLabel(target), request };
     });
+    if (mode !== "legacy") {
+      if (!operationKey) throw new Error("batch_operation_key_required: durable batch requires operationKey before effects");
+      const result = await configuredBatchStore(client).start(operationKey, planned, concurrency, extra.signal);
+      return structured(result);
+    }
+    if (operationKey) throw new Error("operationKey requires durable mode");
+    const operationId = randomUUID();
     const legacy = await settledExecution(
       planned,
       (item) => client.exec(item.device, item.request, item.target, { signal: extra.signal }),
@@ -62,8 +74,16 @@ export function registerHighLevelTools(server: McpServer, client: AgentClient): 
     const errors = routed.filter((entry): entry is Extract<(typeof routed)[number], { ok: false }> => !entry.ok);
     const summary = summarizeExecution(routed);
     const enriched = routed.map(entry => entry.ok ? { ...entry, result: { ...(entry.result as Record<string, unknown>), ...executionFacts(entry.result as Record<string, unknown>) } } : entry);
-    return structured({ items: enriched, errors, partial: errors.length > 0, summary, executionPartial: summary.exit_zero !== summary.total }, enriched);
+    return structured({ operationId, restartRecoverable: false, items: enriched, errors, partial: errors.length > 0, summary, executionPartial: summary.exit_zero !== summary.total }, enriched);
   });
+
+  server.registerTool("batch_recover", {
+    description: "Read a durable batch manifest and reconcile existing agent jobs without dispatching commands. Missing/unknown evidence never authorizes execution.",
+    annotations: { readOnlyHint: true, idempotentHint: true },
+    inputSchema: z.object({ operationKey: z.string().min(1).max(200).optional(), operationId: z.string().regex(/^[a-f0-9]{64}$/).optional() }).strict()
+      .refine(v => Number(Boolean(v.operationKey)) + Number(Boolean(v.operationId)) === 1, "Supply exactly one operation identity"),
+    outputSchema: durableBatchSchema.extend(resultMetadataFields),
+  }, async (input, extra) => structured(await configuredBatchStore(client).recover(input, extra.signal)));
 
   server.registerTool("batch_read", {
     description: "Read many files in parallel. Each item supports explicit owner/root/interactive routing and returns a typed structured envelope.",

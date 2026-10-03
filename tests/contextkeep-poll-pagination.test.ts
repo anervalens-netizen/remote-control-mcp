@@ -39,7 +39,7 @@ it("reconciles a run beyond 500 entries across bounded attempts, without replay 
  const bridge=new ContextKeepBridge(client as unknown as AgentClient,f.config,caller);bridges.push(bridge);
  await bridge.start("fixture","user",{command:"synthetic",idempotencyKey:"one"},f.work);await bridge.pump();
  expect(offsets).toEqual([0,50,100,150,200,250,300,350,400,450]);
- expect(f.journal()).toMatchObject({state:"tracking",attachAcknowledged:true,lastError:"proof_missing"});
+ expect(f.journal()).toMatchObject({state:"tracking",attachAcknowledged:true,lastError:"lookup_in_progress"});
  now+=2001;await bridge.pump();
  expect(offsets).toEqual([0,50,100,150,200,250,300,350,400,450,500,550]);
  expect(f.journal()).toMatchObject({state:"delivered",attachAcknowledged:true});expect(client.jobStart).toHaveBeenCalledTimes(1);

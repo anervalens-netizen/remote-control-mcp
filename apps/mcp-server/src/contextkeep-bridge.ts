@@ -10,7 +10,7 @@ export type { WorkCorrelation } from "./contextkeep-journal.ts";
 
 type Config = { directory: string; url: string; token: string };
 type Caller = (name: string, args: Record<string, unknown>, signal?: AbortSignal) => Promise<unknown>;
-type Pending = Pick<Entry, "state" | "createdAt" | "nextAttemptAt" | "lastError"> & {
+type Pending = Pick<Entry, "state" | "createdAt" | "nextAttemptAt" | "lastError" | "totalAttempts" | "lastAttemptAt" | "attempts" | "remoteEvidence" | "totalRetries"> & {
   saveRetry?: { attempts: number; at: number };
   runLookupOffset?: number;
 };
@@ -64,6 +64,14 @@ export class ContextKeepBridge {
   private readonly corrupt = new Set<string>();
   private nextReconciliationAt = 0;
   private journalError = false;
+  private snapshotAt = 0;
+  private orphanLocks: string[] = [];
+  private lockedCount = 0;
+  private durableWrites = 0;
+  private persistenceMs = 0;
+  private writeFailures = 0;
+  private lastPumpMs = 0;
+  private schedulingWritesAvoided = 0;
   constructor(client: AgentClient, config: Config, call?: Caller) {
     this.client = client; this.config = config;
     if (!path.isAbsolute(config.directory)) throw new Error("Bridge directory must be absolute.");
@@ -74,16 +82,28 @@ export class ContextKeepBridge {
     this.call = call ?? ((name, args, signal) => callContextKeep(config, name, args, signal));
   }
   private save(entry: Entry, create = false) {
+    const started = performance.now();
     try { saveEntry(this.config.directory, entry, create); }
-    catch (error) { if (create) throw error; throw new BridgeError("journal"); }
+    catch (error) { this.writeFailures++; if (create) throw error; throw new BridgeError("journal"); }
+    finally { this.persistenceMs += performance.now() - started; }
+    this.durableWrites++;
     this.index(entry, true);
   }
-  private keys() { return readdirSync(this.config.directory).filter(f => /^[a-f0-9]{64}\.json$/.test(f)).sort().map(f => f.slice(0, -5)); }
+  private keys() {
+    const names = readdirSync(this.config.directory), present = new Set(names);
+    const locks = names.filter(f => /^[a-f0-9]{64}\.lock$/.test(f));
+    this.lockedCount = locks.length;
+    this.orphanLocks = locks.filter(f => !present.has(f.slice(0, -5) + ".json")).map(f => f.slice(0, -5));
+    return names.filter(f => /^[a-f0-9]{64}\.json$/.test(f)).sort().map(f => f.slice(0, -5));
+  }
   private index(entry: Entry, saved = false) {
     this.corrupt.delete(entry.key);
     if (entry.state === "delivered" || entry.state === "historical_resolved") this.pending.delete(entry.key);
     else this.pending.set(entry.key, {
-      state: entry.state, createdAt: entry.createdAt, nextAttemptAt: entry.nextAttemptAt, lastError: entry.lastError,
+      state: entry.state, createdAt: entry.createdAt,
+      nextAttemptAt: Math.max(entry.nextAttemptAt, this.pending.get(entry.key)?.nextAttemptAt ?? 0), lastError: entry.lastError,
+      totalRetries: Math.max(entry.totalRetries ?? 0, this.pending.get(entry.key)?.totalRetries ?? 0), remoteEvidence: entry.remoteEvidence, attempts: entry.attempts, totalAttempts: Math.max(entry.totalAttempts ?? 0, this.pending.get(entry.key)?.totalAttempts ?? 0),
+      lastAttemptAt: Math.max(entry.lastAttemptAt ?? 0, this.pending.get(entry.key)?.lastAttemptAt ?? 0),
       saveRetry: saved ? undefined : this.pending.get(entry.key)?.saveRetry,
       runLookupOffset: this.pending.get(entry.key)?.runLookupOffset,
     });
@@ -115,7 +135,7 @@ export class ContextKeepBridge {
       }
       for (const key of missing) { this.pending.delete(key); this.corrupt.delete(key); }
     } catch { this.journalError = true; }
-    finally { this.nextReconciliationAt = Date.now() + reconciliationInterval; }
+    finally { this.snapshotAt = Date.now(); this.nextReconciliationAt = Date.now() + reconciliationInterval; }
   }
   start(device: string, target: AgentEndpointContext, input: { command: string; cwd?: string; env?: Record<string, string>; idempotencyKey?: string }, correlation: WorkCorrelation) {
     const pending = this.startOnce(device, target, input, correlation);
@@ -180,7 +200,7 @@ export class ContextKeepBridge {
       if (pending) pending.runLookupOffset = exhausted ? 0 : offset + 50;
       if (exhausted) break;
     }
-    throw new BridgeError("proof_missing");
+    throw new BridgeError((this.pending.get(entry.key)?.runLookupOffset ?? 0) > 0 ? "lookup_in_progress" : "proof_missing");
   }
   private async deliver(entry: Entry, signal: AbortSignal) {
     const scope = { projectId: entry.correlation.projectId, taskId: entry.correlation.taskId, runId: entry.correlation.runId, clientId: "remote-control", sessionId: "executor-bridge" };
@@ -198,7 +218,7 @@ export class ContextKeepBridge {
         // A stale lease may conceal a completed remote run. The read contract
         // redacts inputHash, so without our durable attach ACK this is NOT proof.
         const remote = await this.taskRun(entry, signal);
-        if (terminal.has(String(remote.status))) throw new BridgeError("proof_missing");
+        if (terminal.has(String(remote.status))) { entry.remoteEvidence = this.remoteEvidence(entry, remote); throw new BridgeError("proof_missing"); }
         throw error;
       }
     }
@@ -235,8 +255,17 @@ export class ContextKeepBridge {
     if (!object(ack) || !(ack.duplicate === true || (ack.duplicate === false && typeof ack.applied === "boolean" &&
         z.string().uuid().safeParse(ack.observationId).success)) || !terminal.has(String(acknowledgedRun.status)) ||
         acknowledgedRun.status !== observedStatus(entry)) throw new BridgeError("ack_mismatch");
+    entry.remoteEvidence = this.remoteEvidence(entry, acknowledgedRun);
     entry.state = "delivered";
     this.save(entry); // Delivered tombstones are permanent deduplication records.
+  }
+  private remoteEvidence(entry: Entry, remote: Record<string, unknown>): NonNullable<Entry["remoteEvidence"]> {
+    if (entry.remoteEvidence && (Number(remote.revision) < entry.remoteEvidence.revision ||
+      entry.remoteEvidence.verification === "failed" && remote.verification !== "failed" ||
+      ["failed", "lost"].includes(entry.remoteEvidence.status) && remote.status !== entry.remoteEvidence.status)) throw new BridgeError("remote_conflict");
+    return { projectId: entry.correlation.projectId, taskId: entry.correlation.taskId, runId: entry.correlation.runId,
+      jobId: entry.jobId!, revision: Number(remote.revision), status: remote.status as "completed" | "failed" | "cancelled" | "lost",
+      verification: remote.verification as "pending" | "passed" | "failed" };
   }
   private reconcile(entry: Entry, remote: Record<string, unknown>): boolean {
     if (!terminal.has(String(remote.status))) return false;
@@ -245,6 +274,7 @@ export class ContextKeepBridge {
     // Exact scope/job/device/identity plus the persisted hash-checked attach
     // proves this run. No invented observation is needed if executor metadata
     // has expired: the remote terminal receipt already covers this execution.
+    entry.remoteEvidence = this.remoteEvidence(entry, remote);
     entry.state = "delivered";
     this.save(entry);
     return true;
@@ -256,17 +286,36 @@ export class ContextKeepBridge {
     try { entry = this.read(key); } catch { return; } // Strict disk read before acting, never cached ACK proof.
     if (entry.state !== "tracking" || entry.nextAttemptAt > Date.now() || this.shutdown.signal.aborted) return;
     entry.attempts = Math.max(entry.attempts, scheduled.saveRetry?.attempts ?? 0);
+    const resetRequired = entry.attempts > 0 || entry.lastError !== undefined || scheduled.saveRetry !== undefined;
+    entry.totalAttempts = Math.max(entry.totalAttempts ?? 0, scheduled.totalAttempts ?? 0) + 1;
+    entry.lastAttemptAt = Date.now();
+    Object.assign(this.pending.get(key)!, { totalAttempts: entry.totalAttempts, lastAttemptAt: entry.lastAttemptAt });
     const deadline = new AbortController();
     const timer = setTimeout(() => deadline.abort(), 30_000);
     const signal = AbortSignal.any([this.shutdown.signal, deadline.signal]);
+    let succeeded = false;
     try {
       await this.deliver(entry, signal);
+      succeeded = true;
       entry.attempts = 0; delete entry.lastError; entry.nextAttemptAt = Date.now() + 2000;
     } catch (error) {
+      entry.totalRetries = Math.max(entry.totalRetries ?? 0, this.pending.get(key)?.totalRetries ?? 0) + 1;
+      if (this.pending.has(key)) this.pending.get(key)!.totalRetries = entry.totalRetries;
       entry.attempts = Math.min(30, entry.attempts + 1);
       entry.lastError = deadline.signal.aborted ? "timeout" : categoryOf(error);
       entry.nextAttemptAt = Date.now() + retryDelay(entry.attempts);
     } finally { clearTimeout(timer); }
+    if (succeeded) {
+      const pending = this.pending.get(key);
+      if (pending) Object.assign(pending, { attempts: 0, totalAttempts: entry.totalAttempts, lastAttemptAt: entry.lastAttemptAt, lastError: undefined, nextAttemptAt: entry.nextAttemptAt });
+      // Persist only the failure-to-success transition. Otherwise a strict disk
+      // read (or restart) resurrects the old consecutive-failure exponent.
+      // Terminal delivery already persisted its final evidence above.
+      if (!resetRequired || entry.state !== "tracking") {
+        this.schedulingWritesAvoided++;
+        return;
+      }
+    }
     try { this.save(entry); } catch {
       // A failed save cannot evict pending work or promote in-memory ACKs.
       // Retain the last durable stage and back off even if the retry deadline
@@ -281,6 +330,7 @@ export class ContextKeepBridge {
   pump(): Promise<void> {
     if (this.shutdown.signal.aborted) return Promise.resolve();
     if (this.busy) return this.busy;
+    const started = performance.now();
     this.busy = (async () => {
       this.refreshIndex();
       const keys = [...this.pending.keys()]; let next = 0;
@@ -291,7 +341,7 @@ export class ContextKeepBridge {
           await this.process(key);
         }
       }));
-    })().finally(() => { this.busy = undefined; });
+    })().finally(() => { this.lastPumpMs = performance.now() - started; this.busy = undefined; });
     return this.busy;
   }
   diagnostics() {
@@ -304,7 +354,17 @@ export class ContextKeepBridge {
       if (error) lastErrorCategories[error] = (lastErrorCategories[error] ?? 0) + 1;
     }
     if (this.journalError) lastErrorCategories.journal = (lastErrorCategories.journal ?? 0) + 1;
-    return { pendingCount: this.pending.size, oldestPendingMs, lastErrorCategories, corruptCount: this.corrupt.size };
+    return { pendingCount: this.pending.size, oldestPendingMs, lastErrorCategories, corruptCount: this.corrupt.size,
+      snapshotAt: this.snapshotAt, snapshotAgeMs: Date.now() - this.snapshotAt, reconciliationIntervalMs: reconciliationInterval,
+      lockedCount: this.lockedCount, orphanLockCount: this.orphanLocks.length, orphanLockKeys: this.orphanLocks.slice(0, 100),
+      persistenceMs: this.persistenceMs, writeFailures: this.writeFailures, lastPumpMs: this.lastPumpMs, durableWrites: this.durableWrites, schedulingWritesAvoided: this.schedulingWritesAvoided,
+      entries: [...this.pending.entries()].slice(0, 100).map(([key, e]) => ({ key, ageMs: Date.now() - e.createdAt,
+        lastAttemptAt: e.lastAttemptAt ?? null, nextAttemptAt: Math.max(e.nextAttemptAt, e.saveRetry?.at ?? 0),
+        actualAttempts: e.totalAttempts ?? 0, actualRetries: e.totalRetries ?? 0, retryCounterScope: "retry failures durable since counter introduced; successful unchanged polls process-local; legacy history unknown", backoffExponent: Math.min(e.saveRetry?.attempts ?? e.attempts, 9),
+        lastError: e.saveRetry ? "journal" : e.lastError, requiredAction: e.state === "job_start_uncertain" || e.saveRetry || ["proof_missing", "remote_conflict", "ack_mismatch", "journal"].includes(e.lastError ?? "") ? "Inspect retained evidence; explicit fenced reconciliation only; never replay" : "Read-only observation retries at nextAttemptAt",
+        negativeFact: e.remoteEvidence && (["failed", "lost"].includes(e.remoteEvidence.status) || e.remoteEvidence.verification === "failed") ? { status: e.remoteEvidence.status, verification: e.remoteEvidence.verification } : undefined,
+        classification: e.remoteEvidence && (["failed", "lost"].includes(e.remoteEvidence.status) || e.remoteEvidence.verification === "failed") ? "terminal_negative" : e.state === "job_start_uncertain" || e.saveRetry ? "reconciliation_required" : e.lastError === "lookup_in_progress" ? "lookup_in_progress" : e.lastError === "proof_missing" ? "proof_missing" : ["remote_conflict", "ack_mismatch"].includes(e.lastError ?? "") ? "proof_conflict" : "transient",
+      })), entriesTruncated: this.pending.size > 100 };
   }
   startWorker() {
     if (this.timer || this.shutdown.signal.aborted) return;

@@ -78,7 +78,7 @@ describe("Issue #35 audit remediation", () => {
       const controller = new AbortController();
       const pending = client.callTool({
         name: "batch_exec",
-        arguments: {
+        arguments: { mode: "legacy",
           concurrency: 1,
           items: [1, 2, 3].map((item) => ({ device: "pc", command: `fixture-${item}` })),
         },

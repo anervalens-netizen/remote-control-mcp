@@ -1,3 +1,4 @@
+import { createTrace, diagnosticContext, measureAsync, measureSync, recordStage, correlationHash } from "../../../packages/protocol/src/diagnostic-context.ts";
 import { executionOutcome } from "../../../packages/protocol/src/execution-outcome.ts";
 import { OperationReceiptError } from "./operation-receipt-error.ts";
 import { ResultRecoveryStore, registerResultRecovery } from "./result-recovery.ts";
@@ -131,10 +132,13 @@ export function installDefaultToolOutputContracts(server: McpServer, diagnostics
     if (!schema) throw new Error(`Missing semantic output contract for registered tool: ${name}`);
     const advertisedSchema = withErrorOutputContract(schema);
     const wrappedCallback = async (...args: any[]) => {
+      const trace = createTrace(name, args[0], args[1]?.requestId, args[1]?.sessionId);
+      return diagnosticContext.run(trace, async () => {
       const started = performance.now();
       const extra = args[1];
       const stopProgress = startToolProgress(name, extra);
-      const detail: ResultDiagnostic = {};
+      const detail: ResultDiagnostic = { trace };
+      let preparingAt: number | undefined;
       let outcome: ReturnType<typeof toolOutcome> = "error";
       let reference: ReturnType<ResultRecoveryStore["begin"]> | undefined;
       try {
@@ -146,7 +150,8 @@ export function installDefaultToolOutputContracts(server: McpServer, diagnostics
           if (requested !== undefined) reference = recovery.reference(requested);
           reference = recovery.begin(requested, { tool: name, requestId: extra?.requestId, sessionId: extra?.sessionId });
         }
-        const result = await withToolErrors(() => callback(...args));
+        const result = await measureAsync("handler", () => withToolErrors(() => callback(...args)));
+        preparingAt = performance.now();
         if (!result || typeof result !== "object") {
           if (reference) reference = recovery.finish(reference.id, { resultInvalid: true, callbackResult: result ?? null });
           throw new Error("Invalid tool result");
@@ -154,6 +159,10 @@ export function installDefaultToolOutputContracts(server: McpServer, diagnostics
         const current = (result as any).structuredContent;
         const structured = current && typeof current === "object" && !Array.isArray(current)
           ? current as Record<string, unknown> : structuredFromContent((result as any).content);
+        if ((name === "batch_exec" || name === "batch_recover") && Array.isArray(structured.items)) trace.jobHashes = structured.items.slice(0, 64).filter(i => typeof i?.jobId === "string").map(i => correlationHash(i.jobId));
+        if (name.startsWith("job_") && typeof structured.id === "string") trace.correlation.job = correlationHash(structured.id);
+        if ((name === "batch_exec" || name === "batch_recover") && typeof structured.operationId === "string") trace.correlation.operation = /^[a-f0-9]{64}$/.test(structured.operationId) ? structured.operationId : correlationHash(structured.operationId);
+        if ((name === "job_wait" || name === "job_output_since") && typeof structured.waitedMs === "number") recordStage("executionWait", structured.waitedMs);
         if (reference) reference = recovery.finish(reference.id, { ...result, structuredContent: structured });
         if (name === "exec") {
           detail.execution = { [executionOutcome(structured)]: 1 };
@@ -165,7 +174,7 @@ export function installDefaultToolOutputContracts(server: McpServer, diagnostics
         const full = { ...structured, ...(reference ? { resultRecovery: reference } : {}) };
         const historyPage = name === "job_history" || (name === "job_list" && Object.hasOwn(structured, "nextCursor"));
         let final = historyPage && !(result as any).isError ? compactHistoryPage(full) : compactStructuredContent(full, STRUCTURED_CONTENT_MAX_BYTES, advertisedSchema);
-        const failedValidation = !advertisedSchema.safeParse(final).success;
+        const failedValidation = !measureSync("finalValidation", () => advertisedSchema.safeParse(final)).success;
         if (failedValidation) {
           detail.finalValidationFailed = true;
           final = { ok: false, error: "Final result validation failed; inspect resultRecovery without replaying the operation.", code: "result_validation_failed", ...(reference ? { resultRecovery: reference } : {}) };
@@ -182,8 +191,13 @@ export function installDefaultToolOutputContracts(server: McpServer, diagnostics
         }
         // Validate the actual object, after every wrapper. The contract uses the
         // exact advertised JSON Schema in addition to Zod's semantic refinements.
-        if (!advertisedSchema.safeParse(output.structuredContent).success || jsonBytes(output) > TOTAL_RESULT_MAX_BYTES) throw new Error("Final result exceeds its delivery contract");
+        if (!measureSync("finalValidation", () => advertisedSchema.safeParse(output.structuredContent)).success) {
+          detail.finalValidationFailed = true;
+          throw new Error("Final result violates its delivery schema");
+        }
+        if (jsonBytes(output) > TOTAL_RESULT_MAX_BYTES) throw new Error("Final result exceeds its delivery contract");
         outcome = failedValidation ? "error" : toolOutcome(output, structured, extra?.signal, name);
+        trace.totalBytes = jsonBytes(output);
         return output;
       } catch (error) {
         detail.resultPreparationFailed = true;
@@ -191,11 +205,15 @@ export function installDefaultToolOutputContracts(server: McpServer, diagnostics
           ? new OperationReceiptError("Result delivery failed; recover the retained receipt without replay.", { code: "result_delivery_failed", resultRecovery: reference })
           : error; });
         if (!advertisedSchema.safeParse(failure.structuredContent).success || jsonBytes(failure) > TOTAL_RESULT_MAX_BYTES) throw new Error("Invalid final error receipt");
+        trace.totalBytes = jsonBytes(failure);
         return failure;
       } finally {
+        if (preparingAt !== undefined) recordStage("resultPreparation", performance.now() - preparingAt);
+        trace.callerDisconnected = Boolean(extra?.signal?.aborted);
         stopProgress();
         diagnostics?.record(name, args[0], performance.now() - started, outcome, detail);
       }
+      });
     };
     const annotations = readOnlyTools.has(name)
       ? { readOnlyHint: true, destructiveHint: false, idempotentHint: true, ...config?.annotations }

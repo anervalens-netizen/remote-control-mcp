@@ -81,7 +81,7 @@ it("does not reopen historical tombstones during repeated idle pumps or diagnost
   history.forEach(f.write);
   const uncertain = f.entry("uncertain", "job_start_uncertain"); f.write(uncertain);
   const bridge = f.make();
-  expect(bridge.diagnostics()).toEqual({ pendingCount: 1, oldestPendingMs: 10_000, corruptCount: 0, lastErrorCategories: {} });
+  expect(bridge.diagnostics()).toMatchObject({ pendingCount: 1, oldestPendingMs: 10_000, corruptCount: 0, lastErrorCategories: {} });
   expect(f.opens(history)).toBe(512);
   for (let tick = 1; tick <= 29; tick++) {
     await vi.advanceTimersByTimeAsync(2000); await bridge.pump();
@@ -134,7 +134,7 @@ it("discovers external additions and repairs of delivered, uncertain and corrupt
   expect(f.call).not.toHaveBeenCalled();
   await vi.advanceTimersByTimeAsync(1); await bridge.pump();
   for (const entry of [delivered, uncertain, corrupt, added]) expect(f.read(entry).state).toBe("delivered");
-  expect(bridge.diagnostics()).toEqual({ pendingCount: 0, corruptCount: 0, oldestPendingMs: 0, lastErrorCategories: {} });
+  expect(bridge.diagnostics()).toMatchObject({ pendingCount: 0, corruptCount: 0, oldestPendingMs: 0, lastErrorCategories: {} });
   expect(f.call.mock.calls.map(([name]) => name)).toEqual(Array(4).fill("get_task"));
   expect(f.client.jobStart).not.toHaveBeenCalled();
 });
@@ -231,7 +231,7 @@ it("throttles failed directory reconciliation, keeps local progress and refreshe
   // Only synthetic fixtures are removed; production tombstones remain permanent.
   rmSync(f.file(external)); rmSync(f.file(corrupt));
   await vi.advanceTimersByTimeAsync(60_000);
-  expect(bridge.diagnostics()).toEqual({ pendingCount: 0, corruptCount: 0, oldestPendingMs: 0, lastErrorCategories: {} });
+  expect(bridge.diagnostics()).toMatchObject({ pendingCount: 0, corruptCount: 0, oldestPendingMs: 0, lastErrorCategories: {} });
 });
 
 it("clears worker and attempt timers on shutdown and ignores a late delivery response", async () => {

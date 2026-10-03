@@ -232,7 +232,7 @@ function readMeta(id: string): JobMeta {
   if (!existsSync(file)) throw new Error(`Unknown job: ${id}`);
   return JSON.parse(readFileSync(file, "utf8")) as JobMeta;
 }
-function writeMeta(meta: JobMeta) { atomicWriteJson(metaPath(meta.id), meta); }
+function writeMeta(meta: JobMeta) { const before = historyIndex.beforeWrite(); atomicWriteJson(metaPath(meta.id), meta); historyIndex.upsert(meta, before); }
 
 function cleanupJobArtifacts(meta: JobMeta): string[] {
   const errors: string[] = [];
@@ -573,11 +573,12 @@ export async function jobStartKeyStatus(idempotencyKey: string) {
   const reservation = jobStartDedup.lookup(idempotencyKey);
   if (reservation.state !== "reserved") return reservation;
   try {
-    return { state: "resolved" as const, jobId: reservation.jobId, job: await jobStatusAsync(reservation.jobId) };
+    return { state: "resolved" as const, fingerprint: reservation.fingerprint, jobId: reservation.jobId, job: await jobStatusAsync(reservation.jobId) };
   } catch (error) {
     return {
       state: "uncertain" as const,
       jobId: reservation.jobId,
+      fingerprint: reservation.fingerprint,
       reason: "job_receipt_unavailable" as const,
       error: (error instanceof Error ? error.message : String(error)).slice(0, 1024),
     };
@@ -930,7 +931,7 @@ export async function jobHistoryPage(query: HistoryQuery = {}) {
     try { items.push(await jobStatusAsync(id)); }
     catch { unreadableCount++; }
   }
-  return { items, nextCursor: page.nextCursor, partial: page.partial || unreadableCount > 0, corruptCount: page.corruptCount, unavailableCount: page.unavailableCount, unreadableCount };
+  return { items, freshness: page.freshness, nextCursor: page.nextCursor, partial: page.partial || unreadableCount > 0, corruptCount: page.corruptCount, unavailableCount: page.unavailableCount, unreadableCount };
 }
 export async function jobListAsync(limit = 100) {
   return (await jobHistoryPage({ limit })).items;
@@ -949,6 +950,7 @@ export async function jobRemove(id: string, force = false) {
   live.delete(id);
   windowsLive.delete(id);
   void releaseWindowsProcessTracker(meta.pid, meta.processIdentity);
+  const historyBeforeRemoval = historyIndex.beforeWrite();
   // Preserve metadata until data handles are released, so a failed removal is retryable.
   for (const file of [outputPath(id, "stdout"), outputPath(id, "stderr"), exitPath(id), progressPath(id), metaPath(id)]) {
     for (let attempt = 0; ; attempt++) {
@@ -959,6 +961,7 @@ export async function jobRemove(id: string, force = false) {
       }
     }
   }
+  historyIndex.remove(id, historyBeforeRemoval);
   if (meta.state === "lost" && /^(windows_|posix_)/.test(meta.recoveryReason ?? "")) {
     return { id, removed: true, processCleanupVerified: false, orphanPossible: true, recoveryReason: meta.recoveryReason };
   }

@@ -26,13 +26,17 @@ function fixture() {
   };
   const file = path.join(directory, key + ".json");
   writeFileSync(file, JSON.stringify(entry));
-  return { directory, recoveryDirectory, entry, file };
+  const evidenceRecordId = randomUUID();
+  const evidence = { projectId: correlation.projectId, taskId: correlation.taskId, runId: correlation.runId, jobId: entry.jobId!,
+    revision: 4, status: "failed" as const, verification: "failed" as const, evidenceRecordId,
+    journalSha256: createHash("sha256").update(readFileSync(file)).digest("hex") };
+  return { directory, recoveryDirectory, entry, file, evidenceRecordId, evidence };
 }
 it("turns an unresolved historical receipt into a non-retrying no-replay tombstone with a recovery copy", async () => {
   const f = fixture(), before = readFileSync(f.file);
-  const evidenceRecordId = randomUUID();
+  const evidenceRecordId = f.evidenceRecordId;
   const resolved = historicallyResolveEntry(f.directory, f.recoveryDirectory, {
-    key: f.entry.key, expectedHash: f.entry.hash, expectedJobId: f.entry.jobId!,
+    evidence: f.evidence, key: f.entry.key, expectedHash: f.entry.hash, expectedJobId: f.entry.jobId!,
     expectedRunId: f.entry.correlation.runId, evidenceRecordId, resolvedAt: "2026-10-01T08:45:00.000Z",
   });
   expect(resolved).toMatchObject({
@@ -60,8 +64,8 @@ it("turns an unresolved historical receipt into a non-retrying no-replay tombsto
 it("refuses mismatched historical evidence and leaves the durable receipt byte-identical", () => {
   const f = fixture(), before = readFileSync(f.file);
   expect(() => historicallyResolveEntry(f.directory, f.recoveryDirectory, {
-    key: f.entry.key, expectedHash: "0".repeat(64), expectedJobId: f.entry.jobId!,
-    expectedRunId: f.entry.correlation.runId, evidenceRecordId: randomUUID(),
+    evidence: f.evidence, key: f.entry.key, expectedHash: "0".repeat(64), expectedJobId: f.entry.jobId!,
+    expectedRunId: f.entry.correlation.runId, evidenceRecordId: f.evidenceRecordId,
   })).toThrow();
   expect(readFileSync(f.file)).toEqual(before);
   expect(readdirSync(f.recoveryDirectory)).toHaveLength(0);
@@ -71,8 +75,8 @@ it("serializes historical disposition with normal journal writes", () => {
   const lock = path.join(f.directory, f.entry.key + ".lock");
   writeFileSync(lock, "synthetic lock");
   expect(() => historicallyResolveEntry(f.directory, f.recoveryDirectory, {
-    key: f.entry.key, expectedHash: f.entry.hash, expectedJobId: f.entry.jobId!,
-    expectedRunId: f.entry.correlation.runId, evidenceRecordId: randomUUID(),
+    evidence: f.evidence, key: f.entry.key, expectedHash: f.entry.hash, expectedJobId: f.entry.jobId!,
+    expectedRunId: f.entry.correlation.runId, evidenceRecordId: f.evidenceRecordId,
   })).toThrow();
   expect(() => saveEntry(f.directory, { ...f.entry, attempts: 29 })).toThrow();
   expect(readFileSync(f.file)).toEqual(before);
@@ -82,8 +86,8 @@ it("applies normal journal bounds before recovery or mutation", () => {
   const f = fixture(), oversized = Buffer.alloc(64 * 1024 + 1, 65);
   writeFileSync(f.file, oversized);
   expect(() => historicallyResolveEntry(f.directory, f.recoveryDirectory, {
-    key: f.entry.key, expectedHash: f.entry.hash, expectedJobId: f.entry.jobId!,
-    expectedRunId: f.entry.correlation.runId, evidenceRecordId: randomUUID(),
+    evidence: f.evidence, key: f.entry.key, expectedHash: f.entry.hash, expectedJobId: f.entry.jobId!,
+    expectedRunId: f.entry.correlation.runId, evidenceRecordId: f.evidenceRecordId,
   })).toThrow();
   expect(readFileSync(f.file)).toEqual(oversized);
   expect(readdirSync(f.recoveryDirectory)).toHaveLength(0);
@@ -91,11 +95,32 @@ it("applies normal journal bounds before recovery or mutation", () => {
 it("requires absolute journal and recovery directories", () => {
   const f = fixture();
   expect(() => historicallyResolveEntry("relative-journal", f.recoveryDirectory, {
-    key: f.entry.key, expectedHash: f.entry.hash, expectedJobId: f.entry.jobId!,
-    expectedRunId: f.entry.correlation.runId, evidenceRecordId: randomUUID(),
+    evidence: f.evidence, key: f.entry.key, expectedHash: f.entry.hash, expectedJobId: f.entry.jobId!,
+    expectedRunId: f.entry.correlation.runId, evidenceRecordId: f.evidenceRecordId,
   })).toThrow();
   expect(() => historicallyResolveEntry(f.directory, "relative-recovery", {
-    key: f.entry.key, expectedHash: f.entry.hash, expectedJobId: f.entry.jobId!,
-    expectedRunId: f.entry.correlation.runId, evidenceRecordId: randomUUID(),
+    evidence: f.evidence, key: f.entry.key, expectedHash: f.entry.hash, expectedJobId: f.entry.jobId!,
+    expectedRunId: f.entry.correlation.runId, evidenceRecordId: f.evidenceRecordId,
   })).toThrow();
+});
+it.each(["projectId", "taskId", "runId", "jobId", "journalSha256"] as const)("rejects an unrelated %s in the evidence tuple before backup or mutation", field => {
+  const f = fixture(), before = readFileSync(f.file);
+  const evidence = { ...f.evidence, [field]: field === "journalSha256" ? "0".repeat(64) : randomUUID() };
+  expect(() => historicallyResolveEntry(f.directory, f.recoveryDirectory, {
+    evidence, key: f.entry.key, expectedHash: f.entry.hash, expectedJobId: f.entry.jobId!, expectedRunId: f.entry.correlation.runId, evidenceRecordId: f.evidenceRecordId,
+  })).toThrow();
+  expect(readFileSync(f.file)).toEqual(before); expect(readdirSync(f.recoveryDirectory)).toHaveLength(0);
+});
+it("never upgrades a retained negative fact through historical disposition", () => {
+  const f = fixture();
+  writeFileSync(f.file, JSON.stringify({ ...f.entry, remoteEvidence: { projectId: f.evidence.projectId, taskId: f.evidence.taskId,
+    runId: f.evidence.runId, jobId: f.evidence.jobId, revision: 4, status: "lost", verification: "failed" } }));
+  const before = readFileSync(f.file), journalSha256 = createHash("sha256").update(before).digest("hex");
+  for (const change of [{ status: "completed" as const }, { status: "lost" as const, verification: "passed" as const }, { status: "lost" as const, revision: 3 }]) {
+    expect(() => historicallyResolveEntry(f.directory, f.recoveryDirectory, {
+      evidence: { ...f.evidence, journalSha256, ...change }, key: f.entry.key, expectedHash: f.entry.hash,
+      expectedJobId: f.entry.jobId!, expectedRunId: f.entry.correlation.runId, evidenceRecordId: f.evidenceRecordId,
+    })).toThrow();
+  }
+  expect(readFileSync(f.file)).toEqual(before); expect(readdirSync(f.recoveryDirectory)).toHaveLength(0);
 });

@@ -49,7 +49,7 @@ function textJson(result: any) {
 describe("M15 W1 identity and structured batch contract", () => {
   it("routes a mixed batch by per-item identity and preserves literal env", async () => {
     const { client, calls } = await harness();
-    const result = await client.callTool({ name: "batch_exec", arguments: { items: [
+    const result = await client.callTool({ name: "batch_exec", arguments: { mode: "legacy", items: [
       { device: "pc", command: "echo fixture", identity: "owner", elevation: "never", env: { identity: "not-a-routing-option", VALUE: "ș ț 😀" } },
       { device: "pc", command: "echo fixture", identity: "root" },
       { device: "pc", command: "echo fixture", identity: "interactive" },
@@ -67,7 +67,7 @@ describe("M15 W1 identity and structured batch contract", () => {
 
   it("rejects unknown nested routing fields before executing any batch item", async () => {
     const { client, calls } = await harness();
-    const result = await client.callTool({ name: "batch_exec", arguments: { items: [
+    const result = await client.callTool({ name: "batch_exec", arguments: { mode: "legacy", items: [
       { device: "pc", command: "echo first" },
       { device: "pc", command: "echo second", identitty: "owner" },
     ] } });
@@ -77,7 +77,7 @@ describe("M15 W1 identity and structured batch contract", () => {
 
   it("uses canonical identity when legacy context is stale or contradictory", async () => {
     const { client, calls } = await harness();
-    const result = await client.callTool({ name: "batch_exec", arguments: { items: [
+    const result = await client.callTool({ name: "batch_exec", arguments: { mode: "legacy", items: [
       { device: "pc", command: "echo second", context: "system", identity: "owner" },
     ] } });
     expect(result.isError).not.toBe(true);
@@ -89,7 +89,7 @@ describe("M15 W1 identity and structured batch contract", () => {
 
   it("preflights endpoint availability for the complete batch", async () => {
     const { client, calls } = await harness();
-    const result = await client.callTool({ name: "batch_exec", arguments: { items: [
+    const result = await client.callTool({ name: "batch_exec", arguments: { mode: "legacy", items: [
       { device: "pc", command: "echo first", identity: "owner" },
       { device: "no-owner", command: "echo second", identity: "owner" },
     ] } });

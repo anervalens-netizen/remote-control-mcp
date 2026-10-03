@@ -11,7 +11,7 @@ export class JobStartKeyError extends Error {
     this.name="JobStartKeyError";this.code=code;this.jobId=jobId;
   }
 }
-function fingerprint(input: JobStartInput): string {
+export function jobStartFingerprint(input: JobStartInput): string {
   const env=Object.entries(input.env??{}).sort(([a],[b])=>a<b?-1:a>b?1:0);
   return createHash("sha256").update(JSON.stringify([input.command,input.cwd??null,env])).digest("hex");
 }
@@ -22,20 +22,20 @@ export class JobStartDeduplicator {
   root: string;
   inFlight = new Map<string,{ fingerprint: string; promise: Promise<unknown> }>();
   constructor(root: string) { this.root=root; }
-  lookup(idempotencyKey: string): { state: "not_found" } | { state: "reserved"; jobId: string } | { state: "uncertain"; reason: "invalid_reservation" } {
+  lookup(idempotencyKey: string): { state: "not_found" } | { state: "reserved"; jobId: string; fingerprint: string } | { state: "uncertain"; reason: "invalid_reservation" } {
     if(!idempotencyKey.length||idempotencyKey.length>200)throw new Error("Job idempotencyKey must contain 1 to 200 characters");
     const key=createHash("sha256").update(idempotencyKey).digest("hex"), file=path.join(this.root,key+".json");
     if(!existsSync(file))return {state:"not_found"};
     try {
       const record=JSON.parse(readFileSync(file,"utf8")) as Reservation;
       if(record.version!==1||!/^[-a-f0-9]{36}$/.test(record.jobId)||!/^[a-f0-9]{64}$/.test(record.fingerprint))throw new Error("Invalid reservation");
-      return {state:"reserved",jobId:record.jobId};
+      return {state:"reserved",jobId:record.jobId,fingerprint:record.fingerprint};
     } catch { return {state:"uncertain",reason:"invalid_reservation"}; }
   }
   async run<T>(input: JobStartInput, start: (id:string)=>Promise<T>, lookup: (id:string)=>Promise<T>): Promise<T> {
     if(input.idempotencyKey===undefined)return start(randomUUID());
     if(!input.idempotencyKey.length||input.idempotencyKey.length>200)throw new Error("Job idempotencyKey must contain 1 to 200 characters");
-    const key=createHash("sha256").update(input.idempotencyKey).digest("hex"), digest=fingerprint(input);
+    const key=createHash("sha256").update(input.idempotencyKey).digest("hex"), digest=jobStartFingerprint(input);
     const pending=this.inFlight.get(key);
     if(pending){if(pending.fingerprint!==digest)throw new JobStartKeyError("job_start_conflict");return pending.promise as Promise<T>;}
     const promise=Promise.resolve().then(async()=>{
