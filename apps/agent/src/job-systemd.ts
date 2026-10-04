@@ -8,6 +8,14 @@ const properties = ["Type=exec", "KillMode=control-group", "SendSIGKILL=yes", "T
 const propertyArgs = properties.flatMap(value => ["--property", value]);
 let capability: { ready: boolean; reason: string } | undefined;
 
+export function jobSystemdManagerScope(uid = typeof process.getuid === "function" ? process.getuid() : null, platform = process.platform): "user" | "system" | "unsupported" {
+  if (platform !== "linux") return "unsupported";
+  return uid === 0 ? "system" : "user";
+}
+function managerArgs(): string[] {
+  return jobSystemdManagerScope() === "system" ? [] : ["--user"];
+}
+
 export function jobUnitName(id: string): string {
   if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(id)) throw new Error("Invalid job unit identity");
   return `rcmcp-job-${id}.service`;
@@ -20,17 +28,18 @@ export function jobCgroupIsolation() {
   if (process.env.RCMCP_JOB_CGROUP_ISOLATION === "0") return { ready: false, reason: "disabled" };
   if (!existsSync("/sys/fs/cgroup/cgroup.controllers")) return { ready: false, reason: "cgroup_v2_unavailable" };
   if (!capability) {
-    const probe = spawnSync("systemd-run", ["--user", "--quiet", "--expand-environment=no", "--wait", "--collect", "--unit", jobUnitName(randomUUID()), ...propertyArgs, "--", "/bin/true"], {
+    const scope = jobSystemdManagerScope();
+    const probe = spawnSync("systemd-run", [...managerArgs(), "--quiet", "--expand-environment=no", "--wait", "--collect", "--unit", jobUnitName(randomUUID()), ...propertyArgs, "--", "/bin/true"], {
       stdio: "ignore", timeout: 5000,
     });
-    capability = { ready: probe.status === 0, reason: probe.status === 0 ? "systemd_user_service" : "systemd_user_unavailable" };
+    capability = { ready: probe.status === 0, reason: probe.status === 0 ? "systemd_" + scope + "_service" : "systemd_" + scope + "_unavailable" };
   }
   return capability;
 }
 
 export async function admitJobUnit(id: string, launcher: string, payload: string): Promise<void> {
   try {
-    await exec("systemd-run", ["--user", "--quiet", "--expand-environment=no", "--unit", jobUnitName(id), ...propertyArgs,
+    await exec("systemd-run", [...managerArgs(), "--quiet", "--expand-environment=no", "--unit", jobUnitName(id), ...propertyArgs,
       "--property", "RemainAfterExit=yes", "--description", `RCMCP durable job ${id}`,
       "--", process.execPath, launcher, payload], { timeout: 10_000, maxBuffer: 4096 });
   } catch {
@@ -41,7 +50,7 @@ export async function admitJobUnit(id: string, launcher: string, payload: string
 
 export type JobUnit = { active: string; sub: string; pid: number; invocation: string; cgroup: string };
 function inspectionArgs(id: string) {
-  return ["--user", "show", jobUnitName(id), "--property=LoadState,ActiveState,SubState,MainPID,ExecMainPID,InvocationID,ControlGroup,Description,Transient"];
+  return [...managerArgs(), "show", jobUnitName(id), "--property=LoadState,ActiveState,SubState,MainPID,ExecMainPID,InvocationID,ControlGroup,Description,Transient"];
 }
 function parseUnit(id: string, output: string): JobUnit | null {
   const p = Object.fromEntries(output.trim().split("\n").map(line => { const i = line.indexOf("="); return [line.slice(0, i), line.slice(i + 1)]; }));
@@ -70,13 +79,13 @@ export function jobCgroupEmpty(id: string, cgroup: string): boolean | null {
 }
 
 export async function stopJobUnit(id: string): Promise<boolean> {
-  try { await exec("systemctl", ["--user", "stop", jobUnitName(id)], { timeout: 10_000, maxBuffer: 4096 }); return true; }
+  try { await exec("systemctl", [...managerArgs(), "stop", jobUnitName(id)], { timeout: 10_000, maxBuffer: 4096 }); return true; }
   catch { return false; }
 }
 
 export async function releaseJobUnit(id: string): Promise<void> {
   await stopJobUnit(id);
-  try { await exec("systemctl", ["--user", "reset-failed", jobUnitName(id)], { timeout: 2000, maxBuffer: 4096 }); } catch { /* already collected */ }
+  try { await exec("systemctl", [...managerArgs(), "reset-failed", jobUnitName(id)], { timeout: 2000, maxBuffer: 4096 }); } catch { /* already collected */ }
 }
 
 // Copied into immutable private state: no dependency on a mutable release tree.

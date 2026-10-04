@@ -32,7 +32,7 @@ Environment=RCMCP_OWNER_USER=$OWNER_USER
 ExecStart=$NODE $REPO/apps/agent/src/index.ts
 Restart=always
 RestartSec=2
-KillMode=process
+KillMode=control-group
 
 [Install]
 WantedBy=multi-user.target

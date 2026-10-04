@@ -9,10 +9,12 @@ afterEach(() => vi.restoreAllMocks());
 
 describe("durable systemd admission contracts", () => {
   it("cleans the agent cgroup on stop without binding durable units to it", () => {
-    const unit = readFileSync("deploy/systemd/remote-control-user-agent.user.service", "utf8");
-    expect(unit).toMatch(/^KillMode=(control-group|mixed)$/m);
-    expect(unit).not.toMatch(/^KillMode=process$/m);
-    expect(unit).not.toContain("OOMPolicy=continue");
+    for (const file of ["deploy/systemd/remote-control-user-agent.user.service", "deploy/systemd/remote-control-agent.user.service", "deploy/systemd/install-root-agent.sh"]) {
+      const unit = readFileSync(file, "utf8");
+      expect(unit).toMatch(/KillMode=(control-group|mixed)/);
+      expect(unit).not.toMatch(/KillMode=process/);
+      expect(unit).not.toContain("OOMPolicy=continue");
+    }
     const implementation = readFileSync("apps/agent/src/job-systemd.ts", "utf8");
     expect(implementation).not.toMatch(/(?:PartOf|BindsTo)=remote-control/);
   });
@@ -20,6 +22,13 @@ describe("durable systemd admission contracts", () => {
   it("does not advertise isolation when explicitly disabled", () => {
     expect(systemd.jobCgroupIsolation()).toMatchObject({ ready: false });
     expect(runtimeStatus().capabilities).not.toContain("job-cgroup-isolation-v1");
+  });
+
+  it("uses the system manager for root and the user manager for owner agents", () => {
+    expect(systemd.jobSystemdManagerScope(0, "linux")).toBe("system");
+    expect(systemd.jobSystemdManagerScope(1000, "linux")).toBe("user");
+    expect(systemd.jobSystemdManagerScope(65534, "linux")).toBe("user");
+    expect(systemd.jobSystemdManagerScope(null, "win32")).toBe("unsupported");
   });
 
   it("accepts only exact UUID-derived job units", () => {

@@ -5,7 +5,7 @@ import { promisify } from "node:util";
 import { pathToFileURL } from "node:url";
 import { afterAll, describe, expect, it, vi } from "vitest";
 import * as systemd from "../apps/agent/src/job-systemd.ts";
-import { jobCgroupEmpty, jobCgroupIsolation, inspectJobUnit, releaseJobUnit } from "../apps/agent/src/job-systemd.ts";
+import { jobCgroupEmpty, jobCgroupIsolation, inspectJobUnit, jobSystemdManagerScope, releaseJobUnit } from "../apps/agent/src/job-systemd.ts";
 import { jobCancel, jobHistoryPage, jobOutput, jobRemove, jobStart, jobStatusAsync } from "../apps/agent/src/jobs.ts";
 import { currentProcessIdentity } from "../apps/agent/src/process-identity.ts";
 import { runtimeStatus } from "../apps/agent/src/runtime.ts";
@@ -34,7 +34,7 @@ async function until<T>(read: () => T | Promise<T>, accept: (value: T) => boolea
 const root = process.env.RCMCP_STATE_DIR!;
 const quote = (text: string) => "'" + text.replaceAll("'", "'\\''") + "'";
 
-describe.skipIf(!available.ready)(`Linux systemd user integration (${available.ready ? "available" : "SKIP: " + available.reason})`, () => {
+describe.skipIf(!available.ready)(`Linux systemd ${jobSystemdManagerScope()} integration (${available.ready ? "available" : "SKIP: " + available.reason})`, () => {
   it("survives parent exit, recovers the actual MainPID/cgroup, output and keyed job", async () => {
     const ready = path.join(root, "parent-ready"), release = path.join(root, "parent-release");
     const command = `echo BEFORE; echo ERR >&2; touch ${quote(ready)}; while [ ! -f ${quote(release)} ]; do sleep 0.03; done; echo AFTER; exit 7`;
@@ -114,7 +114,7 @@ process.exit(0);
       expect(admission).toHaveBeenCalledTimes(1);
       await until(() => existsSync(effect), Boolean);
       expect(readFileSync(effect, "utf8")).toBe("once\n");
-      const diagnostic = (await exec("systemctl", ["--user", "show", recovered.systemdUnit!, "--property=ExecStart,Environment,Description"])).stdout;
+      const diagnostic = (await exec("systemctl", [...(jobSystemdManagerScope() === "user" ? ["--user"] : []), "show", recovered.systemdUnit!, "--property=ExecStart,Environment,Description"])).stdout;
       expect(diagnostic).not.toContain(input.command);
       expect(diagnostic).not.toContain("synthetic-private-value");
       expect(diagnostic).not.toContain("SYNTHETIC_SECRET");
