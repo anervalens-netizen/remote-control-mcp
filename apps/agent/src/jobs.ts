@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { admitJobUnit, inspectJobUnit, inspectJobUnitAsync, jobCgroupEmpty, jobCgroupIsolation, jobUnitName, releaseJobUnit, stopJobUnit, systemdLauncherContent, type JobUnit } from "./job-systemd.ts";
 import { coordinationDevice, coordinationIdentity } from "./coordination.ts";
 import { JobHistoryIndex, decodeHistoryCursor, type HistoryQuery } from "./job-history-index.ts";
 import { JobStartDeduplicator, JobStartKeyError, type JobStartInput } from "./job-start-dedup.ts";
@@ -44,6 +45,9 @@ type JobMeta = {
   terminationVerificationScope?: "whole_tree" | "root_and_descendants_created_after_attach" | "root_only" | "unverified";
   terminationReason?: string;
   cancellationError?: string;
+  systemdUnit?: string;
+  systemdInvocation?: string;
+  systemdCgroup?: string;
 };
 
 export type { JobRecoveryDetails } from "../../../packages/protocol/src/job-recovery.ts";
@@ -162,7 +166,7 @@ if (process.platform !== "win32") {
 }
 `;
 
-const linuxRunnerContent = '#!/bin/bash\n/bin/bash -lc "$RCMCP_JOB_COMMAND"\ncode=$?\n"$RCMCP_JOB_NODE" "$RCMCP_JOB_EXIT_HELPER" "$RCMCP_JOB_EXIT_FILE" "$code" "$RCMCP_JOB_STDOUT" "$RCMCP_JOB_STDERR"\nhelper=$?\nif [ "$helper" -ne 0 ]; then exit "$helper"; fi\nexit "$code"\n';
+const linuxRunnerContent = '#!/bin/bash\nif [ "$RCMCP_JOB_REDIRECT" = 1 ]; then exec >>"$RCMCP_JOB_STDOUT" 2>>"$RCMCP_JOB_STDERR"; fi\n/bin/bash -lc "$RCMCP_JOB_COMMAND"\ncode=$?\n"$RCMCP_JOB_NODE" "$RCMCP_JOB_EXIT_HELPER" "$RCMCP_JOB_EXIT_FILE" "$code" "$RCMCP_JOB_STDOUT" "$RCMCP_JOB_STDERR"\nhelper=$?\nif [ "$helper" -ne 0 ]; then exit "$helper"; fi\nexit "$code"\n';
 const windowsRunnerContent = `$ErrorActionPreference = "Continue"
 $wrapped = '$OutputEncoding=[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false); ' + $env:RCMCP_JOB_COMMAND
 $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($wrapped))
@@ -258,6 +262,8 @@ const windowsRunner = immutableStateFile("_runner-windows", "ps1", windowsRunner
 function metaPath(id: string) { return path.join(jobsRoot, `${id}.json`); }
 function outputPath(id: string, stream: "stdout" | "stderr") { return path.join(jobsRoot, `${id}.${stream}.log`); }
 function exitPath(id: string) { return path.join(jobsRoot, `${id}.exit`); }
+function launchPath(id: string) { return path.join(jobsRoot, `${id}.launch`); }
+function admissionPath(id: string) { return path.join(jobsRoot, `${id}.admission`); }
 function readMeta(id: string): JobMeta {
   const file = metaPath(id);
   if (!existsSync(file)) throw Object.assign(new Error(`Unknown job: ${id}`), { code: "ENOENT" });
@@ -304,6 +310,7 @@ function stopJobLineage(id: string): void {
 }
 
 function ensureJobLineageTracking(meta: JobMeta): void {
+  if (meta.systemdUnit) return; // Kernel containment replaces polling lineage.
   if (process.platform === "win32" || !meta.processIdentity || (meta.state !== "running" && meta.state !== "cancelling")) {
     stopJobLineage(meta.id);
     return;
@@ -367,7 +374,74 @@ function markLost(meta: JobMeta, reason: string): JobMeta {
   return meta;
 }
 
+function refreshSystemdJob(meta: JobMeta, unit: JobUnit | null = inspectJobUnit(meta.id)): JobMeta {
+  if (meta.state !== "running" && meta.state !== "cancelling") return meta;
+  if (meta.systemdUnit !== jobUnitName(meta.id)) throw new Error("Job unit identity mismatch");
+  const before = JSON.stringify(meta);
+  // The immutable launcher publishes identity before exec/effect, independently
+  // of the agent surviving systemd-run admission or metadata publication.
+  try {
+    const receipt = JSON.parse(readFileSync(admissionPath(meta.id), "utf8"));
+    if (receipt.id === meta.id && Number.isSafeInteger(receipt.pid) && receipt.pid > 0
+      && typeof receipt.processIdentity === "string" && typeof receipt.cgroup === "string"
+      && jobCgroupEmpty(meta.id, receipt.cgroup) !== null) {
+      meta.pid = receipt.pid;
+      meta.processIdentity = receipt.processIdentity;
+      meta.systemdCgroup = receipt.cgroup;
+    }
+  } catch { /* An absent receipt never permits replay. */ }
+  if (unit && meta.systemdInvocation && unit.invocation !== meta.systemdInvocation) {
+    meta.recoveryReason = "systemd_unit_identity_mismatch";
+  } else {
+    if (unit) {
+      if (unit.invocation) meta.systemdInvocation = unit.invocation;
+      if (unit.pid > 0 && !meta.pid) {
+        meta.pid = unit.pid;
+        meta.processIdentity = currentProcessIdentity(unit.pid) ?? undefined;
+      }
+      if (unit.cgroup) meta.systemdCgroup = unit.cgroup;
+    }
+    const empty = meta.systemdCgroup ? jobCgroupEmpty(meta.id, meta.systemdCgroup) : null;
+    const transitioning = unit && ["activating", "deactivating", "reloading"].includes(unit.active);
+    // Even an exit marker cannot prove completion while any cgroup member lives.
+    if (!transitioning && empty === true && meta.pid > 0) {
+      if (meta.state === "cancelling") {
+        if (cancelInFlight.has(meta.id)) {
+          // The stop RPC still owns the terminal write. Do not race it with a
+          // transient lost result between kernel cleanup and stop completion.
+          if (JSON.stringify(meta) !== before) writeMeta(meta);
+          return meta;
+        } else if (meta.terminationVerified === true) {
+          meta.state = "cancelled";
+          delete meta.recoveryReason;
+        } else {
+          meta.state = "lost";
+          meta.recoveryReason ??= "systemd_cancellation_outcome_unverified";
+        }
+      } else if (existsSync(meta.exitPath)) {
+        const parsed = Number(readFileSync(meta.exitPath, "utf8").trim());
+        meta.state = "completed";
+        meta.exitCode = Number.isInteger(parsed) ? parsed : null;
+        delete meta.recoveryReason;
+      } else {
+        meta.state = "lost";
+        meta.recoveryReason = "runner_exited_without_durable_marker";
+      }
+      meta.finishedAt ??= new Date().toISOString();
+    } else if (!unit) {
+      meta.recoveryReason = "systemd_unit_lookup_uncertain";
+    } else if (meta.state === "running") {
+      if (unit.active === "failed") meta.recoveryReason = "systemd_service_failed_outcome_unverified";
+      else if (existsSync(meta.exitPath)) meta.recoveryReason = "exit_marker_runner_still_active";
+      else if (meta.pid > 0) delete meta.recoveryReason;
+    }
+  }
+  if (JSON.stringify(meta) !== before) writeMeta(meta);
+  return meta;
+}
+
 function refresh(meta: JobMeta): JobMeta {
+  if (meta.systemdUnit) return refreshSystemdJob(meta);
   if (process.platform === "win32" && meta.state === "running" && !meta.processIdentity) {
     // Legacy jobs have no authority to signal a PID; only their durable marker
     // can establish completion, even if that numeric PID is still alive.
@@ -520,8 +594,8 @@ function readProgress(meta: JobMeta): Record<string, unknown> {
   } catch (error) { return { progressError: error instanceof Error ? error.message : String(error) }; }
 }
 
-function summary(meta: JobMeta) {
-  const fresh = refresh(meta);
+function summary(meta: JobMeta, reconciled = false) {
+  const fresh = reconciled ? meta : refresh(meta);
   if (fresh.state === "running" || fresh.state === "cancelling") ensureJobLineageTracking(fresh);
   else stopJobLineage(fresh.id);
   // The durable ledger remains private; identity, recovery, termination and
@@ -624,6 +698,7 @@ export async function existingJobForKey(idempotencyKey: string) {
 }
 
 async function startJobWithId(input: JobStartInput, id: string) {
+  if (jobCgroupIsolation().ready) return startSystemdJob(input, id);
   const executionMarker = "RCMCP_JOB_ID=" + id;
   const stdoutPath = outputPath(id, "stdout"); const stderrPath = outputPath(id, "stderr"); const donePath = exitPath(id);
   let child: ChildProcess | undefined;
@@ -769,6 +844,42 @@ async function startJobWithId(input: JobStartInput, id: string) {
   return summary(meta);
 }
 
+async function startSystemdJob(input: JobStartInput, id: string) {
+  // Validate cwd before reserving launch artifacts, matching legacy spawn errors.
+  const cwd = path.resolve(input.cwd ?? process.cwd());
+  if (!statSync(cwd).isDirectory()) throw new Error("Job cwd is not a directory");
+  const meta: JobMeta = {
+    id, command: input.command, cwd: input.cwd ?? null, pid: 0, state: "running",
+    startedAt: new Date().toISOString(), stdoutPath: outputPath(id, "stdout"),
+    stderrPath: outputPath(id, "stderr"), exitPath: exitPath(id),
+    executionMarker: "RCMCP_JOB_ID=" + id, ownerInstanceId: runtimeInstanceId,
+    systemdUnit: jobUnitName(id), recoveryReason: "systemd_admission_pending",
+  };
+  const launcher = immutableStateFile("_systemd-launcher", "mjs", systemdLauncherContent, 0o600);
+  for (const file of [meta.stdoutPath, meta.stderrPath]) writeFileSync(file, "", { flag: "a", mode: 0o600 });
+  atomicWriteJson(launchPath(id), {
+    id, cwd, runner: linuxRunner, receipt: admissionPath(id),
+    env: runtimeEnv({ ...input.env, RCMCP_JOB_ID: id, RCMCP_JOB_COMMAND: input.command,
+      RCMCP_JOB_REDIRECT: "1", RCMCP_JOB_PROGRESS_FILE: progressPath(id),
+      RCMCP_JOB_EXIT_FILE: meta.exitPath, RCMCP_JOB_EXIT_HELPER: exitMarkerHelper,
+      RCMCP_JOB_NODE: process.execPath, RCMCP_JOB_STDOUT: meta.stdoutPath, RCMCP_JOB_STDERR: meta.stderrPath }),
+  });
+  // Both keyed and unkeyed jobs have an inspectable reservation before effect.
+  // Never delete these files on an ambiguous bus/transport/metadata failure.
+  writeMeta(meta);
+  try {
+    await admitJobUnit(id, launcher, launchPath(id));
+    const unit = await inspectJobUnitAsync(id);
+    const admitted = refreshSystemdJob(readMeta(id), unit);
+    if (!admitted.pid || admitted.recoveryReason === "systemd_service_failed_outcome_unverified") throw new Error("Job service admission not verified");
+    return summary(admitted, true);
+  } catch {
+    // The deterministic unit and private receipt allow subsequent status/key
+    // recovery; retry resolves this reservation and cannot admit another unit.
+    throw new JobStartKeyError("job_start_uncertain", id);
+  }
+}
+
 export function jobLineage(input: { id: string; offset?: number; limit?: number }) {
   const { id, offset = 0, limit = 100 } = jobLineageSchema.parse(input);
   const targets = readMeta(id).trackedProcesses ?? [];
@@ -830,6 +941,11 @@ async function reconcileWindowsJob(meta: JobMeta): Promise<JobMeta> {
 
 export async function jobStatusAsync(id: string) {
   const meta = readMeta(id);
+  if (meta.systemdUnit) {
+    if (meta.state !== "running" && meta.state !== "cancelling") return summary(meta, true);
+    const unit = await inspectJobUnitAsync(id);
+    return summary(refreshSystemdJob(readMeta(id), unit), true);
+  }
   if (process.platform === "win32" && (meta.state === "running" || meta.state === "cancelling")) {
     await reconcileWindowsJob(meta);
   }
@@ -837,7 +953,12 @@ export async function jobStatusAsync(id: string) {
 }
 
 async function performJobCancel(id: string) {
-  const meta = refresh(readMeta(id));
+  const stored = readMeta(id);
+  if (stored.systemdUnit) {
+    const unit = await inspectJobUnitAsync(id);
+    return cancelSystemdJob(refreshSystemdJob(readMeta(id), unit));
+  }
+  const meta = refresh(stored);
   const reconciled = await reconcileWindowsJob(meta);
   if (reconciled.state !== "running" && reconciled.state !== "cancelling") return summary(reconciled);
   const windowsIdentityVerified = process.platform === "win32" && !windowsLive.has(id)
@@ -931,6 +1052,43 @@ async function performJobCancel(id: string) {
   return summary(current);
 }
 
+async function cancelSystemdJob(meta: JobMeta) {
+  if (meta.state !== "running" && meta.state !== "cancelling") return summary(meta, true);
+  const unit = await inspectJobUnitAsync(meta.id);
+  meta = readMeta(meta.id);
+  if (meta.state !== "running" && meta.state !== "cancelling") return summary(meta, true);
+  if (meta.systemdUnit !== jobUnitName(meta.id) || !unit || !unit.invocation
+    || (meta.systemdInvocation && unit.invocation !== meta.systemdInvocation)) {
+    meta.recoveryReason = "systemd_cancel_identity_unverified";
+    writeMeta(meta);
+    return summary(meta, true);
+  }
+  meta.systemdInvocation = unit.invocation;
+  meta.systemdCgroup = unit.cgroup || meta.systemdCgroup;
+  meta.state = "cancelling";
+  meta.terminationVerified = false;
+  writeMeta(meta);
+  const stopped = await stopJobUnit(meta.id);
+  const current = readMeta(meta.id);
+  // A successful stop plus recursive kernel emptiness is whole-cgroup proof.
+  // Unit lookup failure by itself is never such proof.
+  const empty = current.systemdCgroup ? jobCgroupEmpty(meta.id, current.systemdCgroup) : null;
+  if (stopped && empty === true) {
+    current.state = "cancelled";
+    current.terminationVerified = true;
+    current.terminationVerification = "identity_bound_job";
+    current.terminationVerificationScope = "whole_tree";
+    current.finishedAt ??= new Date().toISOString();
+    delete current.recoveryReason;
+  } else {
+    current.state = "cancelling";
+    current.terminationVerified = false;
+    current.recoveryReason = "systemd_cancellation_unverified";
+  }
+  writeMeta(current);
+  return summary(current, true);
+}
+
 export function jobCancel(id: string) {
   const existing = cancelInFlight.get(id);
   if (existing) return existing;
@@ -978,6 +1136,11 @@ export async function jobRemove(id: string, force = false) {
     if (meta.state === "running" || meta.state === "cancelling") throw new Error(`Job ${id} is still active and was not removed`);
   }
   if (meta.id !== id) throw new Error("Job evidence identity mismatch");
+  if (meta.systemdUnit) {
+    const unit = inspectJobUnit(id);
+    if (meta.systemdUnit !== jobUnitName(id) || (unit && meta.systemdInvocation && unit.invocation !== meta.systemdInvocation)) throw new Error("Job unit identity mismatch");
+    if (unit) await releaseJobUnit(id);
+  }
   // Publish and sync before deleting any authoritative terminal metadata. A
   // crash at any later removal step retains evidence, even before job association.
   const evidence = terminalEvidenceSchema.parse({ version: 1, id, device: coordinationDevice, identity: coordinationIdentity, state: meta.state });
@@ -988,7 +1151,7 @@ export async function jobRemove(id: string, force = false) {
   void releaseWindowsProcessTracker(meta.pid, meta.processIdentity);
   const historyBeforeRemoval = historyIndex.beforeWrite();
   // Preserve metadata until data handles are released, so a failed removal is retryable.
-  for (const file of [outputPath(id, "stdout"), outputPath(id, "stderr"), exitPath(id), progressPath(id), metaPath(id)]) {
+  for (const file of [outputPath(id, "stdout"), outputPath(id, "stderr"), exitPath(id), progressPath(id), launchPath(id), admissionPath(id), metaPath(id)]) {
     for (let attempt = 0; ; attempt++) {
       try { rmSync(file, { force: true }); break; }
       catch (error) {

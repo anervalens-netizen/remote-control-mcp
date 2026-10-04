@@ -6,6 +6,7 @@ import { userInfo } from "node:os";
 import { readWindowsIdentity, type WindowsTokenIdentity } from "./windows-identity.ts";
 import process from "node:process";
 import { stateRoot } from "./state.ts";
+import { jobCgroupIsolation } from "./job-systemd.ts";
 
 export type RuntimeContext = "system" | "user" | "desktop" | "unknown";
 export type PrivilegeLevel = "root" | "system" | "admin" | "owner" | "user" | "unknown";
@@ -130,6 +131,7 @@ function stateReady(): boolean {
 
 export function runtimeStatus() {
   const writableState = stateReady();
+  const jobIsolation = jobCgroupIsolation();
   const capabilities = [
     "power-requests", "wake-relay",
     "browser-sessions", "browser-dom", "browser-cdp",
@@ -139,6 +141,7 @@ export function runtimeStatus() {
     "fs-edit", "repo-checkpoint-selection", "repo-apply-patch", "project-multistack", "deploy-phases", "job-follow",
     "high-level-idempotency-v1",
     "job-key-recovery-v1", "utf8-byte-pages-v1", "high-level-coordination-v1",
+    ...(jobIsolation.ready ? ["job-cgroup-isolation-v1"] : []),
     ...(desktopEnabled ? ["desktop", "desktop-session", "desktop-batch", "desktop-helper", "desktop-window-enumeration", "desktop-uia", "clipboard", "browser"] : []),
     ...(elevationAvailable ? ["elevation"] : []),
     ...(interactiveAvailable ? ["interactive-session"] : []),
@@ -167,6 +170,7 @@ export function runtimeStatus() {
     capabilities,
     checks: {
       state: { ready: writableState },
+      jobCgroupIsolation: jobIsolation,
       search: { ready: searchReady, binary: rgPath },
       desktop: { ready: desktopEnabled, enabled: desktopEnabled, interactiveSessionAvailable: interactiveAvailable },
       identity: { privilege, ownerUser: process.env.RCMCP_OWNER_USER ?? null, elevationAvailable, verified: windowsIdentity?.verified ?? true, source: windowsIdentity ? "windows-token" : "posix", accountSid: windowsIdentity?.accountSid ?? null, ...(windowsIdentity?.error ? { error: windowsIdentity.error } : {}) },

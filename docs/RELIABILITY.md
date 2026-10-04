@@ -325,6 +325,78 @@ recovery-copy checks, runtime identity, live connector catalog refresh and
 post-deployment functional evidence.
 Source tests and synthetic SIGKILL/I/O injection do not close those packages.
 
+## Durable Linux job cgroup isolation (R12)
+
+Detaching a process does not move it out of its parent's systemd cgroup. Heavy
+durable workloads sharing the agent service can therefore cause a cgroup OOM
+kill to take down the agent and interrupt unrelated MCP sessions. A
+`KillMode=process` agent can also leave helpers and descendants behind on stop.
+
+On Linux with cgroup v2 and a usable systemd user manager, durable jobs are
+admitted with `systemd-run --user` as separate transient services named only
+`rcmcp-job-<job-UUID>.service`. They are not bound to the agent service lifetime.
+Admission uses `Type=exec`, does not wait for the workload to finish, and obtains
+the actual service MainPID. The service has `Restart=no`,
+`KillMode=control-group`, bounded TERM-to-KILL escalation and
+`RemainAfterExit=yes` for recovery inspection. Retained units are released when
+their job is removed. The user-agent template uses `KillMode=control-group` so
+non-durable helpers are cleaned on stop while separate durable services survive.
+This fixes the cgroup boundary; it does not raise memory limits or rely on
+`OOMPolicy=continue`. An OOM policy targeting the entire user slice can still
+affect multiple services and requires separate host qualification.
+Before promoting the cleanup policy, drain or explicitly account for legacy
+jobs still inside the agent cgroup: restarting with the new policy would stop
+those pre-isolation workloads. Existing jobs are not silently migrated.
+
+Command text and environment values are carried in a private mode-0600 launch
+file, never in unit names, descriptions, systemd command arguments or admission
+errors. An immutable launcher in the state directory publishes and fsyncs a
+process identity/cgroup receipt before execing the existing shell runner. The
+runner appends to the existing private stdout/stderr files and uses the same
+durable exit-marker helper. Launcher, runner and helper do not depend on a
+mutable repository checkout. Retain these files, job metadata and key
+reservations together for recovery.
+
+`JobMeta.systemdUnit`, `systemdInvocation` and `systemdCgroup` are optional,
+additive fields. Metadata is published before admission; a reserved but
+unresolved admission reports PID 0 and an explicit recovery reason. A failed
+or interrupted admission returns `job_start_uncertain` with its job UUID,
+preserving private launch/output/receipt files. Retrying the same key inspects
+that reservation, service and receipt; it never submits another service or
+falls back to spawn. A failed unit lookup alone never means not-started.
+Unknown outcomes remain inspectable, and a new intended execution needs a new
+key. These guarantees preserve R03; they do not promise exactly-once effects
+under disk loss or arbitrary power failure.
+
+Status/wait/output recovery uses the durable launcher receipt, service state,
+MainPID/invocation and recursive cgroup population. An exit marker cannot make
+a job terminal while background descendants still occupy its cgroup. Verified
+cancel stops only the UUID-bound transient unit and requires successful stop
+plus kernel evidence of an empty cgroup. An unavailable manager, identity
+mismatch or incomplete stop remains unverified. A crash between stop and the
+terminal metadata write can recover as `lost`, not falsely verified cancelled.
+Legacy/non-systemd jobs retain their process-lineage cancellation fallback.
+Containment describes members of the job cgroup; privileged workloads that
+deliberately move work into unrelated services are outside this boundary.
+
+`job-cgroup-isolation-v1` is advertised only after a successful harmless user
+service probe using the required systemd options. The process caches that
+probe; it is not a continuous manager-health guarantee. Runtime diagnostics
+include `checks.jobCgroupIsolation` with a safe readiness reason. Non-Linux,
+unavailable/unsupported systemd, non-v2 cgroups, or
+`RCMCP_JOB_CGROUP_ISOLATION=0` use legacy spawn without advertising isolation.
+An unavailable runtime does not silently retry an already-attempted admission.
+Windows keeps its existing launch and recovery path.
+
+The systemd integration suite reports an explicit unavailable reason when
+skipped. On a usable Linux user manager it checks separate agent/job cgroups,
+parent exit, durable output and wait/recovery, lost admission replies without
+replay, private command/environment transport and cancellation of detached,
+environment-scrubbed descendants. Existing legacy cancellation tests run with
+isolation explicitly disabled. Synthetic local tests do not qualify production
+OOM behavior, a deployed agent restart, Windows hardware, live client recovery
+or the remaining R12 release gates above.
+
 ## High-level resource coordination (R10)
 
 Agent high-level repository writes, service mutations, project execution and

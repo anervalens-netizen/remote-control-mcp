@@ -3,7 +3,8 @@ const nonnegative = z.number().int().nonnegative();
 export const jobSummarySchema = z.object({
   id: z.string().min(1),
   state: z.enum(["running", "cancelling", "completed", "cancelled", "lost"]),
-  pid: z.number().int().positive().optional(),
+  // Zero represents a reserved systemd admission whose MainPID is not known yet.
+  pid: nonnegative.optional(),
   processIdentity: z.string().optional(), trackedProcessCount: nonnegative.optional(),
   terminationVerified: z.boolean().optional(), terminationForced: z.boolean().optional(),
   terminationVerification: z.enum(["identity_bound_job", "posix_identity_set", "partial_windows_job", "unverified_windows_fallback"]).optional(),
