@@ -34,6 +34,15 @@ async function harness(http = false, options?: ConstructorParameters<typeof Clie
   app.get('/v1/info', async () => ({ runtime: { capabilities: ['utf8-byte-pages-v1'] } }));
   app.post('/v1/fs/read', async req => fsRead(req.body as any));
   app.post('/v1/fs/write', async req => fsWrite(req.body as any));
+  const jobBytes = Buffer.from(Array.from({ length: 64 * 1024 }, (_, i) => i % 251));
+  app.post('/v1/jobs/output', async req => {
+    const input = req.body as any, offset = Math.max(0, input.offset ?? 0);
+    const length = Math.min(input.length ?? 64 * 1024, jobBytes.length - offset);
+    const chunk = jobBytes.subarray(offset, offset + Math.max(0, length));
+    return { id: input.id, stream: input.stream ?? 'stdout', offset, nextOffset: offset + chunk.length,
+      totalBytes: jobBytes.length, eof: offset + chunk.length >= jobBytes.length,
+      data: input.encoding === 'base64' ? chunk.toString('base64') : chunk.toString('utf8') };
+  });
   const rows = [{ id: 'first', state: 'completed', startedAt: '2026-01-03', command: '😀'.repeat(70000) }, { id: 'second', state: 'completed', startedAt: '2026-01-02', command: 'small' }];
   app.get('/v1/jobs/history', async req => { const cursor = (req.query as any).cursor; return { items: cursor ? rows.slice(1) : rows.slice(0, 1), nextCursor: cursor ? null : Buffer.from(JSON.stringify({ id: 'first', startedAt: '2026-01-03' })).toString('base64url'), partial: false, corruptCount: 0, unreadableCount: 0 }; });
   const url = await app.listen({ host: '127.0.0.1', port: 0 });
@@ -115,6 +124,26 @@ it('recovers a client-rejected result using an ID reserved before dispatch', asy
   const original = await recover(h.client, id); expect(original.structuredContent.code).toBe(0);
   const duplicate: any = await h.client.callTool({ name: 'exec', arguments: { device: 'fixture', command: 'small' }, _meta: { resultRecoveryId: id } });
   expect(duplicate.isError).toBe(true); expect(h.calls()).toBe(1);
+});
+
+it('base64 job_output compaction preserves decoded byte cursors even when an old agent omits encoding', async () => {
+  const h = await harness();
+  let offset = 0, sawCompacted = false; const parts: Buffer[] = [];
+  while (offset < 64 * 1024) {
+    const r: any = await h.client.callTool({ name: 'job_output', arguments: { device: 'fixture', identity: 'owner', id: 'synthetic-job', offset, length: 64 * 1024, encoding: 'base64' } });
+    expect(r.isError).not.toBe(true);
+    const s = r.structuredContent, decoded = Buffer.from(s.data, 'base64');
+    expect(s.encoding).toBe('base64');
+    if (s.bytesRead !== undefined) expect(decoded.length).toBe(s.bytesRead);
+    expect(s.nextOffset).toBe(offset + decoded.length);
+    if (s.structuredContentTruncated) { sawCompacted = true; expect(legacy(r)).toEqual(s); }
+    parts.push(decoded);
+    expect(s.nextOffset).toBeGreaterThan(offset);
+    offset = s.nextOffset;
+    if (s.eof) break;
+  }
+  expect(sawCompacted).toBe(true);
+  expect(Buffer.concat(parts)).toEqual(Buffer.from(Array.from({ length: 64 * 1024 }, (_, i) => i % 251)));
 });
 
 it('binary pages and strict writer rebuild all 61,440 bytes coherently', async () => {

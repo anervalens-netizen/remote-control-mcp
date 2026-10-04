@@ -33,7 +33,7 @@ const jobKeyLookup = z.union([
 ]);
 const jobOutput = z.object({
   id: z.string().min(1), stream: z.enum(["stdout", "stderr"]), offset: nonnegative,
-  nextOffset: nonnegative, totalBytes: nonnegative, eof: z.boolean(), data: z.string(), ...route,
+  nextOffset: nonnegative, totalBytes: nonnegative, eof: z.boolean(), encoding: z.enum(["utf8", "base64"]), data: z.string(), ...route,
 }).passthrough();
 const jobFollow = z.object({
   ...jobSummary.shape,

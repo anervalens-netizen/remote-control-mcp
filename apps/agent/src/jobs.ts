@@ -899,7 +899,9 @@ export function jobOutput(input: { id: string; stream?: "stdout" | "stderr"; off
   const buffer = Buffer.alloc(Math.max(length, 0)); let bytesRead = 0;
   if (length > 0) { const fd = openSync(file, "r"); try { bytesRead = readSync(fd, buffer, 0, length, offset); } finally { closeSync(fd); } }
   const data = buffer.subarray(0, bytesRead);
-  return { id: input.id, stream, offset, nextOffset: offset + bytesRead, totalBytes, eof: offset + bytesRead >= totalBytes, data: (input.encoding ?? "utf8") === "base64" ? data.toString("base64") : data.toString("utf8") };
+  const encoding = input.encoding ?? "utf8";
+  return { id: input.id, stream, offset, nextOffset: offset + bytesRead, totalBytes, eof: offset + bytesRead >= totalBytes, encoding,
+    data: encoding === "base64" ? data.toString("base64") : data.toString("utf8") };
 }
 
 async function reconcileWindowsJob(meta: JobMeta): Promise<JobMeta> {

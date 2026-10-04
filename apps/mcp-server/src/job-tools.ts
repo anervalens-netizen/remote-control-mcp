@@ -69,7 +69,9 @@ export function registerJobTools(server: McpServer, client: AgentClient): void {
   server.registerTool("job_output", { description: "Read a bounded byte range from a durable job stdout or stderr; negative offsets tail from the end.", inputSchema: executionInputSchema({ device: z.string().min(1), id: z.string().min(1), stream: z.enum(["stdout", "stderr"]).optional(), offset: z.number().int().optional(), length: z.number().int().positive().max(1024 * 1024).optional(), encoding: z.enum(["utf8", "base64"]).optional() }) },
     async ({ device, context, identity, elevation, ...input }) => {
       const target = resolveExecutionContext(client, device, { context, identity, elevation }, "system");
-      return routedText(await client.jobOutput(device, input, target), target);
+      const requestedEncoding = input.encoding ?? "utf8";
+      const output = await client.jobOutput(device, input, target) as Record<string, unknown>;
+      return routedText({ ...output, encoding: typeof output.encoding === "string" ? output.encoding : requestedEncoding }, target);
     });
   server.registerTool("job_wait", {
     description: "Wait for a durable job to finish (default) or produce output (until=output). Returns status/progress, both streams and a resumable byte cursor. Default wait 30s; timeout/cancellation stops waiting, not the job. Repeat with cursor until outputComplete=true.",
