@@ -55,7 +55,7 @@ it("two SDK sessions fence canonical aliases, changed bases and stale tokens bef
   writeFileSync(path.join(root, "file.txt"), "before\n");
   const next = await b("resource_coordination", { action: "acquire", resource });
   const applied = await b("repo_apply_patch", { path: root, patch, coordination: (next.structuredContent as any).token });
-  expect(applied.isError).not.toBe(true); expect(readFileSync(path.join(root, "file.txt"), "utf8")).toBe("after\n");
+  expect(applied.isError).not.toBe(true); expect(readFileSync(path.join(root, "file.txt"), "utf8").replace(/\r\n/g, "\n")).toBe("after\n");
   const replay = await a("repo_apply_patch", { path: root, patch, coordination: token });
   expect(replay.isError).toBe(true); expect(JSON.stringify(replay)).toContain("stale_writer");
 });
@@ -138,7 +138,7 @@ it("unsupported raw dryRun does not bypass a reserved patch fence or change patc
   const applied = await agent.inject({ method: "POST", url: "/v1/repo/apply-patch", payload: { ...payload, coordination: reservation.json().token } });
   expect(applied.statusCode).toBe(200);
   expect(applied.json().coordination.state).toBe("released");
-  expect(readFileSync(path.join(root, "file.txt"), "utf8")).toBe("after\n");
+  expect(readFileSync(path.join(root, "file.txt"), "utf8").replace(/\r\n/g, "\n")).toBe("after\n");
 });
 
 it("symbolic HEAD and detached HEAD invalidate tokens even at the same commit", async () => {

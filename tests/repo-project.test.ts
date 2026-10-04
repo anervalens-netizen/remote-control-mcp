@@ -118,7 +118,7 @@ describe("repository and project high-level primitives", () => {
     expect(fetched).toMatchObject({ ok: true, operation: "fetch", nonInteractive: true });
     const pulled = await repoPull({ path: first, remote: "origin", refspecs: ["main"] });
     expect(pulled).toMatchObject({ ok: true, operation: "pull", nonInteractive: true, headChanged: true });
-    expect(readFileSync(path.join(first, "b.txt"), "utf8")).toBe("two\n");
+    expect(readFileSync(path.join(first, "b.txt"), "utf8").replaceAll("\r\n", "\n")).toBe("two\n");
 
     expect(gitNetworkEnvironment()).toMatchObject({
       GIT_TERMINAL_PROMPT: "0", GCM_INTERACTIVE: "Never", SSH_ASKPASS_REQUIRE: "never",
