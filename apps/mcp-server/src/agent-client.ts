@@ -1,3 +1,6 @@
+import { coordinationConflictSchema, type CoordinationConflict } from "../../../packages/protocol/src/coordination.ts";
+import { isCoordinatedWrite, isCoordinationRoute } from "../../../packages/protocol/src/coordination.ts";
+import { agentCapabilities, requireAgentCapability } from "./agent-compatibility.ts";
 import { recordStage, diagnosticContext } from "../../../packages/protocol/src/diagnostic-context.ts";
 import { jobRecoveryPayload, type JobRecoveryPayload } from "../../../packages/protocol/src/job-recovery.ts";
 import type { DeployInput, JobFollowInput, ProjectRunInput } from "../../../packages/protocol/src/project.ts";
@@ -36,8 +39,9 @@ export class AgentRequestError extends Error {
   readonly agentCode: string | undefined;
   readonly responseBodyTruncated: boolean;
   readonly jobStartFailure: JobStartFailure | undefined;
+  readonly coordinationConflict: CoordinationConflict | undefined;
 
-  constructor(message: string, device: string, context: AgentEndpointContext, route: string, kind: "timeout" | "network" | "http" | "protocol" | "context" | "cancelled", status?: number, recovery?: JobRecoveryPayload, responseBodyTruncated = false, jobStartFailure?: JobStartFailure, agentCode?: string) {
+  constructor(message: string, device: string, context: AgentEndpointContext, route: string, kind: "timeout" | "network" | "http" | "protocol" | "context" | "cancelled", status?: number, recovery?: JobRecoveryPayload, responseBodyTruncated = false, jobStartFailure?: JobStartFailure, agentCode?: string, coordinationConflict?: CoordinationConflict) {
     super(message);
     this.name = "AgentRequestError";
     this.device = device;
@@ -49,6 +53,7 @@ export class AgentRequestError extends Error {
     this.agentCode = agentCode;
     this.responseBodyTruncated = responseBodyTruncated;
     this.jobStartFailure = jobStartFailure;
+    this.coordinationConflict = coordinationConflict;
   }
 }
 
@@ -73,7 +78,7 @@ function ordinaryHttpDiagnostic(value: unknown): { diagnostic: string; truncated
   return boundedHttpDiagnostic(diagnostic === "{}" ? "" : diagnostic ?? "");
 }
 
-async function readAgentError(response: Response, maxBytes = 1024 * 1024): Promise<{ recovery?: JobRecoveryPayload; jobStartFailure?: JobStartFailure; agentCode?: string; diagnostic?: string; truncated: boolean }> {
+async function readAgentError(response: Response, maxBytes = 1024 * 1024): Promise<{ coordinationConflict?: CoordinationConflict; recovery?: JobRecoveryPayload; jobStartFailure?: JobStartFailure; agentCode?: string; diagnostic?: string; truncated: boolean }> {
   const reader = response.body?.getReader();
   if (!reader) return { truncated: false };
   const chunks: Uint8Array[] = [];
@@ -97,6 +102,10 @@ async function readAgentError(response: Response, maxBytes = 1024 * 1024): Promi
     const recovery = jobRecoveryPayload(value);
     if (recovery) return { recovery, truncated: false };
     const payload = value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+    if (payload?.error === "coordination_conflict") {
+      const parsed = coordinationConflictSchema.safeParse(payload.details);
+      if (parsed.success) return { diagnostic: `coordination_conflict: ${parsed.data.reason}`, agentCode: "COORDINATION_CONFLICT", coordinationConflict: parsed.data, truncated: false };
+    }
     const agentCode = payload && typeof payload.code === "string" && /^[A-Z][A-Z0-9_]{1,63}$/.test(payload.code) ? payload.code : undefined;
     if (payload && (payload.error === "job_start_conflict" || payload.error === "job_start_uncertain")) {
       const jobId = typeof payload.jobId === "string" && /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(payload.jobId) ? payload.jobId : undefined;
@@ -181,6 +190,9 @@ export class AgentClient {
   }
 
   async requestRoute<T>(name: string, route: string, body: unknown | undefined, context: AgentEndpointContext = "system", options: AgentRequestOptions = {}): Promise<T> {
+    if (route === "/v1/coordination" || isCoordinatedWrite(route, body) || isCoordinationRoute(route) && body && typeof body === "object" && "coordination" in body) {
+      await requireAgentCapability(this, name, context, agentCapabilities.coordination, options);
+    }
     const requestStarted = performance.now();
     const endpoint = this.endpoint(name, context, route);
     const headers: Record<string, string> = {};
@@ -196,9 +208,9 @@ export class AgentClient {
         ...(signal ? { signal } : {}),
       });
       if (!response.ok) {
-        const { recovery, diagnostic, truncated, jobStartFailure, agentCode } = await readAgentError(response);
+        const { recovery, diagnostic, truncated, jobStartFailure, agentCode, coordinationConflict } = await readAgentError(response);
         const detail = recovery ? " job_recovery_required" : diagnostic ? ` ${diagnostic}` : "";
-        throw new AgentRequestError(`${name} ${context} ${route} failed: HTTP ${response.status}${detail}`, name, context, route, "http", response.status, recovery, truncated, jobStartFailure, agentCode);
+        throw new AgentRequestError(`${name} ${context} ${route} failed: HTTP ${response.status}${detail}`, name, context, route, "http", response.status, recovery, truncated, jobStartFailure, agentCode, coordinationConflict);
       }
       try {
         return await response.json() as T;
@@ -365,7 +377,10 @@ export class AgentClient {
     return { size, modifiedAt, chunks, cancel: async () => { deadline.dispose(); await response.body?.cancel().catch(() => undefined); } };
   }
 
-  fsRead(name: string, input: unknown, context: AgentEndpointContext = "system", options?: AgentRequestOptions): Promise<unknown> { return this.request(name, "/v1/fs/read", input, context, options); }
+  async fsRead(name: string, input: unknown, context: AgentEndpointContext = "system", options?: AgentRequestOptions): Promise<unknown> {
+    if ((input as { encoding?: string }).encoding !== "base64") await requireAgentCapability(this, name, context, agentCapabilities.utf8, options);
+    return this.request(name, "/v1/fs/read", input, context, options);
+  }
   fsWrite(name: string, input: unknown, context: AgentEndpointContext = "system", options?: AgentRequestOptions): Promise<unknown> { return this.request(name, "/v1/fs/write", input, context, options); }
   fsList(name: string, input: unknown, context: AgentEndpointContext = "system", options?: AgentRequestOptions): Promise<unknown> { return this.request(name, "/v1/fs/list", input, context, options); }
   fsManage(name: string, input: unknown, context: AgentEndpointContext = "system", options?: AgentRequestOptions): Promise<unknown> { return this.request(name, "/v1/fs/manage", input, context, options); }

@@ -1,3 +1,4 @@
+import { coordinationFields } from "../../../packages/protocol/src/coordination.ts";
 import { resultMetadataFields } from "./result-recovery.ts";
 import { withErrorOutputContract } from "./error-output-contract.ts";
 import { configuredBatchStore, durableBatchSchema } from "./durable-batch.ts";
@@ -224,7 +225,7 @@ export function registerHighLevelTools(server: McpServer, client: AgentClient): 
   server.registerTool("repo_fetch", {
     description: "Fetch Git remote refs through the owner endpoint with interactive credential prompts disabled and a bounded timeout. Fails fast if owner identity is unavailable; raw exec remains available for explicit root/SYSTEM Git.",
     inputSchema: executionInputSchema({
-      device: z.string().min(1), path: z.string().min(1), remote: z.string().min(1).optional(),
+      ...coordinationFields, device: z.string().min(1), path: z.string().min(1), remote: z.string().min(1).optional(),
       refspecs: z.array(z.string().min(1)).max(32).optional(), prune: z.boolean().optional(), tags: z.boolean().optional(),
       timeoutMs: z.number().int().positive().max(600_000).optional(),
     }),
@@ -241,7 +242,7 @@ export function registerHighLevelTools(server: McpServer, client: AgentClient): 
   server.registerTool("repo_pull", {
     description: "Pull through the owner endpoint with non-interactive credentials. Fast-forward-only by default; set ffOnly=false for normal Git pull behavior. Raw exec remains available for explicit root/SYSTEM Git.",
     inputSchema: executionInputSchema({
-      device: z.string().min(1), path: z.string().min(1), remote: z.string().min(1).optional(),
+      ...coordinationFields, device: z.string().min(1), path: z.string().min(1), remote: z.string().min(1).optional(),
       refspecs: z.array(z.string().min(1)).max(32).optional(), ffOnly: z.boolean().optional(), tags: z.boolean().optional(),
       timeoutMs: z.number().int().positive().max(600_000).optional(),
     }),
@@ -264,7 +265,7 @@ export function registerHighLevelTools(server: McpServer, client: AgentClient): 
   server.registerTool("repo_push", {
     description: "Push through the owner endpoint with non-interactive credentials and bounded timeout. Supports normal push, upstream setup, tags and dry-run; raw exec retains unrestricted Git including explicit root/SYSTEM workflows.",
     inputSchema: executionInputSchema({
-      device: z.string().min(1), path: z.string().min(1), remote: z.string().min(1).optional(),
+      ...coordinationFields, device: z.string().min(1), path: z.string().min(1), remote: z.string().min(1).optional(),
       refspecs: z.array(z.string().min(1)).max(32).optional(), setUpstream: z.boolean().optional(), tags: z.boolean().optional(),
       dryRun: z.boolean().optional(), timeoutMs: z.number().int().positive().max(600_000).optional(),
     }),
@@ -294,7 +295,7 @@ export function registerHighLevelTools(server: McpServer, client: AgentClient): 
     inputSchema: { device: z.string().min(1), ...deployFields, context: legacyContextSchema, identity: identitySchema, elevation: elevationSchema },
   }, async ({ device, context, identity, elevation, ...input }) => withToolErrors(async () => {
     const runContext = resolveExecutionContext(client, device, { context, identity, elevation }, "system");
-    if (input.prepare || input.apply || input.verify || input.recover || input.dryRun || input.idempotencyKey) {
+    if (input.prepare || input.apply || input.verify || input.recover || input.dryRun || input.idempotencyKey || input.repoPath || input.cwd || input.coordination) {
       return text({ ...await client.deployRun(device, input, runContext) as Record<string, unknown>, identity: executionLabel(runContext), context: runContext });
     }
     if (!input.command) throw new Error("command or apply is required");

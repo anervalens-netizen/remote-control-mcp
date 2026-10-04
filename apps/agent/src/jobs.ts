@@ -1,8 +1,10 @@
+import { z } from "zod";
+import { coordinationDevice, coordinationIdentity } from "./coordination.ts";
 import { JobHistoryIndex, decodeHistoryCursor, type HistoryQuery } from "./job-history-index.ts";
 import { JobStartDeduplicator, JobStartKeyError, type JobStartInput } from "./job-start-dedup.ts";
 import { jobRecoveryPayload, type JobRecoveryDetails } from "../../../packages/protocol/src/job-recovery.ts";
 import { jobLineageSchema } from "../../../packages/protocol/src/project.ts";
-import { closeSync, existsSync, fsyncSync, openSync, readFileSync, readSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, constants, existsSync, fstatSync, fsyncSync, openSync, readFileSync, readSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import process from "node:process";
 import { createHash, randomUUID } from "node:crypto";
@@ -98,6 +100,35 @@ export class JobRecoveryError extends Error {
 }
 
 const jobsRoot = ensureStateDir("jobs");
+const terminalEvidenceRoot = ensureStateDir("job-terminal-evidence");
+const terminalEvidenceSchema = z.object({
+  version: z.literal(1), id: z.string().min(1).max(200), device: z.string().regex(/^[a-f0-9]{64}$/),
+  identity: z.string().regex(/^[a-f0-9]{64}$/), state: z.enum(["completed", "cancelled", "lost"]),
+}).strict();
+function terminalEvidencePath(id: string) {
+  return path.join(terminalEvidenceRoot, createHash("sha256").update(z.string().min(1).max(200).parse(id)).digest("hex") + ".json");
+}
+/** Removal tombstones are private, minimal, and never authorize replay. The
+ * coordination journal must independently associate this exact job and owner. */
+export async function jobCoordinationStatus(id: string) {
+  try {
+    const status = await jobStatusAsync(id);
+    if (status.id !== id) throw new Error("Job evidence identity mismatch");
+    return { ...status, device: coordinationDevice, identity: coordinationIdentity };
+  }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    const fd = openSync(terminalEvidencePath(id), constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    let evidence;
+    try {
+      const stat = fstatSync(fd);
+      if (!stat.isFile() || stat.size > 1024) throw new Error("Invalid terminal job evidence");
+      evidence = terminalEvidenceSchema.parse(JSON.parse(readFileSync(fd, "utf8")));
+    } finally { closeSync(fd); }
+    if (evidence.id !== id || evidence.device !== coordinationDevice || evidence.identity !== coordinationIdentity) throw new Error("Terminal job evidence identity mismatch");
+    return evidence;
+  }
+}
 const jobStartDedup = new JobStartDeduplicator(ensureStateDir("job-start-keys"));
 const live = new Map<string, ChildProcess>();
 const windowsLive = new Set<string>();
@@ -229,7 +260,7 @@ function outputPath(id: string, stream: "stdout" | "stderr") { return path.join(
 function exitPath(id: string) { return path.join(jobsRoot, `${id}.exit`); }
 function readMeta(id: string): JobMeta {
   const file = metaPath(id);
-  if (!existsSync(file)) throw new Error(`Unknown job: ${id}`);
+  if (!existsSync(file)) throw Object.assign(new Error(`Unknown job: ${id}`), { code: "ENOENT" });
   return JSON.parse(readFileSync(file, "utf8")) as JobMeta;
 }
 function writeMeta(meta: JobMeta) { const before = historyIndex.beforeWrite(); atomicWriteJson(metaPath(meta.id), meta); historyIndex.upsert(meta, before); }
@@ -946,6 +977,11 @@ export async function jobRemove(id: string, force = false) {
     meta = refresh(readMeta(id));
     if (meta.state === "running" || meta.state === "cancelling") throw new Error(`Job ${id} is still active and was not removed`);
   }
+  if (meta.id !== id) throw new Error("Job evidence identity mismatch");
+  // Publish and sync before deleting any authoritative terminal metadata. A
+  // crash at any later removal step retains evidence, even before job association.
+  const evidence = terminalEvidenceSchema.parse({ version: 1, id, device: coordinationDevice, identity: coordinationIdentity, state: meta.state });
+  atomicWriteJson(terminalEvidencePath(id), evidence);
   stopJobLineage(id);
   live.delete(id);
   windowsLive.delete(id);

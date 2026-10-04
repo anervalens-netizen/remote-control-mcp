@@ -15,6 +15,7 @@ import { jobRemove, jobCancel } from "../apps/agent/src/jobs.ts";
 it("carries project/deploy/follow workflows through the real MCP SDK and HTTP agent", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "rcmcp-run-routing-")), ids: string[] = [];
   const agent = Fastify(); registerExtraRoutes(agent);
+  agent.get("/v1/info", async () => ({ runtime: { capabilities: ["high-level-coordination-v1"] } }));
   const url = await agent.listen({ host: "127.0.0.1", port: 0 });
   const server = new McpServer({ name: "runner-test", version: "1" });
   const remote = new AgentClient([{ name: "pc", url, userUrl: url }]);

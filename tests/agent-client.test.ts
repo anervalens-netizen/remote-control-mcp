@@ -98,6 +98,11 @@ describe("AgentClient", () => {
     let systemHits = 0;
     const system = createServer((_req, res) => { systemHits += 1; res.setHeader("content-type", "application/json"); res.end("{}"); });
     const user = createServer((req, res) => {
+      if (req.url === "/v1/info") {
+        expect(req.headers.authorization).toBe("Bearer user-secret");
+        res.setHeader("content-type", "application/json");
+        res.end(JSON.stringify({ runtime: { capabilities: ["utf8-byte-pages-v1"] } })); return;
+      }
       expect(req.url).toBe("/v1/fs/read");
       expect(req.headers.authorization).toBe("Bearer user-secret");
       res.setHeader("content-type", "application/json");
@@ -141,7 +146,8 @@ describe("AgentClient", () => {
   });
 
   it("extends Git network transport deadlines beyond the generic client timeout", async () => {
-    const delayed = createServer((_req, res) => {
+    const delayed = createServer((req, res) => {
+      if (req.url === "/v1/info") { res.setHeader("content-type", "application/json"); res.end(JSON.stringify({ runtime: { capabilities: ["high-level-coordination-v1"] } })); return; }
       setTimeout(() => {
         res.setHeader("content-type", "application/json");
         res.end(JSON.stringify({ ok: true }));

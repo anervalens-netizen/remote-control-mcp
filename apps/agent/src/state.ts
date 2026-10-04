@@ -1,4 +1,4 @@
-import { closeSync, fsyncSync, mkdirSync, openSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, fchmodSync, fsyncSync, mkdirSync, openSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
@@ -22,6 +22,8 @@ export function atomicWriteText(target: string, data: string, mode = 0o600): voi
   try {
     fd = openSync(temporary, "wx", mode);
     created = true;
+    stage = "mode";
+    fchmodSync(fd, mode);
     stage = "write";
     writeFileSync(fd, data, { encoding: "utf8" });
     stage = "file-sync";
@@ -51,8 +53,8 @@ export function atomicWriteText(target: string, data: string, mode = 0o600): voi
   }
 }
 
-export function atomicWriteJson(target: string, value: unknown): void {
-  atomicWriteText(target, `${JSON.stringify(value)}\n`);
+export function atomicWriteJson(target: string, value: unknown, mode = 0o600): void {
+  atomicWriteText(target, `${JSON.stringify(value)}\n`, mode);
 }
 
 export function utf8SafeLength(buffer: Buffer): number {

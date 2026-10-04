@@ -1,3 +1,4 @@
+import { coordinationFields } from "./coordination.ts";
 import { z } from "zod";
 import { timeoutMsField } from "./deadline.ts";
 export const projectFields = {
@@ -7,6 +8,7 @@ export const projectFields = {
   command: z.string().min(1).describe("Raw shell command; args use shell parsing. Use executable for literal native argv.").optional(), executable: z.string().min(1).describe("Run any native executable directly with literal args; bypasses manifest detection.").optional(), args: z.array(z.string()).optional(),
 };
 export const projectRunFields = {
+  ...coordinationFields,
   ...projectFields, mode: z.enum(["exec", "job"]).optional(), dryRun: z.boolean().optional(),
   env: z.record(z.string(), z.string()).optional(),
   idempotencyKey: z.string().min(1).max(200).optional(),
@@ -21,6 +23,7 @@ export const projectRunSchema = z.object(projectRunFields).superRefine((value, c
 export type ProjectRunInput = z.infer<typeof projectRunSchema>;
 export type ProjectInput = z.infer<z.ZodObject<typeof projectFields>>;
 export const deployFields = {
+  ...coordinationFields,
   command: z.string().min(1).optional(), cwd: z.string().optional(), repoPath: z.string().optional(),
   prepare: z.string().min(1).optional(), apply: z.string().min(1).optional(),
   verify: z.string().min(1).optional(), recover: z.string().min(1).optional(),

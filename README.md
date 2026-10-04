@@ -145,3 +145,25 @@ outcome samples and event-loop delay. It stores no raw commands, arguments,
 outputs or exception messages. Clients supplying a progress token may receive
 elapsed/stage notifications for fleet probes and job waits; those values are
 elapsed time, never estimated completion percentages.
+
+## High-level coordination and SDK compatibility
+
+High-level repo/service/project/deploy operations with an identifiable resource
+use agent-side reservations, persistent fencing generations and base-version
+revalidation. Use `resource_coordination` to inspect/acquire/release a resource
+and pass its token as `coordination` to a write. Owner override is explicit,
+audited and cannot evict active/uncertain effects. Raw exec and control/read
+paths remain available. Shared cross-identity coordination requires the same
+absolute `RCMCP_COORDINATION_DIR` on that device, a pre-provisioned shared directory
+and `RCMCP_COORDINATION_FILE_MODE=0660` on each agent. The default file mode is
+private `0600`; directory permissions/group ownership are never changed. Arbitrary shell/external edits
+remain outside fencing; see [bounds and recovery](docs/RELIABILITY.md#high-level-resource-coordination-r10).
+
+SDK 1.30.0 remains pinned. Authenticated health reports observed initialize
+protocol versions and session/JSON/SSE modes, without inferring negotiation from
+headers or documentation. The synthetic compatibility matrix covers the
+installed client and production HTTP path, including discovery, validation,
+recovery and stateful cancellation. Upgrade agents before the controller, then
+reconnect clients and refresh `listTools`. Unsupported high-level/UTF-8/durable
+batch combinations fail clearly; base64 and compatible control reads remain
+available. See the [supported matrix and rollout order](docs/RELIABILITY.md#mcp-sdk-compatibility-matrix-r11).

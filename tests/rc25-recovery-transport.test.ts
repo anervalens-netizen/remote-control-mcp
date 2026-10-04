@@ -1,3 +1,5 @@
+import { mkdtempSync } from "node:fs";
+import path from "node:path";
 import Fastify from "fastify";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -27,9 +29,11 @@ async function agentFixture() {
       ...recovery, terminationError: "x".repeat(100_000), cleanupErrors: ["y".repeat(100_000)],
     }); }) };
   });
+  const projectPath = mkdtempSync(path.join(process.env.RCMCP_STATE_DIR!, "recovery-project-"));
   const app = Fastify(); (await import("../apps/agent/src/extra-routes.ts")).registerExtraRoutes(app);
+  app.get("/v1/info", async () => ({ runtime: { capabilities: ["high-level-coordination-v1"] } }));
   const url = await app.listen({ host: "127.0.0.1", port: 0 }); closers.push(() => app.close());
-  return { app, client: new AgentClient([{ name: "fixture", url, userUrl: url }]) };
+  return { app, projectPath, client: new AgentClient([{ name: "fixture", url, userUrl: url }]) };
 }
 it.each([
   ["/v1/jobs/start", { command: "unused" }],
@@ -38,8 +42,8 @@ it.each([
   ["/v1/power", { action: "lock" }],
   ["/v1/power/request", { action: "lock" }],
 ])("retains bounded structured recovery in HTTP %s", async (url, payload) => {
-  const { app } = await agentFixture();
-  const response = await app.inject({ method: "POST", url: url as string, payload });
+  const { app, projectPath } = await agentFixture();
+  const response = await app.inject({ method: "POST", url: url as string, payload: "path" in payload ? { ...payload, path: projectPath } : payload });
   expect(response.statusCode).toBe(500);
   expect(response.json()).toMatchObject({ error: "job_recovery_required", ...recovery, truncatedFields: expect.arrayContaining(["terminationError", "cleanupErrors"]) });
   expect(Buffer.byteLength(response.body)).toBeLessThan(64 * 1024);
@@ -51,7 +55,7 @@ it("retains typed recovery in AgentClient without parsing nested text", async ()
   });
 });
 it.each([false, true])("preserves recovery through the real SDK (default contracts=%s), including durable wrappers and per-device errors", async (contracts) => {
-  const { client } = await agentFixture();
+  const { client, projectPath } = await agentFixture();
   const server = new McpServer({ name: "rc25", version: "1" });
   if (contracts) installDefaultToolOutputContracts(server);
   registerHighLevelTools(server, client); registerJobTools(server, client);
@@ -68,7 +72,7 @@ it.each([false, true])("preserves recovery through the real SDK (default contrac
   closers.push(async () => { await sdk.close(); await server.close(); });
   const calls = [
     { name: "job_start", arguments: { device: "fixture", command: "unused" } },
-    { name: "project_run", arguments: { device: "fixture", path: process.cwd(), command: "unused", mode: "job" } },
+    { name: "project_run", arguments: { device: "fixture", path: projectPath, command: "unused", mode: "job" } },
     { name: "deploy_run", arguments: { device: "fixture", apply: "unused" } },
     { name: "deploy_run", arguments: { device: "fixture", command: "unused" } },
     ...(contracts ? [{ name: "host_power", arguments: {} }] : []),

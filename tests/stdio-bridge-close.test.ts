@@ -1,7 +1,7 @@
 import { afterEach, expect, it, vi } from "vitest";
 const hooks = vi.hoisted(() => ({ closeBridge: vi.fn(), closeServer: vi.fn(), connect: vi.fn(), register: vi.fn() }));
 vi.mock("@modelcontextprotocol/sdk/server/mcp.js", () => ({ McpServer: class { close = hooks.closeServer; connect = hooks.connect; } }));
-vi.mock("@modelcontextprotocol/sdk/server/stdio.js", () => ({ StdioServerTransport: class {} }));
+vi.mock("@modelcontextprotocol/sdk/server/stdio.js", () => ({ StdioServerTransport: class { async send() {} } }));
 vi.mock("../apps/mcp-server/src/agent-client.ts", () => ({ AgentClient: class {} }));
 vi.mock("../apps/mcp-server/src/all-tools.ts", () => ({ registerTools: hooks.register }));
 vi.mock("../apps/mcp-server/src/contextkeep-bridge.ts", () => ({ closeContextKeepBridges: hooks.closeBridge }));

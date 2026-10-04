@@ -1,3 +1,4 @@
+import { executionBoundary } from "./execution-boundary.ts";
 import { execFile } from "node:child_process";
 import { statfs } from "node:fs/promises";
 import os from "node:os";
@@ -40,27 +41,31 @@ async function windowsServiceStatus(name: string) {
 }
 
 export async function serviceManage(input: { name: string; action: ServiceAction; scope?: Scope }) {
-  if (process.platform === "win32") {
-    const q = psLiteral(input.name);
-    const actions: Record<Exclude<ServiceAction, "status">, string> = {
-      start: `Start-Service -Name ${q}`,
-      stop: `Stop-Service -Name ${q}`,
-      restart: `Restart-Service -Name ${q}`,
-      enable: `Set-Service -Name ${q} -StartupType Automatic`,
-      disable: `Set-Service -Name ${q} -StartupType Disabled`,
-    };
-    if (input.action !== "status") {
-      await execFileAsync("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", actions[input.action]], { maxBuffer: 4 * 1024 * 1024, windowsHide: true });
+  return executionBoundary(async submit => {
+    if (process.platform === "win32") {
+      const q = psLiteral(input.name);
+      const actions: Record<Exclude<ServiceAction, "status">, string> = {
+        start: `Start-Service -Name ${q}`,
+        stop: `Stop-Service -Name ${q}`,
+        restart: `Restart-Service -Name ${q}`,
+        enable: `Set-Service -Name ${q} -StartupType Automatic`,
+        disable: `Set-Service -Name ${q} -StartupType Disabled`,
+      };
+      if (input.action !== "status") {
+        submit();
+        await execFileAsync("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", actions[input.action]], { maxBuffer: 4 * 1024 * 1024, windowsHide: true });
+      }
+      return windowsServiceStatus(input.name);
     }
-    return windowsServiceStatus(input.name);
-  }
 
-  const scope = input.scope ?? "system";
-  if (input.action !== "status") {
-    const args = [...(scope === "user" ? ["--user"] : []), input.action, input.name];
-    await execFileAsync("systemctl", args, { maxBuffer: 4 * 1024 * 1024 });
-  }
-  return linuxServiceStatus(input.name, scope);
+    const scope = input.scope ?? "system";
+    if (input.action !== "status") {
+      const args = [...(scope === "user" ? ["--user"] : []), input.action, input.name];
+      submit();
+      await execFileAsync("systemctl", args, { maxBuffer: 4 * 1024 * 1024 });
+    }
+    return linuxServiceStatus(input.name, scope);
+  });
 }
 
 export async function serviceLogs(input: { name: string; scope?: Scope; lines?: number }) {

@@ -1,3 +1,4 @@
+import { registerCoordinationTools } from "./coordination-tools.ts";
 import { diagnosticsFor, registerWaitDiagnostics } from "./tool-diagnostics.ts";
 import { registerBrowserTools } from "./browser-tools.ts";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -20,6 +21,7 @@ export function registerTools(server: McpServer, client: AgentClient): void {
   installDefaultToolOutputContracts(server, diagnosticsFor(client));
   registerWaitDiagnostics(server, diagnosticsFor(client));
   registerCoreTools(server, client);
+  registerCoordinationTools(server, client);
   registerBrowserTools(server, client);
   registerAdvancedTools(server, client);
   registerSearchSessionTools(server, client);

@@ -1,3 +1,4 @@
+import { SdkCompatibilityDiagnostics } from "./sdk-compatibility.ts";
 import { monitorEventLoopDelay } from "node:perf_hooks";
 import { diagnosticsFor } from "./tool-diagnostics.ts";
 import { agentInstructions } from "./instructions.ts";
@@ -71,8 +72,11 @@ export function createMcpHttpServer(client: AgentClient, options: {
   sessionIdleMs?: number;
   allowedOrigins?: string[];
   maxBodyBytes?: number | null;
+  sessionMode?: "stateful" | "stateless";
+  enableJsonResponse?: boolean;
 } = {}) {
   const startedAt = new Date().toISOString();
+  const compatibility = new SdkCompatibilityDiagnostics();
   const eventLoop = monitorEventLoopDelay({ resolution: 20 });
   const instanceId = randomUUID();
   const sessions = new Map<string, Session>();
@@ -167,6 +171,7 @@ export function createMcpHttpServer(client: AgentClient, options: {
             failed: requestsFailed,
             averageDurationMs: requestsTotal > 1 ? Math.round(requestDurationMsTotal / Math.max(1, requestsTotal - requestsInFlight)) : 0,
           },
+          compatibility: compatibility.snapshot(),
           toolDiagnostics: diagnosticsFor(client).snapshot(),
           eventLoop: { unit: "milliseconds", resolutionMs: 20, meanMs: Number.isFinite(eventLoop.mean) ? eventLoop.mean / 1e6 : null, p95Ms: eventLoop.percentile(95) / 1e6, p99Ms: eventLoop.percentile(99) / 1e6, maxMs: eventLoop.max / 1e6 },
           memory: { rssBytes: memory.rss, heapUsedBytes: memory.heapUsed, heapTotalBytes: memory.heapTotal, externalBytes: memory.external },
@@ -198,14 +203,16 @@ export function createMcpHttpServer(client: AgentClient, options: {
         }));
         return;
       }
-      if (!session && req.method === "POST" && isInitializeRequest(body)) {
+      if (!session && req.method === "POST" && isInitializeRequest(body) && options.sessionMode !== "stateless") {
         const server = build();
         const transport = new StreamableHTTPServerTransport({
+          enableJsonResponse: options.enableJsonResponse,
           sessionIdGenerator: () => randomUUID(),
           onsessioninitialized: sid => { sessions.set(sid, entry); },
         });
         const entry: Session = { server, transport, lastUsed: Date.now(), active: 0 };
         transport.onclose = () => { if (transport.sessionId) sessions.delete(transport.sessionId); };
+        compatibility.observe(transport, "stateful", options.enableJsonResponse ? "json" : "sse", (body as unknown as { id: string | number }).id);
         await server.connect(transport);
         session = entry;
       }
@@ -231,7 +238,8 @@ export function createMcpHttpServer(client: AgentClient, options: {
       // session. New initialize requests always get a correlated MCP session.
       if (req.method !== "POST") { res.writeHead(405).end("session_required"); return; }
       const server = build();
-      const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+      const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: options.enableJsonResponse });
+      compatibility.observe(transport, options.sessionMode === "stateless" ? "stateless" : "legacy-stateless", options.enableJsonResponse ? "json" : "sse", isInitializeRequest(body) ? (body as unknown as { id: string | number }).id : undefined);
       await server.connect(transport);
       res.once("close", () => { void server.close(); });
       await transport.handleRequest(req, res, body);

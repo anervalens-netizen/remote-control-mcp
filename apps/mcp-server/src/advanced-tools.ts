@@ -1,3 +1,4 @@
+import { coordinationFields } from "../../../packages/protocol/src/coordination.ts";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { AgentClient } from "./agent-client.ts";
@@ -18,7 +19,7 @@ export function registerAdvancedTools(server: McpServer, client: AgentClient): v
   server.registerTool("service_manage", {
     description: "Inspect or control a Linux systemd or Windows Service Manager service.",
     inputSchema: {
-      device: z.string().min(1), name: z.string().min(1),
+      ...coordinationFields, device: z.string().min(1), name: z.string().min(1),
       action: z.enum(["status", "start", "stop", "restart", "enable", "disable"]),
       scope: z.enum(["user", "system"]).optional(),
     },

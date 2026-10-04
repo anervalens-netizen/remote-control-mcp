@@ -32,6 +32,8 @@ const client=new AgentClient(undefined, undefined, undefined, androidController)
 configuredContextKeepBridge(client);
 const http = createMcpHttpServer(client, {
   token: process.env.RCMCP_MCP_TOKEN,
+  sessionMode: process.env.RCMCP_MCP_SESSION_MODE === "stateless" ? "stateless" : "stateful",
+  enableJsonResponse: process.env.RCMCP_MCP_JSON_RESPONSE === "1",
   sha,
   ...(configuredSessionIdleMs === undefined ? {} : { sessionIdleMs: configuredSessionIdleMs }),
   maxBodyBytes: configuredMaxBodyBytes,

@@ -1,3 +1,4 @@
+import { SdkCompatibilityDiagnostics } from "./sdk-compatibility.ts";
 import { agentInstructions } from "./instructions.ts";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -16,6 +17,8 @@ const server = new McpServer(
 registerTools(server, new AgentClient());
 
 const transport = new StdioServerTransport();
+const compatibility = new SdkCompatibilityDiagnostics();
+compatibility.observe(transport, "stdio", "stdio");
 let closing = false;
 async function close() {
   if (closing) return;

@@ -20,7 +20,7 @@ async function harness() {
     const body = JSON.parse(data || "{}") as Record<string, unknown>;
     calls.push({ route: req.url!, body });
     res.setHeader("content-type", "application/json");
-    const value = req.url!.endsWith("/v1/fs/read")
+    const value = req.url!.endsWith("/v1/info") ? { runtime: { capabilities: ["utf8-byte-pages-v1", "high-level-coordination-v1"] } } : req.url!.endsWith("/v1/fs/read")
       ? { path: body.path, totalBytes: 7, offset: 0, nextOffset: 7, bytesRead: 7, eof: true, encoding: "utf8", data: "fixture" }
       : { code: 0, signal: null, stdout: "fixture", stderr: "", durationMs: 1, timedOut: false, stdoutBytes: 7, stderrBytes: 0, stdoutTruncated: false, stderrTruncated: false };
     res.end(JSON.stringify(value));
@@ -104,7 +104,7 @@ describe("M15 W1 identity and structured batch contract", () => {
       { device: "pc", path: "/fixture", identity: "owner", elevation: "never" },
     ] } });
     expect(result.isError).not.toBe(true);
-    expect(calls.map(c => c.route)).toEqual(["/user/v1/fs/read", "/user/v1/fs/read"]);
+    expect(calls.map(c => c.route).sort()).toEqual(["/user/v1/info", "/user/v1/fs/read", "/user/v1/info", "/user/v1/fs/read"].sort());
     expect(Array.isArray(textJson(result))).toBe(true);
     expect(result.structuredContent).toMatchObject({ partial: false, errors: [], items: [
       { index: 0, context: "user", result: { data: "fixture" } },

@@ -1,6 +1,8 @@
+import { coordinationFields } from "./coordination.ts";
 import { z } from "zod";
 
 export const repoCheckpointFields = {
+  ...coordinationFields,
   path: z.string().min(1), message: z.string().optional(),
   mode: z.enum(["all", "staged", "paths"]).optional(),
   paths: z.array(z.string().min(1)).min(1).optional(),
@@ -8,6 +10,7 @@ export const repoCheckpointFields = {
   dryRun: z.boolean().optional(),
 };
 export const repoPatchFields = {
+  ...coordinationFields,
   path: z.string().min(1), patch: z.string().min(1),
   target: z.enum(["worktree", "index", "both"]).optional(),
   checkOnly: z.boolean().optional(), reverse: z.boolean().optional(),

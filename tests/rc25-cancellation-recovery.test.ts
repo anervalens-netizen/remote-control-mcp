@@ -69,6 +69,7 @@ describe("RC25-01 foreground cancellation", () => {
     const late = path.join(root, "late");
     const agent = Fastify();
     registerExtraRoutes(agent);
+    agent.get("/v1/info", async () => ({ runtime: { capabilities: ["high-level-coordination-v1"] } }));
     const agentUrl = await agent.listen({ host: "127.0.0.1", port: 0 });
     closers.push(async () => { await agent.close(); });
 

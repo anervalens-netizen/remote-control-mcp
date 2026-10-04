@@ -19,17 +19,18 @@ async function harness(fake: AgentClient) {
 }
 
 describe("high-level execution identity", () => {
-  it("uses the selected root identity for both deploy snapshot and job", async () => {
+  it("routes resource-identified deployments through the selected root agent without separate unfenced dispatch", async () => {
     const seen: Array<[string, AgentEndpointContext]> = [];
     const fake = {
       configuredContexts: () => ({ system: true, user: false, desktop: false }),
+      deployRun: async (_device: string, _input: unknown, context: AgentEndpointContext) => { seen.push(["deploy", context]); return { job: { id: "job", state: "running" } }; },
       repoSnapshot: async (_device: string, _input: unknown, context: AgentEndpointContext) => { seen.push(["snapshot", context]); return { head: "abc" }; },
       jobStart: async (_device: string, _input: unknown, context: AgentEndpointContext) => { seen.push(["job", context]); return { id: "job", state: "running" }; },
     } as unknown as AgentClient;
     const client = await harness(fake);
     const result = await client.callTool({ name: "deploy_run", arguments: { device: "pc", command: "deploy", repoPath: "/root/repo", identity: "root" } });
     expect(result.isError).not.toBe(true);
-    expect(seen).toEqual([["snapshot", "system"], ["job", "system"]]);
+    expect(seen).toEqual([["deploy", "system"]]);
   });
 
   it("routes Git network tools through owner identity by default", async () => {

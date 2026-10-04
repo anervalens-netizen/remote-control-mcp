@@ -1,3 +1,4 @@
+import { executionBoundary } from "./execution-boundary.ts";
 import { execFile, spawn } from "node:child_process";
 import { access, realpath, stat } from "node:fs/promises";
 import pathModule from "node:path";
@@ -74,8 +75,9 @@ async function terminateGitTree(pid: number, identityPromise: Promise<string | n
   try { process.kill(pid, "SIGKILL"); } catch { /* already gone */ }
 }
 
-async function runGitNetwork(repoPath: string, args: string[], timeoutMs: number): Promise<{ stdout: string; stderr: string }> {
+async function runGitNetwork(repoPath: string, args: string[], timeoutMs: number, submit: () => void): Promise<{ stdout: string; stderr: string }> {
   const safeArgs = await gitPrefix(repoPath);
+  submit();
   return new Promise((resolve, reject) => {
     const child = spawn("git", [...safeArgs, "-c", "credential.interactive=never", "-C", repoPath, ...args], {
       env: gitNetworkEnvironment(),
@@ -292,72 +294,78 @@ export async function repoSnapshot(
 export { repoCheckpoint } from "./repo-edit.ts";
 
 export async function repoFetch(input: { path: string; remote?: string; refspecs?: string[]; prune?: boolean; tags?: boolean; timeoutMs?: number }) {
-  const timeoutMs = input.timeoutMs ?? 60_000;
-  const remote = input.remote ?? "origin";
-  const args = ["fetch"];
-  if (input.prune) args.push("--prune");
-  if (input.tags) args.push("--tags");
-  args.push("--", remote, ...(input.refspecs ?? []));
-  const startedAt = Date.now();
-  try {
-    const { stdout, stderr } = await runGitNetwork(input.path, args, timeoutMs);
-    return {
-      ok: true, operation: "fetch", remote: redactGitText(remote), nonInteractive: true, timeoutMs,
-      durationMs: Date.now() - startedAt,
-      summary: redactGitText([stdout, stderr].filter(Boolean).join("\n")).trim().slice(0, 32 * 1024),
-    };
-  } catch (error) {
-    const detail = error as Error & { code?: string | number; killed?: boolean; stderr?: string; stdout?: string };
-    const output = redactGitText([detail.stderr, detail.stdout, detail.message].filter(Boolean).join("\n")).trim().slice(0, 32 * 1024);
-    throw new Error(`Git fetch ${detail.code === "ETIMEDOUT" || detail.killed ? `timed out after ${timeoutMs}ms` : `failed with exit ${detail.code ?? "unknown"}`}${output ? `: ${output}` : ""}`);
-  }
+  return executionBoundary(async submit => {
+    const timeoutMs = input.timeoutMs ?? 60_000;
+    const remote = input.remote ?? "origin";
+    const args = ["fetch"];
+    if (input.prune) args.push("--prune");
+    if (input.tags) args.push("--tags");
+    args.push("--", remote, ...(input.refspecs ?? []));
+    const startedAt = Date.now();
+    try {
+      const { stdout, stderr } = await runGitNetwork(input.path, args, timeoutMs, submit);
+      return {
+        ok: true, operation: "fetch", remote: redactGitText(remote), nonInteractive: true, timeoutMs,
+        durationMs: Date.now() - startedAt,
+        summary: redactGitText([stdout, stderr].filter(Boolean).join("\n")).trim().slice(0, 32 * 1024),
+      };
+    } catch (error) {
+      const detail = error as Error & { code?: string | number; killed?: boolean; stderr?: string; stdout?: string };
+      const output = redactGitText([detail.stderr, detail.stdout, detail.message].filter(Boolean).join("\n")).trim().slice(0, 32 * 1024);
+      throw new Error(`Git fetch ${detail.code === "ETIMEDOUT" || detail.killed ? `timed out after ${timeoutMs}ms` : `failed with exit ${detail.code ?? "unknown"}`}${output ? `: ${output}` : ""}`);
+    }
+  });
 }
 
 export async function repoPull(input: { path: string; remote?: string; refspecs?: string[]; ffOnly?: boolean; tags?: boolean; timeoutMs?: number }) {
-  const timeoutMs = input.timeoutMs ?? 60_000;
-  const args = ["pull"];
-  if (input.ffOnly !== false) args.push("--ff-only");
-  if (input.tags) args.push("--tags");
-  if (input.remote) args.push("--", input.remote, ...(input.refspecs ?? []));
-  else if (input.refspecs?.length) throw new Error("Git pull refspecs require an explicit remote");
-  const safeArgs = await gitPrefix(input.path);
-  const beforeHead = await git(input.path, ["rev-parse", "HEAD"], true);
-  const startedAt = Date.now();
-  try {
-    const { stdout, stderr } = await runGitNetwork(input.path, args, timeoutMs);
-    const afterHead = await git(input.path, ["rev-parse", "HEAD"], true);
-    return {
-      ok: true, operation: "pull", remote: input.remote ? redactGitText(input.remote) : null,
-      nonInteractive: true, timeoutMs, durationMs: Date.now() - startedAt, beforeHead, afterHead,
-      headChanged: beforeHead !== afterHead,
-      summary: redactGitText([stdout, stderr].filter(Boolean).join("\n")).trim().slice(0, 32 * 1024),
-    };
-  } catch (error) {
-    const detail = error as Error & { code?: string | number; killed?: boolean; stderr?: string; stdout?: string };
-    const output = redactGitText([detail.stderr, detail.stdout, detail.message].filter(Boolean).join("\n")).trim().slice(0, 32 * 1024);
-    throw new Error(`Git pull ${detail.code === "ETIMEDOUT" || detail.killed ? `timed out after ${timeoutMs}ms` : `failed with exit ${detail.code ?? "unknown"}`}${output ? `: ${output}` : ""}`);
-  }
+  return executionBoundary(async submit => {
+    const timeoutMs = input.timeoutMs ?? 60_000;
+    const args = ["pull"];
+    if (input.ffOnly !== false) args.push("--ff-only");
+    if (input.tags) args.push("--tags");
+    if (input.remote) args.push("--", input.remote, ...(input.refspecs ?? []));
+    else if (input.refspecs?.length) throw new Error("Git pull refspecs require an explicit remote");
+    const safeArgs = await gitPrefix(input.path);
+    const beforeHead = await git(input.path, ["rev-parse", "HEAD"], true);
+    const startedAt = Date.now();
+    try {
+      const { stdout, stderr } = await runGitNetwork(input.path, args, timeoutMs, submit);
+      const afterHead = await git(input.path, ["rev-parse", "HEAD"], true);
+      return {
+        ok: true, operation: "pull", remote: input.remote ? redactGitText(input.remote) : null,
+        nonInteractive: true, timeoutMs, durationMs: Date.now() - startedAt, beforeHead, afterHead,
+        headChanged: beforeHead !== afterHead,
+        summary: redactGitText([stdout, stderr].filter(Boolean).join("\n")).trim().slice(0, 32 * 1024),
+      };
+    } catch (error) {
+      const detail = error as Error & { code?: string | number; killed?: boolean; stderr?: string; stdout?: string };
+      const output = redactGitText([detail.stderr, detail.stdout, detail.message].filter(Boolean).join("\n")).trim().slice(0, 32 * 1024);
+      throw new Error(`Git pull ${detail.code === "ETIMEDOUT" || detail.killed ? `timed out after ${timeoutMs}ms` : `failed with exit ${detail.code ?? "unknown"}`}${output ? `: ${output}` : ""}`);
+    }
+  });
 }
 
 export async function repoPush(input: { path: string; remote?: string; refspecs?: string[]; setUpstream?: boolean; tags?: boolean; dryRun?: boolean; timeoutMs?: number }) {
-  const timeoutMs = input.timeoutMs ?? 60_000;
-  const remote = input.remote ?? "origin";
-  const args = ["push"];
-  if (input.setUpstream) args.push("--set-upstream");
-  if (input.tags) args.push("--tags");
-  if (input.dryRun) args.push("--dry-run");
-  args.push("--", remote, ...(input.refspecs ?? []));
-  const startedAt = Date.now();
-  try {
-    const { stdout, stderr } = await runGitNetwork(input.path, args, timeoutMs);
-    return {
-      ok: true, operation: "push", remote: redactGitText(remote), nonInteractive: true, timeoutMs,
-      durationMs: Date.now() - startedAt,
-      summary: redactGitText([stdout, stderr].filter(Boolean).join("\n")).trim().slice(0, 32 * 1024),
-    };
-  } catch (error) {
-    const detail = error as Error & { code?: string | number; killed?: boolean; stderr?: string; stdout?: string };
-    const output = redactGitText([detail.stderr, detail.stdout, detail.message].filter(Boolean).join("\n")).trim().slice(0, 32 * 1024);
-    throw new Error(`Git push ${detail.code === "ETIMEDOUT" || detail.killed ? `timed out after ${timeoutMs}ms` : `failed with exit ${detail.code ?? "unknown"}`}${output ? `: ${output}` : ""}`);
-  }
+  return executionBoundary(async submit => {
+    const timeoutMs = input.timeoutMs ?? 60_000;
+    const remote = input.remote ?? "origin";
+    const args = ["push"];
+    if (input.setUpstream) args.push("--set-upstream");
+    if (input.tags) args.push("--tags");
+    if (input.dryRun) args.push("--dry-run");
+    args.push("--", remote, ...(input.refspecs ?? []));
+    const startedAt = Date.now();
+    try {
+      const { stdout, stderr } = await runGitNetwork(input.path, args, timeoutMs, submit);
+      return {
+        ok: true, operation: "push", remote: redactGitText(remote), nonInteractive: true, timeoutMs,
+        durationMs: Date.now() - startedAt,
+        summary: redactGitText([stdout, stderr].filter(Boolean).join("\n")).trim().slice(0, 32 * 1024),
+      };
+    } catch (error) {
+      const detail = error as Error & { code?: string | number; killed?: boolean; stderr?: string; stdout?: string };
+      const output = redactGitText([detail.stderr, detail.stdout, detail.message].filter(Boolean).join("\n")).trim().slice(0, 32 * 1024);
+      throw new Error(`Git push ${detail.code === "ETIMEDOUT" || detail.killed ? `timed out after ${timeoutMs}ms` : `failed with exit ${detail.code ?? "unknown"}`}${output ? `: ${output}` : ""}`);
+    }
+  });
 }

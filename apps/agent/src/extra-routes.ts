@@ -1,3 +1,5 @@
+import { coordinationFields } from "../../../packages/protocol/src/coordination.ts";
+import { registerCoordinationRoutes } from "./coordination-routes.ts";
 import { JobStartKeyError } from "./job-start-dedup.ts";
 import { powerSchema,wakeSchema } from "../../../packages/protocol/src/power.ts";
 import { sendWake } from "../../../packages/shared/src/wake.ts";
@@ -37,6 +39,7 @@ const searchResultsSchema = z.object({
 const searchStopSchema = z.object({ id: z.string().min(1) });
 const searchRemoveSchema = z.object({ id: z.string().min(1), force: z.boolean().optional() });
 const serviceSchema = z.object({
+  ...coordinationFields,
   name: z.string().min(1), action: z.enum(["status", "start", "stop", "restart", "enable", "disable"]),
   scope: z.enum(["user", "system"]).optional(),
 });
@@ -49,14 +52,17 @@ const metricsQuerySchema = z.object({ profile: z.enum(["light", "full"]).optiona
 const repoCheckpointSchema = z.object(repoCheckpointFields);
 const repoGitPathSchema = z.object({ path: z.string().min(1), gitPath: z.string().min(1) });
 const repoFetchSchema = z.object({
+  ...coordinationFields,
   path: z.string().min(1), remote: z.string().min(1).optional(), refspecs: z.array(z.string().min(1)).max(32).optional(),
   prune: z.boolean().optional(), tags: z.boolean().optional(), timeoutMs: z.number().int().positive().max(600_000).optional(),
 });
 const repoPullSchema = z.object({
+  ...coordinationFields,
   path: z.string().min(1), remote: z.string().min(1).optional(), refspecs: z.array(z.string().min(1)).max(32).optional(),
   ffOnly: z.boolean().optional(), tags: z.boolean().optional(), timeoutMs: z.number().int().positive().max(600_000).optional(),
 });
 const repoPushSchema = z.object({
+  ...coordinationFields,
   path: z.string().min(1), remote: z.string().min(1).optional(), refspecs: z.array(z.string().min(1)).max(32).optional(),
   setUpstream: z.boolean().optional(), tags: z.boolean().optional(), dryRun: z.boolean().optional(),
   timeoutMs: z.number().int().positive().max(600_000).optional(),
@@ -92,6 +98,7 @@ function searchInputFailure(reply: FastifyReply, error: unknown) {
 }
 
 export function registerExtraRoutes(app: FastifyInstance): void {
+  const coordinate = registerCoordinationRoutes(app);
   app.post("/v1/search", async (request, reply) => {
     const parsed = searchSchema.safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: "invalid_request", details: parsed.error.issues });
@@ -125,7 +132,7 @@ export function registerExtraRoutes(app: FastifyInstance): void {
   app.post("/v1/service", async (request, reply) => {
     const parsed = serviceSchema.safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: "invalid_request", details: parsed.error.issues });
-    return serviceManage(parsed.data);
+    return coordinate("/v1/service", request, reply, parsed.data, () => serviceManage(parsed.data));
   });
   app.post("/v1/service/logs", async (request, reply) => {
     const parsed = logsSchema.safeParse(request.body);
@@ -177,12 +184,12 @@ export function registerExtraRoutes(app: FastifyInstance): void {
   });
   app.post("/v1/repo/checkpoint", async (request, reply) => {
     const parsed = repoCheckpointSchema.safeParse(request.body); if (!parsed.success) return reply.code(400).send({ error: "invalid_request", details: parsed.error.issues });
-    return repoCheckpoint(parsed.data);
+    return coordinate("/v1/repo/checkpoint", request, reply, parsed.data, () => repoCheckpoint(parsed.data));
   });
   app.post("/v1/repo/apply-patch", async (request, reply) => {
     const parsed = z.object(repoPatchFields).safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: "invalid_request", details: parsed.error.issues });
-    return repoApplyPatch(parsed.data);
+    return coordinate("/v1/repo/apply-patch", request, reply, parsed.data, () => repoApplyPatch(parsed.data));
   });
   app.post("/v1/fs/edit", async (request, reply) => {
     const parsed = z.object(fsEditFields).safeParse(request.body);
@@ -196,17 +203,17 @@ export function registerExtraRoutes(app: FastifyInstance): void {
   app.post("/v1/repo/fetch", async (request, reply) => {
     const parsed = repoFetchSchema.safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: "invalid_request", details: parsed.error.issues });
-    return repoFetch(parsed.data);
+    return coordinate("/v1/repo/fetch", request, reply, parsed.data, () => repoFetch(parsed.data));
   });
   app.post("/v1/repo/pull", async (request, reply) => {
     const parsed = repoPullSchema.safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: "invalid_request", details: parsed.error.issues });
-    return repoPull(parsed.data);
+    return coordinate("/v1/repo/pull", request, reply, parsed.data, () => repoPull(parsed.data));
   });
   app.post("/v1/repo/push", async (request, reply) => {
     const parsed = repoPushSchema.safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: "invalid_request", details: parsed.error.issues });
-    return repoPush(parsed.data);
+    return coordinate("/v1/repo/push", request, reply, parsed.data, () => repoPush(parsed.data));
   });
   app.post("/v1/processes/find", async (request, reply) => { const p=processFindSchema.safeParse(request.body); if(!p.success)return reply.code(400).send({error:"invalid_request",details:p.error.issues}); return findProcesses(p.data); });
   app.get("/v1/docker/snapshot", async () => dockerSnapshot());
@@ -214,7 +221,7 @@ export function registerExtraRoutes(app: FastifyInstance): void {
   app.post("/v1/deploy/run", async (request, reply) => {
     const parsed = z.object(deployFields).safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: "invalid_request", details: parsed.error.issues });
-    try { return await deployRun(parsed.data); }
+    try { return await coordinate("/v1/deploy/run", request, reply, parsed.data, () => deployRun(parsed.data)); }
     catch (error) {
       if (error instanceof JobRecoveryError) return reply.code(500).send(error.toJSON());
       if (error instanceof JobStartKeyError) return reply.code(409).send({ error: error.code, message: error.message, jobId: error.jobId });
@@ -240,7 +247,7 @@ export function registerExtraRoutes(app: FastifyInstance): void {
     request.raw.once("aborted", abort);
     reply.raw.once("close", disconnected);
     if (request.raw.aborted || reply.raw.destroyed) abort();
-    try { return await projectRun(parsed.data, controller.signal); }
+    try { return await coordinate("/v1/project/run", request, reply, parsed.data, () => projectRun(parsed.data, controller.signal)); }
     catch (error) {
       if (error instanceof JobRecoveryError) return reply.code(500).send(error.toJSON());
       if (error instanceof JobStartKeyError) return reply.code(409).send({ error: error.code, message: error.message, jobId: error.jobId });

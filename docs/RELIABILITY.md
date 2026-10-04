@@ -318,10 +318,141 @@ validated result proves client/UI/platform acceptance, which remains unknown.
 
 ## Remaining work
 
-R10 resource fencing, cross-session writer conflict handling and measured shared
-backpressure are not implemented by these changes. R11 still needs the complete
-negotiated MCP/SDK, client/session/transport and old/new deployment compatibility
-matrix, including real connector catalog refresh. R12 still needs native Windows
+R10 and R11 source contracts and the installed-SDK HTTP matrix are documented
+below. R12 still needs native Windows
 and physical-device qualification, exact release review/CI, supported rollout,
-recovery-copy checks, runtime identity and post-deployment functional evidence.
+recovery-copy checks, runtime identity, live connector catalog refresh and
+post-deployment functional evidence.
 Source tests and synthetic SIGKILL/I/O injection do not close those packages.
+
+## High-level resource coordination (R10)
+
+Agent high-level repository writes, service mutations, project execution and
+resource-identifiable deployments share a durable resource journal. Raw exec,
+raw filesystem/editor operations, job controls, service status and unrelated
+reads do not acquire a resource reservation. A deployment without `repoPath`
+or `cwd` has no identifiable resource and remains outside this coordination.
+
+Use `resource_coordination` with `action:"acquire"` and a repository/project path
+or service name. Pass its `token` as `coordination` to the high-level mutation.
+Without a supplied token, the current agent performs a one-shot reservation and
+base revalidation. `inspect` exposes the current writer/operation UUID,
+generation, observed base version, creation/update times and state. Conflicts
+return a bounded reason and the current record. `release` cancels a reservation;
+use `job_cancel` for an already-started job.
+
+The agent resolves symlinks, common Git directories (including linked worktrees) and service aliases before
+hashing the key. Records contain device, actual execution identity and canonical
+resource digests, not commands, paths, environment values or patches. The
+physical resource lock excludes execution identity so two identities cannot
+silently claim the same resource. Linux user-scoped services additionally include the
+user identity. Windows services are machine-wide: user/system scope aliases and
+caller identities share the same resource key. Keep one shared, absolute `RCMCP_COORDINATION_DIR` for agents on a
+device that need to coordinate across identities; defaults use
+`RCMCP_STATE_DIR/coordination`. Separate directories are separate coordination
+domains. Provision shared directory permissions and group inheritance externally,
+then set `RCMCP_COORDINATION_FILE_MODE=0660` on every participating agent. Journal
+replacements, budget slots and admission locks retain that mode regardless of
+process umask. Only `0600` (the private default) and `0660` are accepted. Existing
+directories and their ownership are never changed; existing private files need
+operator-managed migration before cross-identity sharing.
+
+A lease is only a reservation deadline (default 30 seconds, maximum 5 minutes).
+Every admission increments its persisted generation. Apply checks the operation
+UUID, generation, identity and freshly observed base. Repository bases include
+the symbolic HEAD target (or detached marker), refs, index and working contents.
+Bare repositories use the common Git directory, HEAD, refs and bounded repository
+metadata without worktree scans. Expired, released,
+replaced or stale tokens cannot apply. Owner override explicitly supplies the
+observed generation and current base digest and a fixed reason; the journal
+retains both writer IDs and the timestamp. It only replaces reservations,
+never active/uncertain effects, and does not bypass apply-time revalidation.
+
+Active operations do not expire. Durable job IDs remain associated with the
+resource across controller/agent restart. Subsequent coordination requests
+reconcile completed jobs; lost jobs and unverifiable effects remain blocked.
+Before `job_remove` deletes terminal metadata, it durably preserves a small
+`job-terminal-evidence` record in the job state directory. Reconciliation requires
+an exact journal token, associated job ID, device and execution identity. Missing
+or corrupt evidence remains fenced. Keep these tombstones with job-start keys in
+private backups; removal never authorizes replay.
+
+Product execution boundaries distinguish planning/validation failures from effect
+submission. An invocation-scoped no-effect proof releases only that invocation's
+exact matching active reservation, preserving its generation and base digest.
+Unknown errors after submission remain uncertain; error status alone is not proof.
+A crash between admission/effect/receipt is uncertainty, not permission to
+replay. Existing keyed retries still resolve the original derived command and
+validate its durable fingerprint before consulting mutable project state.
+Never delete journals to retry uncertain work. A foreground operation settles
+before release; cancellation without verified termination retains uncertainty.
+
+Admission is fail-fast, with four reserved/active/uncertain operation slots per device and
+four concurrent base probes per agent. Control/read requests use neither lane.
+There is no unbounded waiting queue. New-resource admission refuses a directory
+scan containing 512 journals; concurrent first admissions can overshoot this
+retention threshold. Each resource allows up to 32 override audit entries and
+each record is bounded to 16 KiB. Limits refuse admission instead of discarding
+fencing evidence. The four-slot device budget is atomic across processes.
+Atomic exclusive budget-slot files share that bound across coordinator processes.
+Short exclusive resource locks are held only during journal transitions, not
+while commands run. Expired reservations release their slots under their own
+resource fence. An orphan resource lock, missing/mismatched slot journal or corrupt slot is retained and blocks
+that resource/slot; other resources can use remaining slots. Private inspection
+is required; age/PID alone never clears uncertain evidence. Health and job
+controls remain available even when every slot is occupied.
+
+Base revalidation detects repository HEAD/refs/index and tracked/non-ignored
+file changes using bounded metadata/content hashing (4,096 entries, 64 MiB).
+Larger resources fail closed with `base_probe_limit`; use raw owner operations
+when deliberately working outside this bounded high-level contract. Non-Git
+projects cover immediate entries/files, not a recursive dependency snapshot.
+Service bases use the service manager's resolved status. Files ignored by Git,
+remote refs changed externally after the probe, arbitrary shell/deployment
+phase effects, detached descendants and external editors are not fenced by
+this protocol. Checks before dispatch reduce stale-base errors but do not
+provide a filesystem transaction or prevent an external edit after the last
+check. Command phases within an admitted deployment retain the resource until
+the job settles; they are not individually transactional commits.
+
+## MCP/SDK compatibility matrix (R11)
+
+The pinned SDK remains **1.30.0**. Authenticated HTTP health includes a bounded
+`compatibility` snapshot (last 32 observations): installed SDK version, catalog
+revision, session mode, response mode and the protocol version actually emitted
+by the SDK's initialize response. Legacy calls without initialize report
+`protocolVersion:null`/`not_negotiated`. A request header or documentation URL
+is not evidence of negotiated protocol. The observation adapter uses the SDK's
+public transport `send`; private registry reuse remains isolated in
+`sdk-tool-registry.ts`.
+
+| Client / server path | Supported behavior and qualification |
+| --- | --- |
+| Installed SDK client → production HTTP, stateful SSE (default) | Initialize, listTools, independent sessions, schema validation, result recovery, catalog rediscovery and cancellation |
+| Installed SDK client → production HTTP, stateful JSON | Same matrix; `RCMCP_MCP_JSON_RESPONSE=1` selects JSON responses |
+| Installed SDK client → production HTTP, stateless JSON/SSE | Initialize/discovery/results/recovery; `RCMCP_MCP_SESSION_MODE=stateless`; cross-request cancellation notifications have no persistent session to target |
+| Legacy HTTP without initialize | Existing stateless discovery/calls remain supported; negotiation is explicitly unknown |
+| Installed SDK in-memory client | Existing contract, output validation, recovery and durable batch regressions |
+| Stdio server | Negotiation observation uses the same adapter; transport/hardware qualification remains separate from the HTTP matrix |
+| ChatGPT connector/catalog cache | A new live ChatGPT session must rediscover changed schemas; automated SDK discovery does not certify that external cache |
+
+Catalog definitions are immutable for a running controller. Reconnect and call
+`listTools` after changing the controller release. The diagnostic catalog
+revision identifies this contract family; actual runtime SHA still identifies
+the release. No test in this matrix proves a live external client's UI accepted
+a result.
+
+| Agent combination | Gate / fallback |
+| --- | --- |
+| Current controller + current agent | `high-level-coordination-v1`, `utf8-byte-pages-v1`, `job-key-recovery-v1` advertised and checked for their operations |
+| Current controller + old agent missing coordination | Coordinated/resource-identifiable high-level mutations fail before dispatch with `agent_upgrade_required` |
+| Current controller + old agent missing UTF-8 byte-page semantics | UTF-8 file reads fail clearly; explicit base64 reads preserve access to exact bytes without assuming old UTF-8 cursors are safe |
+| Current controller + old agent missing durable key recovery | Durable batch checks every selected identity before any start; explicit legacy synchronous batch mode retains its documented limits |
+| Additive read endpoints absent on an old agent | Existing process/docker summary fallbacks use the compatible full read only on 404; no effect replay |
+| Old controller + current agent | Existing routes remain; agent high-level coordination adds receipts/conflicts. Old clients do not gain explicit reservation/override control |
+
+Roll out compatible agents first (including every configured execution
+identity), configure the shared coordination directory where needed, then
+upgrade the controller and refresh client catalogs. Preserve job/key and
+coordination state on rollback. This source matrix does not authorize an
+operational rollout or certify physical Windows/Android behavior.

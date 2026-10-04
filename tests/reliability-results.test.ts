@@ -31,6 +31,7 @@ async function harness(http = false, options?: ConstructorParameters<typeof Clie
   let calls = 0;
   const app = Fastify({ bodyLimit: 4 * 1024 * 1024 });
   app.post('/v1/exec', async (req, reply) => { calls++; const command = (req.body as any).command; if (command === 'exception') return reply.code(403).send({ code: 'EACCES', error: 'synthetic denied', credentials: 'must-not-leak' }); return receipt(command); });
+  app.get('/v1/info', async () => ({ runtime: { capabilities: ['utf8-byte-pages-v1'] } }));
   app.post('/v1/fs/read', async req => fsRead(req.body as any));
   app.post('/v1/fs/write', async req => fsWrite(req.body as any));
   const rows = [{ id: 'first', state: 'completed', startedAt: '2026-01-03', command: '😀'.repeat(70000) }, { id: 'second', state: 'completed', startedAt: '2026-01-02', command: 'small' }];
