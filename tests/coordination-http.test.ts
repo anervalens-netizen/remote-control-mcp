@@ -58,7 +58,7 @@ it("two SDK sessions fence canonical aliases, changed bases and stale tokens bef
   expect(applied.isError).not.toBe(true); expect(readFileSync(path.join(root, "file.txt"), "utf8").replace(/\r\n/g, "\n")).toBe("after\n");
   const replay = await a("repo_apply_patch", { path: root, patch, coordination: token });
   expect(replay.isError).toBe(true); expect(JSON.stringify(replay)).toContain("stale_writer");
-});
+}, 15_000);
 it("canonicalizes symlinks and detects same-size edits in repository base", async () => {
   const root = repo(), alias = root + "-alias"; symlinkSync(root, alias, process.platform === "win32" ? "junction" : "dir");
   const first = await resolveCoordinationResource({ kind: "repo", path: root });

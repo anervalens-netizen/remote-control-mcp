@@ -42,8 +42,8 @@ export function registerCoordinationRoutes(app: FastifyInstance) {
     const parsed = coordinationRequestSchema.safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: "invalid_request" });
     try {
-      const input = parsed.data, resource = await probe(input.resource);
       await reconcile();
+      const input = parsed.data, resource = await probe(input.resource);
       if (input.action === "inspect") return coordinator.inspect(resource);
       if (input.action === "release") {
         if (!input.token || input.token.resourceId !== coordinator.resourceId(resource)) throw new CoordinationError("resource_token_required");

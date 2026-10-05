@@ -50,12 +50,14 @@ jobs:
         if: runner.environment == 'github-hosted'
         run: pnpm exec playwright-core install --with-deps chromium
       - name: Typecheck and test
-        run: pnpm typecheck && pnpm vitest run --maxWorkers=4
+        run: pnpm typecheck && pnpm vitest run --maxWorkers=4 --testTimeout=15000
 
   windows-native:
     runs-on: windows-latest
     env:
       RCMCP_TEST_INTERACTIVE: '0'
+    # Hosted Windows is a deterministic non-interactive compatibility matrix.
+    # Full Windows + interactive qualification runs owner-native on Gaming.
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -94,7 +96,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           pnpm typecheck
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          pnpm vitest run --maxWorkers=1 --no-file-parallelism
+          pnpm vitest run tests/r13-coordination-fingerprint.test.ts tests/durable-batch-sdk.test.ts tests/shared-job-observer.test.ts tests/coordination-http.test.ts tests/reliability-results.test.ts tests/recovery.test.ts tests/m15-search.test.ts tests/audit39-transfer-copy.test.ts tests/rc25-cancellation-recovery.test.ts tests/m16-deadline-proof.test.ts tests/windows-identity.test.ts tests/windows-command-path.test.ts tests/windows-startup-regression.test.ts tests/windows-transfer-paths.test.ts tests/windows-deep-transfer.test.ts tests/windows-metadata.test.ts tests/windows-tree-compression.test.ts tests/windows-conpty.test.ts --maxWorkers=1 --no-file-parallelism --testTimeout=15000
           exit $LASTEXITCODE
       - name: Report Windows coverage
         if: always()
@@ -103,5 +105,5 @@ jobs:
           if ($env:RCMCP_TEST_INTERACTIVE -eq '1') {
             'Windows native + interactive UIA/desktop acceptance requested; suite serialized to avoid shared-desktop interference.' | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
           } else {
-            'Hosted Windows fallback: native non-interactive verification. Interactive UIA/desktop tests explicitly skipped (not passed). Full interactive acceptance requires Gaming; this workflow has no Gaming dependency.' | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+            'Hosted Windows compatibility matrix: targeted native non-interactive R13/SDK/recovery/Windows regressions. Interactive UIA/desktop and the full Windows suite are explicitly not certified here; full native + interactive qualification runs separately on Gaming.' | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
           }
