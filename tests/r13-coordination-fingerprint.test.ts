@@ -6,11 +6,18 @@ import { resolveCoordinationResource } from "../apps/agent/src/coordination-reso
 import { coordinationToken, ResourceCoordinator } from "../apps/agent/src/coordination.ts";
 
 const gitProbeMutation = vi.hoisted(() => ({ submodule: "", armed: false, mutate: undefined as (() => void) | undefined, suppressDirtyRoot: "" }));
+function sameNativePath(left: string, right: string) {
+  const normalize = (value: string) => {
+    const resolved = path.resolve(value);
+    return process.platform === "win32" ? resolved.replaceAll("/", "\\").toLowerCase() : resolved;
+  };
+  return normalize(left) === normalize(right);
+}
 vi.mock("../apps/agent/src/repo.ts", async importOriginal => {
   const actual = await importOriginal<typeof import("../apps/agent/src/repo.ts")>();
   return { ...actual, gitRaw: async (...args: Parameters<typeof actual.gitRaw>) => {
     const result = await actual.gitRaw(...args);
-    if (gitProbeMutation.armed && args[0] === gitProbeMutation.submodule
+    if (gitProbeMutation.armed && sameNativePath(args[0], gitProbeMutation.submodule)
       && args[1][0] === "status" && args[1].includes("--porcelain=v2")) {
       gitProbeMutation.armed = false;
       gitProbeMutation.mutate?.();

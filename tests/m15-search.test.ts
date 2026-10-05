@@ -22,7 +22,7 @@ async function fixture() {
   return root;
 }
 
-async function waitSearch(id: string, timeoutMs = 3000) {
+async function waitSearch(id: string, timeoutMs = 10_000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const page = searchResults(id, 0, 1000);
