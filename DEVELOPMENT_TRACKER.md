@@ -44,3 +44,10 @@ Reusable requirements for high-level execution and connector compatibility:
 - Typed agent causes may be preserved in bounded error metadata, without inferring retry safety from an HTTP status alone.
 
 Implementation, review, CI and deployment state are tracked outside this public source guide.
+
+## Modern HTTP compatibility
+
+- Serve the modern protocol with the official SDK while retaining legacy sessions.
+- Preserve tool contracts, cancellation, progress and retained-result metadata across both paths.
+- Classify modern validation failures with the SDK; never bypass authentication or downgrade malformed envelopes.
+- Verify real connector traffic separately from synthetic protocol tests.

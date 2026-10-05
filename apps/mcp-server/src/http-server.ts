@@ -1,3 +1,6 @@
+import { isLegacyRequest } from "@modelcontextprotocol/server";
+import { toNodeHandler, toWebRequest } from "@modelcontextprotocol/node";
+import { createModernMcpHandler } from "./modern-http.ts";
 import { SdkCompatibilityDiagnostics } from "./sdk-compatibility.ts";
 import { monitorEventLoopDelay } from "node:perf_hooks";
 import { diagnosticsFor } from "./tool-diagnostics.ts";
@@ -89,6 +92,7 @@ export function createMcpHttpServer(client: AgentClient, options: {
     ?? (process.env.RCMCP_ALLOWED_ORIGINS ?? "").split(",").map((value) => value.trim()).filter(Boolean);
   const allowedOrigins = new Set(configuredOrigins.map(normalizeOrigin).filter((value): value is string => value !== null));
   let requestsTotal = 0;
+  let modernRequests = 0;
   let requestsInFlight = 0;
   let requestsFailed = 0;
   let requestDurationMsTotal = 0;
@@ -109,6 +113,12 @@ export function createMcpHttpServer(client: AgentClient, options: {
     }
     return server;
   }
+
+  const modern = createModernMcpHandler(() => {
+    if (sharedToolRegistry === undefined) build();
+    return sharedToolRegistry!;
+  });
+  const handleModern = toNodeHandler(modern);
 
   const cleanup = setInterval(() => {
     for (const [id, session] of sessions) {
@@ -171,7 +181,7 @@ export function createMcpHttpServer(client: AgentClient, options: {
             failed: requestsFailed,
             averageDurationMs: requestsTotal > 1 ? Math.round(requestDurationMsTotal / Math.max(1, requestsTotal - requestsInFlight)) : 0,
           },
-          compatibility: compatibility.snapshot(),
+          compatibility: { ...compatibility.snapshot(), modern: { protocolVersion: "2026-07-28", requests: modernRequests } },
           toolDiagnostics: diagnosticsFor(client).snapshot(),
           eventLoop: { unit: "milliseconds", resolutionMs: 20, meanMs: Number.isFinite(eventLoop.mean) ? eventLoop.mean / 1e6 : null, p95Ms: eventLoop.percentile(95) / 1e6, p99Ms: eventLoop.percentile(99) / 1e6, maxMs: eventLoop.max / 1e6 },
           memory: { rssBytes: memory.rss, heapUsedBytes: memory.heapUsed, heapTotalBytes: memory.heapTotal, externalBytes: memory.external },
@@ -194,6 +204,11 @@ export function createMcpHttpServer(client: AgentClient, options: {
       if (!["POST", "GET", "DELETE"].includes(req.method ?? "")) { res.writeHead(405).end("method_not_allowed"); return; }
 
       const body = req.method === "POST" ? await readBody(req, maxBodyBytes) : undefined;
+      if (!await isLegacyRequest(await toWebRequest(req, body), body)) {
+        modernRequests++;
+        await handleModern(req, res, body);
+        return;
+      }
       const id = req.headers["mcp-session-id"];
       if (id !== undefined && typeof id !== "string") throw new HttpInputError(400, "invalid_session_id", "mcp-session-id must be a single string");
       let session = id ? sessions.get(id) : undefined;
@@ -258,6 +273,7 @@ export function createMcpHttpServer(client: AgentClient, options: {
   eventLoop.enable();
   http.once("close", () => {
     clearInterval(cleanup);
+    void modern.close();
     eventLoop.disable();
     for (const session of sessions.values()) void session.server.close();
     sessions.clear();
