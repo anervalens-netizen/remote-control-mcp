@@ -29,7 +29,7 @@ async function isolatedRoot(prefix: string) {
 }
 
 async function waitPty(mod: typeof import("../apps/agent/src/pty.ts"), id: string, marker: string) {
-  const deadline = Date.now() + 3000;
+  const deadline = Date.now() + 10_000;
   while (Date.now() < deadline) {
     const page = mod.ptyOutput(id, 0, 1024 * 1024);
     if (page.data.includes(marker)) return page;

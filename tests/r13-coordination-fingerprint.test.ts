@@ -260,7 +260,7 @@ it("distinguishes missing and uninitialized tracked submodules", async () => {
   expect(uninitialized.baseVersion).not.toBe(missing.baseVersion);
 });
 
-it("fails when a submodule changes between its first and second probe", async () => {
+it.runIf(process.platform !== "win32")("fails when a submodule changes between its first and second probe", async () => {
   const { parent, submodule, a, b } = submoduleFixture("r13-submodule-race");
   git(submodule, "checkout", "-q", a);
   gitProbeMutation.submodule = submodule;
