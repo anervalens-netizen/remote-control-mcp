@@ -169,3 +169,11 @@ recovery and stateful cancellation. Upgrade agents before the controller, then
 reconnect clients and refresh `listTools`. Unsupported high-level/UTF-8/durable
 batch combinations fail clearly; base64 and compatible control reads remain
 available. See the [supported matrix and rollout order](docs/RELIABILITY.md#mcp-sdk-compatibility-matrix-r11).
+
+## HTTP protocol compatibility
+
+The HTTP endpoint serves MCP 2026-07-28 through the official v2 handler and keeps the existing v1 session transport for initialization-based clients. Authentication and origin checks run before either path. The SDK classifier selects the wire protocol; malformed modern envelopes are not silently downgraded.
+
+Both paths reuse the same registered tool handlers, output contracts and controller-memory recovery store. The modern adapter maps request cancellation, progress notifications, request IDs and caller recovery metadata into the existing handlers. Modern requests do not create legacy sessions. Authenticated health diagnostics expose the modern protocol revision and request count alongside the legacy SDK diagnostics.
+
+Transport changes must pass the official modern client, legacy session/cancellation, tool catalog parity and cross-request result-recovery regressions. Native device capabilities remain independent of the HTTP protocol.
