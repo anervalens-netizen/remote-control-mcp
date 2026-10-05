@@ -56,7 +56,9 @@ jobs:
     runs-on: windows-latest
     env:
       RCMCP_TEST_INTERACTIVE: '0'
-    timeout-minutes: 15
+    # Hosted Windows is materially slower than owner-native Gaming/Work.
+    # This is a CI wall-clock budget only; product deadlines are unchanged.
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
