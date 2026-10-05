@@ -13,7 +13,9 @@ describe('public CI isolation and truthful platform coverage', () => {
     expect(workflow).not.toContain('vars.RCMCP_CI_RUNNER');
     expect(workflow).not.toContain('pull_request_target');
     expect(workflow).toMatch(/RCMCP_TEST_INTERACTIVE: '0'/);
-    expect(workflow).toContain('Interactive UIA/desktop tests explicitly skipped (not passed)');
+    expect(workflow).toContain('Hosted Windows compatibility matrix: targeted native non-interactive');
+    expect(workflow).toContain('full Windows suite are explicitly not certified here');
+    expect(workflow).toContain('full native + interactive qualification runs separately on Gaming');
   });
   it('keeps untrusted pull requests on hosted runners and resolves actions to full commits', () => {
     const dir=new URL('../.github/workflows/',import.meta.url);
