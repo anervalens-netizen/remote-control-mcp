@@ -39,7 +39,7 @@ export function jobCgroupIsolation() {
 
 export async function admitJobUnit(id: string, launcher: string, payload: string): Promise<void> {
   try {
-    await exec("systemd-run", [...managerArgs(), "--quiet", "--expand-environment=no", "--unit", jobUnitName(id), ...propertyArgs,
+    await exec("systemd-run", [...managerArgs(), "--quiet", "--expand-environment=no", "--collect", "--unit", jobUnitName(id), ...propertyArgs,
       "--property", "RemainAfterExit=yes", "--description", `RCMCP durable job ${id}`,
       "--", process.execPath, launcher, payload], { timeout: 10_000, maxBuffer: 4096 });
   } catch {
@@ -49,6 +49,7 @@ export async function admitJobUnit(id: string, launcher: string, payload: string
 }
 
 export type JobUnit = { active: string; sub: string; pid: number; invocation: string; cgroup: string };
+export type JobUnitCleanupInspection = { state: "present"; unit: JobUnit } | { state: "absent" } | { state: "unknown" };
 function inspectionArgs(id: string) {
   return [...managerArgs(), "show", jobUnitName(id), "--property=LoadState,ActiveState,SubState,MainPID,ExecMainPID,InvocationID,ControlGroup,Description,Transient"];
 }
@@ -68,6 +69,20 @@ export async function inspectJobUnitAsync(id: string): Promise<JobUnit | null> {
   if (process.platform !== "linux") return null;
   try { return parseUnit(id, (await exec("systemctl", inspectionArgs(id), { timeout: 2000, maxBuffer: 8192 })).stdout); }
   catch { return null; }
+}
+
+/** Cleanup needs to distinguish a confirmed missing unit from a transient bus
+ * or permission error. Ordinary reconciliation intentionally retains its
+ * historical nullable contract. */
+export async function inspectJobUnitForCleanup(id: string): Promise<JobUnitCleanupInspection> {
+  if (process.platform !== "linux") return { state: "unknown" };
+  let output = "";
+  try { output = (await exec("systemctl", inspectionArgs(id), { timeout: 2000, maxBuffer: 8192 })).stdout; }
+  catch (error) { output = typeof (error as { stdout?: unknown }).stdout === "string" ? (error as { stdout: string }).stdout : ""; }
+  const unit = output ? parseUnit(id, output) : null;
+  if (unit) return { state: "present", unit };
+  if (/^LoadState=not-found$/m.test(output)) return { state: "absent" };
+  return { state: "unknown" };
 }
 
 /** cgroup.events includes nested cgroups. Absence is useful only after durable

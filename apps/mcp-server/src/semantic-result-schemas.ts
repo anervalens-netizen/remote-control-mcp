@@ -41,7 +41,8 @@ const jobFollow = z.object({
   terminal: z.boolean(), waitExpired: z.boolean(), cursor: z.object({ stdout: nonnegative, stderr: nonnegative }),
   stdout: z.object({ nextOffset: nonnegative, eof: z.boolean(), data: z.string() }).passthrough(),
   stderr: z.object({ nextOffset: nonnegative, eof: z.boolean(), data: z.string() }).passthrough(),
-  outputComplete: z.boolean(), ...route,
+  outputComplete: z.boolean(), waitedMs: nonnegative.optional(), retryAfterMs: nonnegative, retryGuidance: z.string(),
+  requestedWaitMs: nonnegative.optional(), effectiveWaitMs: nonnegative.optional(), waitClamped: z.boolean().optional(), ...route,
 }).passthrough();
 
 const androidDeviceInfo = z.object({

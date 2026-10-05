@@ -17,6 +17,17 @@ const routedText = (legacyValue: unknown, context: AgentEndpointContext, structu
 
 type JobStartInput = { command: string; cwd?: string; env?: Record<string, string>; idempotencyKey?: string };
 type PlannedJob = { device: string; target: AgentEndpointContext };
+const mcpJobWaitDefaultMs = 20_000;
+const mcpJobWaitMaxMs = 20_000;
+const mcpJobWaitRetryAfterMs = 750;
+function mcpJobWaitResult(value: unknown, requestedWaitMs: number, effectiveWaitMs: number) {
+  return {
+    ...(value as Record<string, unknown>),
+    ...(requestedWaitMs !== effectiveWaitMs ? { requestedWaitMs, effectiveWaitMs, waitClamped: true } : {}),
+    retryAfterMs: mcpJobWaitRetryAfterMs,
+    retryGuidance: "On waitExpired, wait at least retryAfterMs, then call job_wait again with the returned cursor; do not alternate rapid job_status polls.",
+  };
+}
 
 async function startPlannedJobs(client: AgentClient, planned: PlannedJob[], input: JobStartInput, concurrency?: number) {
   return mapLimit(planned, concurrency, async ({ device, target: context }) => {
@@ -74,18 +85,20 @@ export function registerJobTools(server: McpServer, client: AgentClient): void {
       return routedText({ ...output, encoding: typeof output.encoding === "string" ? output.encoding : requestedEncoding }, target);
     });
   server.registerTool("job_wait", {
-    description: "Wait for a durable job to finish (default) or produce output (until=output). Returns status/progress, both streams and a resumable byte cursor. Default wait 30s; timeout/cancellation stops waiting, not the job. Repeat with cursor until outputComplete=true.",
+    description: "Wait up to 20s for a durable job to finish (default) or produce output (until=output). Longer requests are clamped and report requested/effective waits. A normal expiry is a successful terminal=false, waitExpired=true result. After retryAfterMs, repeat job_wait with its cursor; do not alternate rapid job_status polls. Caller cancellation or transport disconnect stops only this wait, never the durable job.",
     inputSchema: executionInputSchema({ device: z.string().min(1), ...jobFollowFields }),
   }, async ({ device, context, identity, elevation, ...input }, extra) => {
     const target = resolveExecutionContext(client, device, { context, identity, elevation }, "system");
-    return routedText(await client.jobFollow(device, input, target, extra.signal), target);
+    const requestedWaitMs = input.waitMs ?? mcpJobWaitDefaultMs, effectiveWaitMs = Math.min(requestedWaitMs, mcpJobWaitMaxMs);
+    return routedText(mcpJobWaitResult(await client.jobFollow(device, { ...input, waitMs: effectiveWaitMs }, target, extra.signal), requestedWaitMs, effectiveWaitMs), target);
   });
   server.registerTool("job_output_since", {
     description: "Read both durable job streams since the previous cursor with current status/progress in one call. UTF-8 boundaries are preserved; pages can exceed maxBytes by up to 3 bytes for one code point. Base64 preserves arbitrary bytes. Repeat until outputComplete=true.",
     inputSchema: executionInputSchema({ device: z.string().min(1), ...jobFollowFields }),
   }, async ({ device, context, identity, elevation, ...input }, extra) => {
     const target = resolveExecutionContext(client, device, { context, identity, elevation }, "system");
-    return routedText(await client.jobFollow(device, { ...input, waitMs: input.waitMs ?? 0, until: "output" }, target, extra.signal), target);
+    const requestedWaitMs = input.waitMs ?? 0, effectiveWaitMs = Math.min(requestedWaitMs, mcpJobWaitMaxMs);
+    return routedText(mcpJobWaitResult(await client.jobFollow(device, { ...input, waitMs: effectiveWaitMs, until: "output" }, target, extra.signal), requestedWaitMs, effectiveWaitMs), target);
   });
   server.registerTool("job_cancel", { description: "Cancel a durable job and its process tree.", inputSchema: executionInputSchema({ device: z.string().min(1), id: z.string().min(1) }) },
     async ({ device, id, context, identity, elevation }) => {

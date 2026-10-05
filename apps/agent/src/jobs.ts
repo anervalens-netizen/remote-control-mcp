@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { admitJobUnit, inspectJobUnit, inspectJobUnitAsync, jobCgroupEmpty, jobCgroupIsolation, jobUnitName, releaseJobUnit, stopJobUnit, systemdLauncherContent, type JobUnit } from "./job-systemd.ts";
+import { admitJobUnit, inspectJobUnit, inspectJobUnitAsync, inspectJobUnitForCleanup, jobCgroupEmpty, jobCgroupIsolation, jobUnitName, releaseJobUnit, stopJobUnit, systemdLauncherContent, type JobUnit } from "./job-systemd.ts";
 import { coordinationDevice, coordinationIdentity } from "./coordination.ts";
 import { JobHistoryIndex, decodeHistoryCursor, type HistoryQuery } from "./job-history-index.ts";
 import { JobStartDeduplicator, JobStartKeyError, type JobStartInput } from "./job-start-dedup.ts";
@@ -48,6 +48,7 @@ type JobMeta = {
   systemdUnit?: string;
   systemdInvocation?: string;
   systemdCgroup?: string;
+  systemdIdentityMismatch?: boolean;
 };
 
 export type { JobRecoveryDetails } from "../../../packages/protocol/src/job-recovery.ts";
@@ -138,6 +139,16 @@ const live = new Map<string, ChildProcess>();
 const windowsLive = new Set<string>();
 const cancelInFlight = new Map<string, Promise<ReturnType<typeof summary>>>();
 const lineageWatchers = new Map<string, ProcessLineageTracker>();
+type TerminalUnitCleanupTask = { id: string; invocation: string; attempts: number };
+const TERMINAL_UNIT_CLEANUP_CONCURRENCY = 4;
+const TERMINAL_UNIT_CLEANUP_QUEUE_LIMIT = 1024;
+const TERMINAL_UNIT_CLEANUP_CACHE_LIMIT = 16_384;
+const terminalUnitCleanupQueue: TerminalUnitCleanupTask[] = [];
+const terminalUnitCleanupPending = new Set<string>();
+const terminalUnitCleanupFinished = new Set<string>();
+const terminalUnitCleanupFinishedOrder: string[] = [];
+const terminalUnitCleanupRetry = new Map<string, { attempts: number; retryAfter: number }>();
+let terminalUnitCleanupActive = 0;
 const EXIT_MARKER_GRACE_MS = 1500;
 const exitMarkerHelperContent = `import { closeSync, existsSync, fsyncSync, openSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
@@ -391,9 +402,12 @@ function refreshSystemdJob(meta: JobMeta, unit: JobUnit | null = inspectJobUnit(
     }
   } catch { /* An absent receipt never permits replay. */ }
   if (unit && meta.systemdInvocation && unit.invocation !== meta.systemdInvocation) {
+    meta.systemdIdentityMismatch = true;
     meta.recoveryReason = "systemd_unit_identity_mismatch";
   } else {
     if (unit) {
+      delete meta.systemdIdentityMismatch;
+      if (meta.recoveryReason === "systemd_unit_identity_mismatch" || meta.recoveryReason === "systemd_cancel_identity_unverified") delete meta.recoveryReason;
       if (unit.invocation) meta.systemdInvocation = unit.invocation;
       if (unit.pid > 0 && !meta.pid) {
         meta.pid = unit.pid;
@@ -403,20 +417,21 @@ function refreshSystemdJob(meta: JobMeta, unit: JobUnit | null = inspectJobUnit(
     }
     const empty = meta.systemdCgroup ? jobCgroupEmpty(meta.id, meta.systemdCgroup) : null;
     const transitioning = unit && ["activating", "deactivating", "reloading"].includes(unit.active);
+    const identityMismatchUnresolved = meta.systemdIdentityMismatch === true;
     // Even an exit marker cannot prove completion while any cgroup member lives.
-    if (!transitioning && empty === true && meta.pid > 0) {
+    if (!identityMismatchUnresolved && !transitioning && empty === true && meta.pid > 0) {
       if (meta.state === "cancelling") {
         if (cancelInFlight.has(meta.id)) {
           // The stop RPC still owns the terminal write. Do not race it with a
           // transient lost result between kernel cleanup and stop completion.
           if (JSON.stringify(meta) !== before) writeMeta(meta);
           return meta;
-        } else if (meta.terminationVerified === true) {
+        } else if (!identityMismatchUnresolved) {
           meta.state = "cancelled";
+          meta.terminationVerified = true;
+          meta.terminationVerification = "identity_bound_job";
+          meta.terminationVerificationScope = "whole_tree";
           delete meta.recoveryReason;
-        } else {
-          meta.state = "lost";
-          meta.recoveryReason ??= "systemd_cancellation_outcome_unverified";
         }
       } else if (existsSync(meta.exitPath)) {
         const parsed = Number(readFileSync(meta.exitPath, "utf8").trim());
@@ -427,10 +442,10 @@ function refreshSystemdJob(meta: JobMeta, unit: JobUnit | null = inspectJobUnit(
         meta.state = "lost";
         meta.recoveryReason = "runner_exited_without_durable_marker";
       }
-      meta.finishedAt ??= new Date().toISOString();
-    } else if (!unit) {
+      if (!["running", "cancelling"].includes(meta.state)) meta.finishedAt ??= new Date().toISOString();
+    } else if (!identityMismatchUnresolved && !unit) {
       meta.recoveryReason = "systemd_unit_lookup_uncertain";
-    } else if (meta.state === "running") {
+    } else if (unit && meta.state === "running") {
       if (unit.active === "failed") meta.recoveryReason = "systemd_service_failed_outcome_unverified";
       else if (existsSync(meta.exitPath)) meta.recoveryReason = "exit_marker_runner_still_active";
       else if (meta.pid > 0) delete meta.recoveryReason;
@@ -438,6 +453,65 @@ function refreshSystemdJob(meta: JobMeta, unit: JobUnit | null = inspectJobUnit(
   }
   if (JSON.stringify(meta) !== before) writeMeta(meta);
   return meta;
+}
+
+function finishTerminalUnitCleanup(id: string): void {
+  terminalUnitCleanupRetry.delete(id);
+  if (terminalUnitCleanupFinished.has(id)) return;
+  terminalUnitCleanupFinished.add(id);
+  terminalUnitCleanupFinishedOrder.push(id);
+  if (terminalUnitCleanupFinishedOrder.length > TERMINAL_UNIT_CLEANUP_CACHE_LIMIT) {
+    terminalUnitCleanupFinished.delete(terminalUnitCleanupFinishedOrder.shift()!);
+  }
+}
+
+function deferTerminalUnitCleanup(task: TerminalUnitCleanupTask): void {
+  const attempts = task.attempts + 1;
+  const cooldown = Math.min(60_000, 1000 * 2 ** Math.min(attempts - 1, 6));
+  terminalUnitCleanupRetry.set(task.id, { attempts, retryAfter: Date.now() + cooldown });
+}
+
+async function runTerminalUnitCleanup(task: TerminalUnitCleanupTask): Promise<void> {
+  // A unit observed while status was reconciled may be replaced before its
+  // queued cleanup worker runs. Always inspect at the point of action.
+  const inspection = await inspectJobUnitForCleanup(task.id);
+  if (inspection.state === "absent") { finishTerminalUnitCleanup(task.id); return; }
+  if (inspection.state === "unknown") { deferTerminalUnitCleanup(task); return; }
+  if (!inspection.unit.invocation || inspection.unit.invocation !== task.invocation) {
+    // A replaced or unverifiable deterministic unit must never be stopped.
+    finishTerminalUnitCleanup(task.id);
+    return;
+  }
+  try { await releaseJobUnit(task.id); }
+  catch { deferTerminalUnitCleanup(task); return; }
+  const after = await inspectJobUnitForCleanup(task.id);
+  if (after.state === "absent") finishTerminalUnitCleanup(task.id);
+  else if (after.state === "present" && after.unit.invocation !== task.invocation) finishTerminalUnitCleanup(task.id);
+  else deferTerminalUnitCleanup(task);
+}
+
+function drainTerminalUnitCleanup(): void {
+  while (terminalUnitCleanupActive < TERMINAL_UNIT_CLEANUP_CONCURRENCY && terminalUnitCleanupQueue.length > 0) {
+    const task = terminalUnitCleanupQueue.shift()!;
+    terminalUnitCleanupActive++;
+    void runTerminalUnitCleanup(task).catch(() => deferTerminalUnitCleanup(task)).finally(() => {
+      terminalUnitCleanupActive--;
+      terminalUnitCleanupPending.delete(task.id);
+      drainTerminalUnitCleanup();
+    });
+  }
+}
+
+function scheduleTerminalSystemdUnitCleanup(meta: JobMeta): void {
+  if (!meta.systemdUnit || meta.state === "running" || meta.state === "cancelling" || !meta.systemdInvocation) return;
+  if (meta.systemdUnit !== jobUnitName(meta.id) || terminalUnitCleanupFinished.has(meta.id) || terminalUnitCleanupPending.has(meta.id)) return;
+  const retry = terminalUnitCleanupRetry.get(meta.id);
+  if (retry && Date.now() < retry.retryAfter) return;
+  if (terminalUnitCleanupPending.size >= TERMINAL_UNIT_CLEANUP_QUEUE_LIMIT) return;
+  terminalUnitCleanupRetry.delete(meta.id);
+  terminalUnitCleanupPending.add(meta.id);
+  terminalUnitCleanupQueue.push({ id: meta.id, invocation: meta.systemdInvocation, attempts: retry?.attempts ?? 0 });
+  drainTerminalUnitCleanup();
 }
 
 function refresh(meta: JobMeta): JobMeta {
@@ -600,7 +674,7 @@ function summary(meta: JobMeta, reconciled = false) {
   else stopJobLineage(fresh.id);
   // The durable ledger remains private; identity, recovery, termination and
   // progress fields keep their existing public meanings on every platform.
-  const { trackedProcesses, ...publicMeta } = fresh;
+  const { trackedProcesses, systemdIdentityMismatch: _systemdIdentityMismatch, ...publicMeta } = fresh;
   return {
     ...publicMeta,
     trackedProcessCount: trackedProcesses?.length ?? 0,
@@ -944,9 +1018,14 @@ async function reconcileWindowsJob(meta: JobMeta): Promise<JobMeta> {
 export async function jobStatusAsync(id: string) {
   const meta = readMeta(id);
   if (meta.systemdUnit) {
-    if (meta.state !== "running" && meta.state !== "cancelling") return summary(meta, true);
+    if (meta.state !== "running" && meta.state !== "cancelling") {
+      scheduleTerminalSystemdUnitCleanup(meta);
+      return summary(readMeta(id), true);
+    }
     const unit = await inspectJobUnitAsync(id);
-    return summary(refreshSystemdJob(readMeta(id), unit), true);
+    const refreshed = refreshSystemdJob(readMeta(id), unit);
+    scheduleTerminalSystemdUnitCleanup(refreshed);
+    return summary(readMeta(id), true);
   }
   if (process.platform === "win32" && (meta.state === "running" || meta.state === "cancelling")) {
     await reconcileWindowsJob(meta);
@@ -1061,10 +1140,14 @@ async function cancelSystemdJob(meta: JobMeta) {
   if (meta.state !== "running" && meta.state !== "cancelling") return summary(meta, true);
   if (meta.systemdUnit !== jobUnitName(meta.id) || !unit || !unit.invocation
     || (meta.systemdInvocation && unit.invocation !== meta.systemdInvocation)) {
-    meta.recoveryReason = "systemd_cancel_identity_unverified";
+    if (unit?.invocation && meta.systemdInvocation && unit.invocation !== meta.systemdInvocation) {
+      meta.systemdIdentityMismatch = true;
+    }
+    meta.recoveryReason = meta.systemdIdentityMismatch ? "systemd_unit_identity_mismatch" : "systemd_cancel_identity_unverified";
     writeMeta(meta);
     return summary(meta, true);
   }
+  delete meta.systemdIdentityMismatch;
   meta.systemdInvocation = unit.invocation;
   meta.systemdCgroup = unit.cgroup || meta.systemdCgroup;
   meta.state = "cancelling";
@@ -1088,6 +1171,7 @@ async function cancelSystemdJob(meta: JobMeta) {
     current.recoveryReason = "systemd_cancellation_unverified";
   }
   writeMeta(current);
+  scheduleTerminalSystemdUnitCleanup(current);
   return summary(current, true);
 }
 

@@ -38,13 +38,16 @@ async function settled<T>(items: T[], fn: (item: T, index: number) => Promise<un
 
 export function registerHighLevelTools(server: McpServer, client: AgentClient): void {
   server.registerTool("batch_exec", {
-    description: "Start a recoverable durable batch with a caller-known operationKey. Reuse only recovers; it never starts remaining items. Use batch_recover and job_output. Explicit mode=legacy retains synchronous exec without restart recovery.",
+    description: "Start a recoverable durable batch when operationKey is supplied (or mode=durable is explicit). Reuse only recovers; it never starts remaining items. A stale client omitting both operationKey and mode uses bounded deprecated synchronous compatibility with restartRecoverable=false. Explicit mode=legacy is also synchronous and never accepts operationKey.",
     inputSchema: z.object({
       operationKey: z.string().min(1).max(200).optional(), mode: z.enum(["durable", "legacy"]).optional(),
       items: z.array(executionInputSchema({ device: z.string().min(1), ...execRequestFields })).min(1).max(64),
       concurrency: z.number().int().min(1).max(32).optional(),
     }).strict(),
-    outputSchema: withErrorOutputContract(z.union([batchResultSchema(execResultSchema).extend({ operationId: z.string().optional(), restartRecoverable: z.literal(false).optional() }), durableBatchSchema.extend(resultMetadataFields)])),
+    outputSchema: withErrorOutputContract(z.union([batchResultSchema(execResultSchema).extend({
+      operationId: z.string().optional(), restartRecoverable: z.literal(false).optional(),
+      compatibility: z.object({ mode: z.literal("legacy"), deprecated: z.literal(true), reason: z.literal("operation_key_and_mode_omitted") }).strict().optional(),
+    }), durableBatchSchema.extend(resultMetadataFields)])),
   }, async ({ items, concurrency, operationKey, mode }, extra) => {
     // Resolve every route before dispatch. One invalid/unavailable target must not
     // allow earlier items to produce effects before the batch is rejected.
@@ -53,7 +56,8 @@ export function registerHighLevelTools(server: McpServer, client: AgentClient): 
       const target = resolveExecutionContext(client, device, { context, identity, elevation }, "system");
       return { index, device, target, identity: executionLabel(target), request };
     });
-    if (mode !== "legacy") {
+    const effectiveMode = mode ?? (operationKey ? "durable" : "legacy");
+    if (effectiveMode === "durable") {
       if (!operationKey) throw new Error("batch_operation_key_required: durable batch requires operationKey before effects");
       const result = await configuredBatchStore(client).start(operationKey, planned, concurrency, extra.signal);
       return structured(result);
@@ -75,7 +79,11 @@ export function registerHighLevelTools(server: McpServer, client: AgentClient): 
     const errors = routed.filter((entry): entry is Extract<(typeof routed)[number], { ok: false }> => !entry.ok);
     const summary = summarizeExecution(routed);
     const enriched = routed.map(entry => entry.ok ? { ...entry, result: { ...(entry.result as Record<string, unknown>), ...executionFacts(entry.result as Record<string, unknown>) } } : entry);
-    return structured({ operationId, restartRecoverable: false, items: enriched, errors, partial: errors.length > 0, summary, executionPartial: summary.exit_zero !== summary.total }, enriched);
+    return structured({
+      operationId, restartRecoverable: false,
+      ...(mode === undefined ? { compatibility: { mode: "legacy" as const, deprecated: true as const, reason: "operation_key_and_mode_omitted" as const } } : {}),
+      items: enriched, errors, partial: errors.length > 0, summary, executionPartial: summary.exit_zero !== summary.total,
+    }, enriched);
   });
 
   server.registerTool("batch_recover", {

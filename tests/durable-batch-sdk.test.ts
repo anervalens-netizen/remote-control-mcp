@@ -12,8 +12,13 @@ import { registerTools } from "../apps/mcp-server/src/all-tools.ts";
 const closers: Array<() => Promise<unknown>> = [];
 afterEach(async () => { for (const close of closers.splice(0).reverse()) await close(); });
 it.each([false, true])("SDK advertises and accepts durable batch/recovery contracts (HTTP=%s)", async http => {
-  const agent = Fastify(); let effects = 0;
+  const agent = Fastify(); let effects = 0, legacyEffects = 0;
   agent.get("/v1/info", async () => ({ runtime: { capabilities: ["job-key-recovery-v1"] } }));
+  agent.post("/v1/exec", async () => {
+    legacyEffects++;
+    return { code: 0, signal: null, stdout: "synthetic", stderr: "", durationMs: 1, timedOut: false,
+      stdoutBytes: 9, stderrBytes: 0, stdoutTruncated: false, stderrTruncated: false };
+  });
   agent.post("/v1/jobs/start", async () => ({ id: `job-${++effects}`, state: "completed", exitCode: 7 }));
   agent.post("/v1/jobs/status", async req => ({ id: (req.body as any).id, state: "completed", exitCode: 7 }));
   const url = await agent.listen({ host: "127.0.0.1", port: 0 }); closers.push(() => agent.close());
@@ -34,8 +39,16 @@ it.each([false, true])("SDK advertises and accepts durable batch/recovery contra
     const catalog = await client.listTools(); expect(catalog.tools.find(t => t.name === "batch_recover")?.outputSchema).toBeDefined(); return client;
   }
   const first = await connect(), key = randomUUID();
-  const missing = await first.callTool({ name: "batch_exec", arguments: { items: [{ device: "fixture", command: "synthetic" }] } });
-  expect(missing.isError).toBe(true); expect(effects).toBe(0);
+  // Represents a connector using a cached pre-R03 schema with neither new field.
+  const stale = await first.callTool({ name: "batch_exec", arguments: { items: [{ device: "fixture", command: "synthetic" }] } });
+  expect(stale.isError).not.toBe(true);
+  expect(stale.structuredContent).toMatchObject({ restartRecoverable: false,
+    compatibility: { mode: "legacy", deprecated: true, reason: "operation_key_and_mode_omitted" } });
+  expect(legacyEffects).toBe(1); expect(effects).toBe(0);
+  const missing = await first.callTool({ name: "batch_exec", arguments: { mode: "durable", items: [{ device: "fixture", command: "must-not-run" }] } });
+  expect(missing.isError).toBe(true); expect(legacyEffects).toBe(1); expect(effects).toBe(0);
+  const invalid = await first.callTool({ name: "batch_exec", arguments: { mode: "legacy", operationKey: "invalid", items: [{ device: "fixture", command: "must-not-run" }] } });
+  expect(invalid.isError).toBe(true); expect(legacyEffects).toBe(1); expect(effects).toBe(0);
   const result = await first.callTool({ name: "batch_exec", arguments: { operationKey: key, items: [{ device: "fixture", command: "synthetic" }] } });
   expect(result.isError).not.toBe(true);
   expect(result.structuredContent).toMatchObject({ items: [{ state: "failed", exitCode: 7, verification: "unknown" }], clientAcceptance: "unknown" });

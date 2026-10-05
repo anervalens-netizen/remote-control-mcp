@@ -174,8 +174,8 @@ rollout and live acceptance remain separate from source tests.
 
 ## Durable batch recovery (R03)
 
-`batch_exec` defaults to durable mode and requires an `operationKey` chosen by
-its caller before effects. Configure the controller's existing `RCMCP_STATE_DIR`
+`batch_exec` selects durable mode when its caller supplies an `operationKey`, and
+explicit `mode:"durable"` requires that key before effects. Configure the controller's existing `RCMCP_STATE_DIR`
 as an absolute private path and preserve it across releases. The controller
 uses `batch-operations` below that directory and the agent's existing keyed-job
 reservations and output files. Every route is resolved before dispatch; every
@@ -221,9 +221,11 @@ mode before effects rather than silently ignored.
 For deliberate compatibility, `mode:"legacy"` retains synchronous batch exec,
 its existing timeouts and output contract, plus a visible generated operation
 ID and `restartRecoverable:false`. It does not accept an operation key. Its
-memory result recovery cannot survive restart. Existing clients must explicitly
-select this mode or migrate to keyed durable jobs; omission of a key in default
-mode fails before effects. Owner/raw exec and execution identities are unchanged.
+memory result recovery cannot survive restart. A stale-schema client that omits
+both `operationKey` and `mode` receives the same synchronous behavior plus a
+bounded `compatibility` deprecation indicator. This is never restart-recoverable
+and the server does not generate a hidden key. Owner/raw exec and execution
+identities are unchanged.
 
 Manifests are at most 128 KiB, batches at most 64 items, and permanent operation
 slots at most 512 per configured state directory. Aggregate admission/persistence
@@ -338,8 +340,13 @@ admitted with `systemd-run --user` as separate transient services named only
 Admission uses `Type=exec`, does not wait for the workload to finish, and obtains
 the actual service MainPID. The service has `Restart=no`,
 `KillMode=control-group`, bounded TERM-to-KILL escalation and
-`RemainAfterExit=yes` for recovery inspection. Retained units are released when
-their job is removed. The user-agent template uses `KillMode=control-group` so
+`RemainAfterExit=yes` for recovery inspection and `--collect` for unloading once
+inactive. After durable terminal metadata exists, status/history reconciliation
+best-effort stops and resets a matching-invocation transient unit; job JSON,
+stdout/stderr, exit markers, terminal evidence and idempotency reservations stay
+untouched. Cleanup errors never change the terminal result, and old terminal
+units are visited only through bounded selected status/history reads rather than
+an unbounded global sweep. The user-agent template uses `KillMode=control-group` so
 non-durable helpers are cleaned on stop while separate durable services survive.
 This fixes the cgroup boundary; it does not raise memory limits or rely on
 `OOMPolicy=continue`. An OOM policy targeting the entire user slice can still
@@ -371,10 +378,12 @@ under disk loss or arbitrary power failure.
 Status/wait/output recovery uses the durable launcher receipt, service state,
 MainPID/invocation and recursive cgroup population. An exit marker cannot make
 a job terminal while background descendants still occupy its cgroup. Verified
-cancel stops only the UUID-bound transient unit and requires successful stop
-plus kernel evidence of an empty cgroup. An unavailable manager, identity
-mismatch or incomplete stop remains unverified. A crash between stop and the
-terminal metadata write can recover as `lost`, not falsely verified cancelled.
+cancel stops only the UUID-bound transient unit. A successful stop plus kernel
+evidence of an empty cgroup verifies immediately; if the stop RPC times out,
+later authoritative empty-cgroup evidence for the same stored unit identity
+reconciles a persisted `cancelling` job to verified `cancelled`. A populated
+cgroup, unavailable identity, or invocation mismatch remains non-terminal and
+unverified. Unit lookup failure alone never promotes a running job to cancelled.
 Legacy/non-systemd jobs retain their process-lineage cancellation fallback.
 Containment describes members of the job cgroup; privileged workloads that
 deliberately move work into unrelated services are outside this boundary.
@@ -475,10 +484,20 @@ is required; age/PID alone never clears uncertain evidence. Health and job
 controls remain available even when every slot is occupied.
 
 Base revalidation detects repository HEAD/refs/index and tracked/non-ignored
-file changes using bounded metadata/content hashing (4,096 entries, 64 MiB).
-Larger resources fail closed with `base_probe_limit`; use raw owner operations
-when deliberately working outside this bounded high-level contract. Non-Git
-projects cover immediate entries/files, not a recursive dependency snapshot.
+worktree changes. For Git repositories, index object IDs represent clean tracked
+content, every tracked path contributes worktree metadata, and dirty tracked,
+untracked or index-flagged paths are also content-hashed with before/after status
+and per-file change detection. File and symlink payloads use independently
+framed content hashes. Tracked gitlinks additionally record a distinct
+missing/uninitialized state or the initialized submodule's exact HEAD and dirty
+status, and are probed again before admission returns. This detects mode,
+filter-normalized and checked-out submodule changes that the parent Git status
+may classify identically. Clean repositories are not
+limited by tracked path count or tracked byte size. Non-Git projects cover only
+immediate entries/files, not a recursive dependency snapshot, and fail precisely
+with `non_git_base_entry_limit` above 4,096 entries or
+`non_git_base_content_limit` above 64 MiB. A reported `base_probe_limit` on the
+R12 implementation was this old fingerprint-size policy, not a stale lease.
 Service bases use the service manager's resolved status. Files ignored by Git,
 remote refs changed externally after the probe, arbitrary shell/deployment
 phase effects, detached descendants and external editors are not fenced by

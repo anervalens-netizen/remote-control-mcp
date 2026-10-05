@@ -1,9 +1,19 @@
 import { nativeCommand } from "../apps/agent/src/shell-quote.ts";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { afterEach, expect, it, vi } from "vitest";
 import { SharedJobObserver } from "../apps/agent/src/shared-job-observer.ts";
 import { jobStart, jobRemove } from "../apps/agent/src/jobs.ts";
-import { jobFollow, jobObservers } from "../apps/agent/src/job-follow.ts";
+import { JOB_WAIT_DEFAULT_MS, JOB_WAIT_MAX_MS, jobFollow, jobObservers, jobWaitPolicy } from "../apps/agent/src/job-follow.ts";
+import { registerJobTools } from "../apps/mcp-server/src/job-tools.ts";
+import type { AgentClient } from "../apps/mcp-server/src/agent-client.ts";
 afterEach(() => vi.useRealTimers());
+it("defaults and clamps one MCP wait below gateway deadlines", () => {
+  expect(jobWaitPolicy()).toEqual({ requestedWaitMs: JOB_WAIT_DEFAULT_MS, effectiveWaitMs: 20_000, waitClamped: false });
+  expect(JOB_WAIT_MAX_MS).toBe(20_000);
+  expect(jobWaitPolicy(50_000)).toEqual({ requestedWaitMs: 50_000, effectiveWaitMs: 20_000, waitClamped: true });
+});
 it.each([1, 10, 50])("%i followers share polls, cancellation releases one and slow readers do not queue", async count => {
   let reads = 0;
   const observers = new SharedJobObserver(async () => ({ state: "running", generation: ++reads }));
@@ -42,3 +52,35 @@ it("real durable output keeps independent byte cursors for 50 followers and disk
     expect(later.stdout.data).toBe("efghij"); expect(later.outputComplete).toBe(true);
   } finally { await jobRemove(job.id, true); }
 }, 15000);
+it("reports a clamped request and retry hint without cancelling a durable job", async () => {
+  const job = await jobStart({ command: nativeCommand([process.execPath, "-e", "process.stdout.write('done')"]) });
+  try {
+    const result = await jobFollow({ id: job.id, waitMs: 50_000 });
+    expect(result).toMatchObject({ terminal: true, requestedWaitMs: 50_000, effectiveWaitMs: 20_000,
+      waitClamped: true, retryAfterMs: 750 });
+  } finally { await jobRemove(job.id, true); }
+});
+it("clamps at the MCP boundary and returns a successful resumable expiry", async () => {
+  let forwarded: Record<string, unknown> | undefined;
+  const stream = { offset: 0, nextOffset: 4, totalBytes: 4, eof: true, data: "done", bytes: 4, encoding: "utf8" };
+  const agent = {
+    devices: [{ name: "fixture", url: "http://127.0.0.1:1" }],
+    configuredContexts: () => ({ system: true, user: false, desktop: false }),
+    jobFollow: async (_device: string, input: Record<string, unknown>) => {
+      forwarded = input;
+      return { id: "synthetic-job", state: "running", terminal: false, waitExpired: true, waitedMs: 20_000,
+        stdout: { ...stream, stream: "stdout" }, stderr: { ...stream, stream: "stderr", nextOffset: 0, totalBytes: 0, data: "", bytes: 0 },
+        cursor: { stdout: 4, stderr: 0 }, outputComplete: false };
+    },
+  } as unknown as AgentClient;
+  const server = new McpServer({ name: "r13-wait", version: "1" }); registerJobTools(server, agent);
+  const client = new Client({ name: "r13-wait", version: "1" }), [left, right] = InMemoryTransport.createLinkedPair();
+  try {
+    await Promise.all([server.connect(left), client.connect(right)]);
+    const result = await client.callTool({ name: "job_wait", arguments: { device: "fixture", id: "synthetic-job", waitMs: 50_000, cursor: { stdout: 0, stderr: 0 } } });
+    expect(result.isError).not.toBe(true);
+    expect(forwarded).toMatchObject({ id: "synthetic-job", waitMs: 20_000, cursor: { stdout: 0, stderr: 0 } });
+    expect(result.structuredContent).toMatchObject({ terminal: false, waitExpired: true, cursor: { stdout: 4, stderr: 0 },
+      requestedWaitMs: 50_000, effectiveWaitMs: 20_000, waitClamped: true, retryAfterMs: 750 });
+  } finally { await client.close(); await server.close(); }
+});
