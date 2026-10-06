@@ -35,6 +35,10 @@ function requireTransferCapability(info: Info, allowLegacyAgent?: boolean, role:
 
 function deadlineOptions(deadline: ReturnType<typeof createDeadline>): AgentRequestOptions {
   const timeoutMs = deadline.remainingMs();
+  // remainingMs() can expire the deadline before its timer callback runs.
+  // Do not dispatch another operation with an already-aborted signal (or 0,
+  // which otherwise means an explicitly disabled per-request timeout).
+  deadline.signal?.throwIfAborted();
   return { signal: deadline.signal, ...(timeoutMs === undefined ? {} : { timeoutMs }) };
 }
 
@@ -104,10 +108,11 @@ export async function transferFile(client: AgentClient, input: {
     signal?.throwIfAborted();
     const sourceContext = input.sourceContext ?? "system";
     const destinationContext = input.destinationContext ?? "system";
+    // Attach handlers before dispatch: a later synchronous deadline check may abort earlier requests.
     const [stat, destinationInfo, sourceInfo] = await Promise.all([
-      client.fsManage(input.sourceDevice, { operation: "stat", path: input.sourcePath }, sourceContext, requestOptions()) as Promise<StatResult>,
-      input.destinationPlatform === undefined || input.destinationSupportsPrivateStage === undefined ? client.info(input.destinationDevice, destinationContext, requestOptions()) as Promise<Info> : Promise.resolve({ platform: input.destinationPlatform, runtime: { transferStagingVersion: input.destinationSupportsPrivateStage ? 1 : 0 } } as Info),
-      input.sourceSupportsTransferMetadata === undefined || input.sourceSupportsVersionedRead === undefined ? client.info(input.sourceDevice, sourceContext, requestOptions()) as Promise<Info> : Promise.resolve({ runtime: { transferStagingVersion: input.sourceSupportsTransferMetadata ? 1 : 0, relaySourceVersion: input.sourceSupportsVersionedRead ? 1 : 0 } } as Info),
+      Promise.resolve().then(() => client.fsManage(input.sourceDevice, { operation: "stat", path: input.sourcePath }, sourceContext, requestOptions()) as Promise<StatResult>),
+      Promise.resolve().then(() => input.destinationPlatform === undefined || input.destinationSupportsPrivateStage === undefined ? client.info(input.destinationDevice, destinationContext, requestOptions()) as Promise<Info> : Promise.resolve({ platform: input.destinationPlatform, runtime: { transferStagingVersion: input.destinationSupportsPrivateStage ? 1 : 0 } } as Info)),
+      Promise.resolve().then(() => input.sourceSupportsTransferMetadata === undefined || input.sourceSupportsVersionedRead === undefined ? client.info(input.sourceDevice, sourceContext, requestOptions()) as Promise<Info> : Promise.resolve({ runtime: { transferStagingVersion: input.sourceSupportsTransferMetadata ? 1 : 0, relaySourceVersion: input.sourceSupportsVersionedRead ? 1 : 0 } } as Info)),
     ]);
     if (!stat.isFile) throw new Error(`Source is not a file: ${input.sourcePath}`);
 
@@ -128,7 +133,7 @@ export async function transferFile(client: AgentClient, input: {
     const modern = supportsPrivateStage(destinationInfo);
     const legacy = !modern || !supportsPrivateStage(sourceInfo);
     if (input.transport === "direct") {
-      const timeoutMs = deadline.remainingMs();
+      const timeoutMs = requestOptions().timeoutMs;
       const result = await client.directTransfer(input.sourceDevice, input.destinationDevice, {
         sourcePath: input.sourcePath, destinationPath: input.destinationPath,
         expectedBytes: stat.size,
@@ -252,7 +257,10 @@ export async function syncDirectory(client: AgentClient, input: {
   signal?.throwIfAborted();
   const sourceContext = input.sourceContext ?? "system";
   const destinationContext = input.destinationContext ?? "system";
-  const [sourceInfo, destinationInfo] = await Promise.all([client.info(input.sourceDevice, sourceContext, requestOptions()), client.info(input.destinationDevice, destinationContext, requestOptions())]) as [Info, Info];
+  const [sourceInfo, destinationInfo] = await Promise.all([
+    Promise.resolve().then(() => client.info(input.sourceDevice, sourceContext, requestOptions())),
+    Promise.resolve().then(() => client.info(input.destinationDevice, destinationContext, requestOptions())),
+  ]) as [Info, Info];
   signal?.throwIfAborted();
   const srcPath = sourceInfo.platform === "win32" ? path.win32 : path.posix;
   const dstPath = destinationInfo.platform === "win32" ? path.win32 : path.posix;
@@ -288,9 +296,10 @@ export async function syncDirectory(client: AgentClient, input: {
   if (files.length > 0 && input.transport !== "direct") requireRelaySource(sourceInfo);
   phase = "directories";
   const ensureDirectory = async (pathname: string) => {
+    const options = requestOptions();
     mutationAttempted = true;
     directoryAttempts.push(pathname);
-    const receipt = await client.fsManage(input.destinationDevice, { operation: "mkdir", path: pathname, recursive: true }, destinationContext, requestOptions()) as { ok?: boolean };
+    const receipt = await client.fsManage(input.destinationDevice, { operation: "mkdir", path: pathname, recursive: true }, destinationContext, options) as { ok?: boolean };
     if (receipt?.ok === false) throw new Error("Destination directory creation was not completed");
     directoryCompletions.push(pathname);
   };

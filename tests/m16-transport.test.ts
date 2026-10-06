@@ -119,9 +119,14 @@ describe("M16 transport remediation", () => {
   });
 
   it("applies the same relay deadline to nested reads before activation", async () => {
+    vi.useFakeTimers();
     let readSignal: AbortSignal | undefined;
+    let initialSignal: AbortSignal | undefined;
+    let reads = 0;
     let writes = 0;
     let moves = 0;
+    let readStarted!: () => void;
+    const reading = new Promise<void>(resolve => { readStarted = resolve; });
     const client = {
       info: async () => ({ platform: "linux", runtime: { transferStagingVersion: 1, relaySourceVersion: 1 } }),
       fsManage: async (_device: string, input: { operation: string }) => {
@@ -130,18 +135,98 @@ describe("M16 transport remediation", () => {
         if (input.operation === "transfer-finalize") moves += 1;
         return { ok: true };
       },
-      fsRead: async (_device: string, _input: unknown, _context: unknown, options?: { signal?: AbortSignal }) => {
+      fsRead: async (_device: string, input: { length?: number }, _context: unknown, options?: { signal?: AbortSignal }) => {
+        reads += 1;
+        options?.signal?.throwIfAborted();
+        if (input.length === 0) {
+          initialSignal = options?.signal;
+          return { path: "/source", data: "", encoding: "base64", bytesRead: 0, nextOffset: 0, eof: false, totalBytes: 1, sourceVersion: "1:1:1:0:0", modifiedAt: "2020-01-01T00:00:00.000Z", posixMode: 0o600 };
+        }
         readSignal = options?.signal;
+        readStarted();
         return await new Promise<never>((_resolve, reject) => options?.signal?.addEventListener("abort", () => reject(options.signal?.reason ?? new DOMException("aborted", "AbortError")), { once: true }));
       },
       fsWrite: async () => { writes += 1; return { ok: true }; },
     };
-    await expect(transferFile(client as any, {
+    const rejected = expect(transferFile(client as any, {
       sourceDevice: "source", sourcePath: "/source", destinationDevice: "destination", destinationPath: "/destination", timeoutMs: 20,
     })).rejects.toThrow();
+    await reading;
+    expect(readSignal).toBe(initialSignal);
+    await vi.advanceTimersByTimeAsync(19);
+    expect(readSignal?.aborted).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    await rejected;
     expect(readSignal?.aborted).toBe(true);
+    expect(reads).toBe(2);
     expect(writes).toBe(0);
     expect(moves).toBe(0);
+  });
+
+  it.each(["relay", "direct"] as const)("does not dispatch a source read when the deadline expires during preflight", async transport => {
+    vi.useFakeTimers();
+    let reads = 0;
+    let mutations = 0;
+    const client = {
+      info: async () => ({ platform: "linux", runtime: { transferStagingVersion: 1, relaySourceVersion: 1 } }),
+      fsManage: async (_device: string, input: { operation: string }) => {
+        if (input.operation !== "stat") { mutations += 1; throw new Error("unexpected mutation"); }
+        // Model an event-loop stall: wall time expires before the timer callback runs.
+        await Promise.resolve();
+        vi.setSystemTime(Date.now() + 21);
+        return { isFile: true, size: 1 };
+      },
+      fsRead: async () => { reads += 1; return {}; },
+      directTransfer: async () => { mutations += 1; return {}; },
+    };
+    await expect(transferFile(client as any, {
+      sourceDevice: "source", sourcePath: "/source", destinationDevice: "destination", destinationPath: "/destination", timeoutMs: 20, transport,
+    })).rejects.toMatchObject({ name: "TimeoutError" });
+    expect(reads).toBe(0);
+    expect(mutations).toBe(0);
+  });
+
+  it.each([transferFile, syncDirectory])("observes earlier preflight rejections when a later dispatch expires (%s)", async transfer => {
+    vi.useFakeTimers();
+    let requests = 0;
+    const pending = (_device: string, ...args: any[]) => {
+      requests++;
+      const options = args.at(-1) as { signal: AbortSignal };
+      vi.setSystemTime(Date.now() + 21);
+      return new Promise((_resolve, reject) => {
+        options.signal.addEventListener("abort", () => reject(options.signal.reason), { once: true });
+      });
+    };
+    const client = { info: pending, fsManage: pending };
+    await expect(transfer(client as any, {
+      sourceDevice: "source", sourcePath: "/source", destinationDevice: "destination", destinationPath: "/destination", timeoutMs: 20,
+    })).rejects.toMatchObject({ name: "TimeoutError" });
+    await Promise.resolve();
+    expect(requests).toBe(1);
+  });
+
+  it("does not report a directory mutation when its dispatch deadline guard rejects", async () => {
+    vi.useFakeTimers();
+    let preflightDone = false, mutations = 0;
+    const client = {
+      info: async () => ({ platform: "linux", runtime: {
+        get transferStagingVersion() {
+          if (preflightDone) vi.setSystemTime(Date.now() + 21);
+          return 1;
+        },
+        relaySourceVersion: 1,
+      } }),
+      fsManage: async (_device: string, input: { operation: string }) => {
+        if (input.operation === "stat") return { isDirectory: true };
+        mutations++;
+        return { ok: true };
+      },
+      fsList: async () => { preflightDone = true; return []; },
+    };
+    await expect(syncDirectory(client as any, {
+      sourceDevice: "source", sourcePath: "/source", destinationDevice: "destination", destinationPath: "/destination", timeoutMs: 20,
+    })).rejects.toMatchObject({ name: "TimeoutError" });
+    expect(mutations).toBe(0);
   });
 
   it("rejects Windows collisions and invalid names before destination mutation", async () => {
