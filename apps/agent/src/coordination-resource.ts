@@ -72,7 +72,7 @@ export async function resolveCoordinationResource(input: CoordinationResource): 
   const gitlinkPaths = new Set<string>();
   const contentHashedPaths = new Set<string>();
   const flaggedTrackedPaths = new Set<string>();
-  const gitAuthority: Array<{ args: string[]; code: number; stdout: string; stdin?: string }> = [];
+  const gitAuthority: Array<{ args: string[]; code: number; stdout?: string; stdoutHash?: string; stdin?: string }> = [];
   if (repository) {
     const head = await gitRaw(root, ["symbolic-ref", "-q", "HEAD"], { allowNonZero: true });
     if (head.code !== 0 && head.code !== 1) throw new CoordinationError("base_probe_failed");
@@ -126,7 +126,7 @@ export async function resolveCoordinationResource(input: CoordinationResource): 
       if (batch) attributeBatches.push(batch);
       for (const trackedInput of attributeBatches) {
         const attributes = await gitRaw(root, attributeArgs, { stdin: trackedInput });
-        gitAuthority.push({ args: attributeArgs, code: attributes.code, stdout: attributes.stdout, stdin: trackedInput });
+        gitAuthority.push({ args: attributeArgs, code: attributes.code, stdoutHash: createHash("sha256").update(attributes.stdout).digest("hex"), stdin: trackedInput });
         digest.update(JSON.stringify(["worktree-attributes", attributes.code, attributes.stdout]));
         const fields = attributes.stdout.split("\0");
         if (fields.at(-1) === "") fields.pop();
@@ -231,7 +231,7 @@ export async function resolveCoordinationResource(input: CoordinationResource): 
   }
   for (const authority of gitAuthority) {
     const after = await gitRaw(root, authority.args, { allowNonZero: true, ...(authority.stdin !== undefined ? { stdin: authority.stdin } : {}) });
-    if (after.code !== authority.code || after.stdout !== authority.stdout) throw new CoordinationError("base_changed_during_probe");
+    if (after.code !== authority.code || (authority.stdoutHash === undefined ? after.stdout !== authority.stdout : createHash("sha256").update(after.stdout).digest("hex") !== authority.stdoutHash)) throw new CoordinationError("base_changed_during_probe");
   }
   for (const snapshot of snapshots) {
     const after = await lstat(snapshot.file, { bigint: true }).catch(error => { if (error.code === "ENOENT") return null; throw error; });

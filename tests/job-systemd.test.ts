@@ -3,7 +3,8 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as systemd from "../apps/agent/src/job-systemd.ts";
-import { jobCancel, jobHistoryPage, jobStart, jobStartKeyStatus, jobStatusAsync } from "../apps/agent/src/jobs.ts";
+import { jobCancel, jobHistoryPage, jobStart, jobStartKeyStatus, jobStatusAsync, jobStatusSnapshot } from "../apps/agent/src/jobs.ts";
+import * as processes from "../apps/agent/src/process-identity.ts";
 import { runtimeStatus } from "../apps/agent/src/runtime.ts";
 
 afterEach(() => vi.restoreAllMocks());
@@ -148,7 +149,8 @@ describe("durable systemd admission contracts", () => {
   });
 
   it("bounds deferred retries during manager outages without removing receipts", async () => {
-    vi.spyOn(Date, "now").mockReturnValue(1_800_000_000_000);
+    const realNow = Date.now();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(realNow - 120_000);
     const inspect = vi.spyOn(systemd, "inspectJobUnitForCleanup").mockResolvedValue({ state: "unknown" });
     const jobsRoot = path.join(process.env.RCMCP_STATE_DIR!, "jobs"), ids: string[] = [];
     for (let i = 0; i < 1025; i++) {
@@ -161,12 +163,49 @@ describe("durable systemd admission contracts", () => {
       }));
       await jobStatusAsync(id);
     }
-    await vi.waitFor(() => expect(inspect).toHaveBeenCalledTimes(1025));
+    expect(inspect.mock.calls.length).toBeGreaterThan(1000);
+    const beforeRepeat = inspect.mock.calls.length;
     await jobStatusAsync(ids[0]!);
     await jobStatusAsync(ids.at(-1)!);
+    expect(inspect.mock.calls.filter(([id]) => id === ids[0])).toHaveLength(1);
+    expect(inspect).toHaveBeenCalledTimes(beforeRepeat);
+    clock.mockReturnValue(realNow);
+    inspect.mockResolvedValue({ state: "absent" });
+    await jobStatusAsync(ids[0]!);
     await vi.waitFor(() => expect(inspect.mock.calls.filter(([id]) => id === ids[0])).toHaveLength(2));
-    expect(inspect.mock.calls.filter(([id]) => id === ids.at(-1))).toHaveLength(1);
+    for (const id of ids) await jobStatusAsync(id);
     expect(ids.every(id => existsSync(path.join(jobsRoot, id + ".json")))).toBe(true);
+  });
+
+  it("persists successful-stop evidence until delayed cgroup emptiness", async () => {
+    vi.spyOn(systemd, "jobCgroupIsolation").mockReturnValue({ ready: true, reason: "fixture" });
+    vi.spyOn(systemd, "admitJobUnit").mockResolvedValue();
+    const unit = { active: "active", sub: "running", pid: 23456, invocation: "confirmed-stop", cgroup: "" };
+    vi.spyOn(systemd, "inspectJobUnitAsync").mockImplementation(async id => ({ ...unit, cgroup: "/synthetic/" + systemd.jobUnitName(id) }));
+    let empty = false;
+    vi.spyOn(systemd, "jobCgroupEmpty").mockImplementation(() => empty);
+    vi.spyOn(systemd, "stopJobUnit").mockResolvedValue(true);
+    vi.spyOn(systemd, "inspectJobUnitForCleanup").mockResolvedValue({ state: "absent" });
+    const job = await jobStart({ command: "synthetic never executed", idempotencyKey: "confirmed-stop-delayed-empty" });
+    expect(await jobCancel(job.id)).toMatchObject({ state: "cancelling", terminationVerified: false });
+    const stored = JSON.parse(readFileSync(path.join(process.env.RCMCP_STATE_DIR!, "jobs", job.id + ".json"), "utf8"));
+    expect(stored.systemdStopConfirmedInvocation).toBe(unit.invocation);
+    empty = true;
+    expect(await jobStatusAsync(job.id)).toMatchObject({ state: "cancelled", terminationVerified: true,
+      terminationVerification: "identity_bound_job", terminationVerificationScope: "whole_tree" });
+  });
+
+  it("reads fallback snapshots without starting process lineage scans", () => {
+    const id = randomUUID(), jobsRoot = path.join(process.env.RCMCP_STATE_DIR!, "jobs");
+    writeFileSync(path.join(jobsRoot, id + ".json"), JSON.stringify({
+      id, command: "synthetic recovered process", cwd: null, pid: process.pid, state: "running",
+      startedAt: new Date().toISOString(), executionMarker: "RCMCP_JOB_ID=" + id,
+      processIdentity: "synthetic-unverified", stdoutPath: path.join(jobsRoot, id + ".stdout.log"),
+      stderrPath: path.join(jobsRoot, id + ".stderr.log"), exitPath: path.join(jobsRoot, id + ".exit"),
+    }));
+    const track = vi.spyOn(processes, "trackProcessLineage");
+    expect(jobStatusSnapshot(id)).toMatchObject({ state: "running", id });
+    expect(track).not.toHaveBeenCalled();
   });
 
   it("keeps populated or identity-mismatched systemd cancellations non-terminal", async () => {

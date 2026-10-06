@@ -49,6 +49,7 @@ type JobMeta = {
   systemdInvocation?: string;
   systemdCgroup?: string;
   systemdIdentityMismatch?: boolean;
+  systemdStopConfirmedInvocation?: string;
 };
 
 export type { JobRecoveryDetails } from "../../../packages/protocol/src/job-recovery.ts";
@@ -149,6 +150,8 @@ const terminalUnitCleanupFinished = new Set<string>();
 const terminalUnitCleanupFinishedOrder: string[] = [];
 const terminalUnitCleanupRetry = new Map<string, { attempts: number; retryAfter: number }>();
 let terminalUnitCleanupActive = 0;
+let terminalUnitCleanupBackpressureUntil = 0;
+let terminalUnitCleanupOverflowBackoff = 1000;
 const EXIT_MARKER_GRACE_MS = 1500;
 const exitMarkerHelperContent = `import { closeSync, existsSync, fsyncSync, openSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
@@ -426,7 +429,15 @@ function refreshSystemdJob(meta: JobMeta, unit: JobUnit | null = inspectJobUnit(
         return meta;
       }
       const cancellationIntentOnly = meta.state === "cancelling";
-      if (existsSync(meta.exitPath)) {
+      const confirmedStop = cancellationIntentOnly && !!meta.systemdInvocation
+        && meta.systemdStopConfirmedInvocation === meta.systemdInvocation;
+      if (confirmedStop) {
+        meta.state = "cancelled";
+        meta.terminationVerified = true;
+        meta.terminationVerification = "identity_bound_job";
+        meta.terminationVerificationScope = "whole_tree";
+        delete meta.recoveryReason;
+      } else if (existsSync(meta.exitPath)) {
         const parsed = Number(readFileSync(meta.exitPath, "utf8").trim());
         meta.state = "completed";
         meta.exitCode = Number.isInteger(parsed) ? parsed : null;
@@ -438,7 +449,7 @@ function refreshSystemdJob(meta: JobMeta, unit: JobUnit | null = inspectJobUnit(
           : "runner_exited_without_durable_marker";
       }
       // An empty cgroup proves absence, not that cancellation caused it.
-      if (cancellationIntentOnly) meta.terminationVerified = false;
+      if (cancellationIntentOnly && !confirmedStop) meta.terminationVerified = false;
       if (!["running", "cancelling"].includes(meta.state)) meta.finishedAt ??= new Date().toISOString();
     } else if (!identityMismatchUnresolved && !unit) {
       meta.recoveryReason = "systemd_unit_lookup_uncertain";
@@ -469,6 +480,9 @@ function deferTerminalUnitCleanup(task: TerminalUnitCleanupTask): void {
   terminalUnitCleanupRetry.set(task.id, { attempts, retryAfter: Date.now() + cooldown });
   if (terminalUnitCleanupRetry.size > TERMINAL_UNIT_CLEANUP_QUEUE_LIMIT) {
     terminalUnitCleanupRetry.delete(terminalUnitCleanupRetry.keys().next().value!);
+    // Eviction must not erase outage backoff for the next history traversal.
+    terminalUnitCleanupBackpressureUntil = Math.max(terminalUnitCleanupBackpressureUntil, Date.now() + terminalUnitCleanupOverflowBackoff);
+    terminalUnitCleanupOverflowBackoff = Math.min(60_000, terminalUnitCleanupOverflowBackoff * 2);
   }
 }
 
@@ -506,6 +520,7 @@ function drainTerminalUnitCleanup(): void {
 function scheduleTerminalSystemdUnitCleanup(meta: JobMeta): void {
   if (!meta.systemdUnit || meta.state === "running" || meta.state === "cancelling" || !meta.systemdInvocation) return;
   if (meta.systemdUnit !== jobUnitName(meta.id) || terminalUnitCleanupFinished.has(meta.id) || terminalUnitCleanupPending.has(meta.id)) return;
+  if (Date.now() < terminalUnitCleanupBackpressureUntil) return;
   const retry = terminalUnitCleanupRetry.get(meta.id);
   if (retry && Date.now() < retry.retryAfter) return;
   if (terminalUnitCleanupPending.size >= TERMINAL_UNIT_CLEANUP_QUEUE_LIMIT) return;
@@ -669,13 +684,15 @@ function readProgress(meta: JobMeta): Record<string, unknown> {
   } catch (error) { return { progressError: error instanceof Error ? error.message : String(error) }; }
 }
 
-function summary(meta: JobMeta, reconciled = false) {
+function summary(meta: JobMeta, reconciled = false, observeLineage = true) {
   const fresh = reconciled ? meta : refresh(meta);
-  if (fresh.state === "running" || fresh.state === "cancelling") ensureJobLineageTracking(fresh);
-  else stopJobLineage(fresh.id);
+  if (observeLineage) {
+    if (fresh.state === "running" || fresh.state === "cancelling") ensureJobLineageTracking(fresh);
+    else stopJobLineage(fresh.id);
+  }
   // The durable ledger remains private; identity, recovery, termination and
   // progress fields keep their existing public meanings on every platform.
-  const { trackedProcesses, systemdIdentityMismatch: _systemdIdentityMismatch, ...publicMeta } = fresh;
+  const { trackedProcesses, systemdIdentityMismatch: _systemdIdentityMismatch, systemdStopConfirmedInvocation: _systemdStopConfirmedInvocation, ...publicMeta } = fresh;
   return {
     ...publicMeta,
     trackedProcessCount: trackedProcesses?.length ?? 0,
@@ -965,7 +982,7 @@ export function jobLineage(input: { id: string; offset?: number; limit?: number 
 
 export function jobStatus(id: string) { return summary(readMeta(id)); }
 /** Durable snapshot only; never starts a synchronous manager/process probe. */
-export function jobStatusSnapshot(id: string) { return summary(readMeta(id), true); }
+export function jobStatusSnapshot(id: string) { return summary(readMeta(id), true, false); }
 
 export function jobOutput(input: { id: string; stream?: "stdout" | "stderr"; offset?: number; length?: number; encoding?: "utf8" | "base64" }) {
   const stream = input.stream ?? "stdout"; const file = outputPath(input.id, stream);
@@ -1158,6 +1175,7 @@ async function cancelSystemdJob(meta: JobMeta) {
   writeMeta(meta);
   const stopped = await stopJobUnit(meta.id);
   const current = readMeta(meta.id);
+  if (stopped) current.systemdStopConfirmedInvocation = meta.systemdInvocation;
   // A successful stop plus recursive kernel emptiness is whole-cgroup proof.
   // Unit lookup failure by itself is never such proof.
   const empty = current.systemdCgroup ? jobCgroupEmpty(meta.id, current.systemdCgroup) : null;
