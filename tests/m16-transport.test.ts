@@ -185,6 +185,49 @@ describe("M16 transport remediation", () => {
     expect(mutations).toBe(0);
   });
 
+  it.each([transferFile, syncDirectory])("observes earlier preflight rejections when a later dispatch expires (%s)", async transfer => {
+    vi.useFakeTimers();
+    let requests = 0;
+    const pending = (_device: string, ...args: any[]) => {
+      requests++;
+      const options = args.at(-1) as { signal: AbortSignal };
+      vi.setSystemTime(Date.now() + 21);
+      return new Promise((_resolve, reject) => {
+        options.signal.addEventListener("abort", () => reject(options.signal.reason), { once: true });
+      });
+    };
+    const client = { info: pending, fsManage: pending };
+    await expect(transfer(client as any, {
+      sourceDevice: "source", sourcePath: "/source", destinationDevice: "destination", destinationPath: "/destination", timeoutMs: 20,
+    })).rejects.toMatchObject({ name: "TimeoutError" });
+    await Promise.resolve();
+    expect(requests).toBe(1);
+  });
+
+  it("does not report a directory mutation when its dispatch deadline guard rejects", async () => {
+    vi.useFakeTimers();
+    let preflightDone = false, mutations = 0;
+    const client = {
+      info: async () => ({ platform: "linux", runtime: {
+        get transferStagingVersion() {
+          if (preflightDone) vi.setSystemTime(Date.now() + 21);
+          return 1;
+        },
+        relaySourceVersion: 1,
+      } }),
+      fsManage: async (_device: string, input: { operation: string }) => {
+        if (input.operation === "stat") return { isDirectory: true };
+        mutations++;
+        return { ok: true };
+      },
+      fsList: async () => { preflightDone = true; return []; },
+    };
+    await expect(syncDirectory(client as any, {
+      sourceDevice: "source", sourcePath: "/source", destinationDevice: "destination", destinationPath: "/destination", timeoutMs: 20,
+    })).rejects.toMatchObject({ name: "TimeoutError" });
+    expect(mutations).toBe(0);
+  });
+
   it("rejects Windows collisions and invalid names before destination mutation", async () => {
     expect(() => validateDestinationPaths([{ relative: "folder", file: false }, { relative: "folder/file.txt", file: true }], "win32")).not.toThrow();
     expect(() => validateDestinationPaths(["Report.txt", "report.TXT"], "win32")).toThrow(/collision/);
