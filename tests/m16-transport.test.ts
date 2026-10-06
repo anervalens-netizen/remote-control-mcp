@@ -163,7 +163,7 @@ describe("M16 transport remediation", () => {
     expect(moves).toBe(0);
   });
 
-  it("does not dispatch a source read when the deadline expires during preflight", async () => {
+  it.each(["relay", "direct"] as const)("does not dispatch a source read when the deadline expires during preflight", async transport => {
     vi.useFakeTimers();
     let reads = 0;
     let mutations = 0;
@@ -177,9 +177,10 @@ describe("M16 transport remediation", () => {
         return { isFile: true, size: 1 };
       },
       fsRead: async () => { reads += 1; return {}; },
+      directTransfer: async () => { mutations += 1; return {}; },
     };
     await expect(transferFile(client as any, {
-      sourceDevice: "source", sourcePath: "/source", destinationDevice: "destination", destinationPath: "/destination", timeoutMs: 20,
+      sourceDevice: "source", sourcePath: "/source", destinationDevice: "destination", destinationPath: "/destination", timeoutMs: 20, transport,
     })).rejects.toMatchObject({ name: "TimeoutError" });
     expect(reads).toBe(0);
     expect(mutations).toBe(0);

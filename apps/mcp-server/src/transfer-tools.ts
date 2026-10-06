@@ -133,7 +133,7 @@ export async function transferFile(client: AgentClient, input: {
     const modern = supportsPrivateStage(destinationInfo);
     const legacy = !modern || !supportsPrivateStage(sourceInfo);
     if (input.transport === "direct") {
-      const timeoutMs = deadline.remainingMs();
+      const timeoutMs = requestOptions().timeoutMs;
       const result = await client.directTransfer(input.sourceDevice, input.destinationDevice, {
         sourcePath: input.sourcePath, destinationPath: input.destinationPath,
         expectedBytes: stat.size,
