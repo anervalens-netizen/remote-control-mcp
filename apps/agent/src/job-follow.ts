@@ -50,6 +50,9 @@ export async function jobFollow(input: JobFollowInput, signal?: AbortSignal) {
   const observer = jobObservers.acquire(input.id);
   try {
   const remainingMs = () => waitMs - (performance.now() - start);
+  // Zero-wait pagination must still advance durable reconciliation. Observe
+  // the background result (including errors) without adding manager latency.
+  if (waitMs === 0) void observer.sample().catch(() => {});
   const initial = await subscriberSample(observer.sample, signal, remainingMs());
   let sampleExpired = initial === undefined;
   let status = initial ?? jobStatusSnapshot(input.id), pollMs = 250;
