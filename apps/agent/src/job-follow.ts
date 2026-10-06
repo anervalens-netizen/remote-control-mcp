@@ -1,19 +1,21 @@
 import { SharedJobObserver } from "./shared-job-observer.ts";
 import { setTimeout as delay } from "node:timers/promises";
 import type { JobFollowInput } from "../../../packages/protocol/src/project.ts";
-import { jobOutput, jobStatusAsync } from "./jobs.ts";
+import { jobOutput, jobStatusAsync, jobStatusSnapshot } from "./jobs.ts";
 import { utf8SafeLength, utf8LeadingCodePointLength } from "./state.ts";
 
-async function subscriberSample<T>(sample: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+async function subscriberSample<T>(sample: () => Promise<T>, signal: AbortSignal | undefined, remainingMs: number): Promise<T | undefined> {
   signal?.throwIfAborted();
-  if (!signal) return sample();
+  if (remainingMs <= 0) return undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const expired = new Promise<undefined>(resolve => { timer = setTimeout(() => resolve(undefined), Math.ceil(remainingMs)); });
   let abort: () => void = () => {};
   const cancelled = new Promise<never>((_resolve, reject) => {
-    abort = () => reject(signal.reason ?? new Error("Job follower cancelled"));
-    signal.addEventListener("abort", abort, { once: true });
+    abort = () => reject(signal?.reason ?? new Error("Job follower cancelled"));
+    signal?.addEventListener("abort", abort, { once: true });
   });
-  try { return await Promise.race([sample(), cancelled]); }
-  finally { signal.removeEventListener("abort", abort); }
+  try { return await Promise.race([sample(), cancelled, expired]); }
+  finally { clearTimeout(timer); signal?.removeEventListener("abort", abort); }
 }
 function page(id: string, stream: "stdout" | "stderr", offset: number, length: number, encoding: "utf8" | "base64", terminal: boolean) {
   const raw = jobOutput({ id, stream, offset, length: Math.max(4, length), encoding: "base64" });
@@ -47,22 +49,28 @@ export async function jobFollow(input: JobFollowInput, signal?: AbortSignal) {
   signal?.throwIfAborted();
   const observer = jobObservers.acquire(input.id);
   try {
-  let status = await subscriberSample(observer.sample, signal), pollMs = 250;
+  const remainingMs = () => waitMs - (performance.now() - start);
+  const initial = await subscriberSample(observer.sample, signal, remainingMs());
+  let sampleExpired = initial === undefined;
+  let status = initial ?? jobStatusSnapshot(input.id), pollMs = 250;
   while (status.state === "running" || status.state === "cancelling") {
     signal?.throwIfAborted();
     if (input.until === "output" && (status.stdoutBytes > cursor.stdout || status.stderrBytes > cursor.stderr)) {
       if (page(input.id, "stdout", cursor.stdout, maxBytes, encoding, false).bytes || page(input.id, "stderr", cursor.stderr, maxBytes, encoding, false).bytes) break;
     }
     const remaining = waitMs - (performance.now() - start);
-    if (remaining <= 0) break;
-    await delay(Math.min(remaining, pollMs), undefined, { signal });
-    status = await subscriberSample(observer.sample, signal);
+    if (remaining <= 0 || sampleExpired) break;
+    await delay(Math.ceil(Math.min(remaining, pollMs)), undefined, { signal });
+    if (remaining <= pollMs) { sampleExpired = true; break; }
+    const sampled = await subscriberSample(observer.sample, signal, remainingMs());
+    if (!sampled) { sampleExpired = true; break; }
+    status = sampled;
     pollMs = Math.min(input.until === "output" ? 500 : 1000, Math.ceil(pollMs * 1.5));
   }
   const terminal = status.state !== "running" && status.state !== "cancelling";
   const stdout = page(input.id, "stdout", cursor.stdout, maxBytes, encoding, terminal);
   const stderr = page(input.id, "stderr", cursor.stderr, maxBytes, encoding, terminal);
-  return { ...status, terminal, waitExpired: !terminal && performance.now() - start >= waitMs,
+  return { ...status, terminal, waitExpired: !terminal && (sampleExpired || performance.now() - start >= waitMs),
     stdout, stderr, cursor: { stdout: stdout.nextOffset, stderr: stderr.nextOffset },
     outputComplete: terminal && stdout.eof && stderr.eof, waitedMs: Math.round(performance.now() - start),
     ...(wait.waitClamped ? wait : {}),

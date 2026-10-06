@@ -111,17 +111,30 @@ export async function resolveCoordinationResource(input: CoordinationResource): 
         if (indexFields[0] === "160000") gitlinkPaths.add(trackedPath);
         if (tag === "S" || tag === tag.toLowerCase() && tag !== tag.toUpperCase()) flaggedTrackedPaths.add(trackedPath);
       }
-      const trackedInput = [...trackedPaths].join("\0") + (trackedPaths.size ? "\0" : "");
       const attributeArgs = ["check-attr", "-z", "--stdin", "filter", "working-tree-encoding", "ident", "text", "eol", "crlf"];
-      const attributes = await gitRaw(root, attributeArgs, { stdin: trackedInput });
-      gitAuthority.push({ args: attributeArgs, code: attributes.code, stdout: attributes.stdout, stdin: trackedInput });
-      digest.update(JSON.stringify(["worktree-attributes", attributes.code, attributes.stdout]));
-      const fields = attributes.stdout.split("\0");
-      if (fields.at(-1) === "") fields.pop();
-      if (fields.length % 3 !== 0) throw new CoordinationError("git_attributes_unparseable");
-      for (let index = 0; index < fields.length; index += 3) {
-        const [trackedPath, _attribute, value] = fields.slice(index, index + 3) as [string, string, string];
-        if (value !== "unspecified" && value !== "unset") contentHashedPaths.add(trackedPath);
+      // Six output records repeat every pathname. Bound input bytes as well as
+      // path count so a large clean index cannot overflow gitRaw's stdout cap.
+      const attributeBatches: string[] = [];
+      let batch = "", batchBytes = 0;
+      for (const trackedPath of trackedPaths) {
+        const entry = trackedPath + "\0", entryBytes = Buffer.byteLength(entry);
+        if (batch && batchBytes + entryBytes > 64 * 1024) {
+          attributeBatches.push(batch); batch = ""; batchBytes = 0;
+        }
+        batch += entry; batchBytes += entryBytes;
+      }
+      if (batch) attributeBatches.push(batch);
+      for (const trackedInput of attributeBatches) {
+        const attributes = await gitRaw(root, attributeArgs, { stdin: trackedInput });
+        gitAuthority.push({ args: attributeArgs, code: attributes.code, stdout: attributes.stdout, stdin: trackedInput });
+        digest.update(JSON.stringify(["worktree-attributes", attributes.code, attributes.stdout]));
+        const fields = attributes.stdout.split("\0");
+        if (fields.at(-1) === "") fields.pop();
+        if (fields.length % 3 !== 0) throw new CoordinationError("git_attributes_unparseable");
+        for (let index = 0; index < fields.length; index += 3) {
+          const [trackedPath, _attribute, value] = fields.slice(index, index + 3) as [string, string, string];
+          if (value !== "unspecified" && value !== "unset") contentHashedPaths.add(trackedPath);
+        }
       }
       const readConfig = async (key: string) => {
         const args = ["config", "--get", key];

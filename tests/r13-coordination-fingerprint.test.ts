@@ -5,7 +5,7 @@ import { expect, it, vi } from "vitest";
 import { resolveCoordinationResource } from "../apps/agent/src/coordination-resource.ts";
 import { coordinationToken, ResourceCoordinator } from "../apps/agent/src/coordination.ts";
 
-const gitProbeMutation = vi.hoisted(() => ({ submodule: "", armed: false, mutate: undefined as (() => void) | undefined, suppressDirtyRoot: "" }));
+const gitProbeMutation = vi.hoisted(() => ({ submodule: "", armed: false, mutate: undefined as (() => void) | undefined, suppressDirtyRoot: "", attributeInputs: [] as string[] }));
 function sameNativePath(left: string, right: string) {
   const normalize = (value: string) => {
     const resolved = path.resolve(value);
@@ -16,6 +16,7 @@ function sameNativePath(left: string, right: string) {
 vi.mock("../apps/agent/src/repo.ts", async importOriginal => {
   const actual = await importOriginal<typeof import("../apps/agent/src/repo.ts")>();
   return { ...actual, gitRaw: async (...args: Parameters<typeof actual.gitRaw>) => {
+    if (args[1][0] === "check-attr") gitProbeMutation.attributeInputs.push(args[2]?.stdin ?? "");
     const result = await actual.gitRaw(...args);
     if (gitProbeMutation.armed && sameNativePath(args[0], gitProbeMutation.submodule)
       && args[1][0] === "status" && args[1].includes("--porcelain=v2")) {
@@ -300,4 +301,21 @@ it("reports precise limits for bounded non-Git directory probes", async () => {
   const large = mkdtempSync(path.join(process.env.RCMCP_STATE_DIR!, "r13-nongit-large-")), file = path.join(large, "large.bin");
   writeFileSync(file, ""); truncateSync(file, 65 * 1024 * 1024);
   await expect(resolveCoordinationResource({ kind: "repo", path: large })).rejects.toThrow("non_git_base_content_limit");
+});
+
+
+it("batches attribute authority for long tracked paths and detects later-batch changes", async () => {
+  const root = repository("r13-attribute-batches-");
+  const prefix = "long-synthetic-directory-".repeat(5);
+  mkdirSync(path.join(root, prefix));
+  for (let i = 0; i < 600; i++) writeFileSync(path.join(root, prefix, String(i).padStart(4, "0") + ".txt"), "fixture");
+  commit(root, "long path fixture");
+  gitProbeMutation.attributeInputs.length = 0;
+  const clean = await resolveCoordinationResource({ kind: "repo", path: root });
+  const inputs = [...gitProbeMutation.attributeInputs];
+  expect(inputs.length).toBeGreaterThanOrEqual(4); // admission and revalidation, multiple batches each
+  expect(inputs.every(input => Buffer.byteLength(input) <= 64 * 1024)).toBe(true);
+  expect((await resolveCoordinationResource({ kind: "repo", path: root })).baseVersion).toBe(clean.baseVersion);
+  writeFileSync(path.join(root, ".gitattributes"), prefix + "/0599.txt ident\n");
+  expect((await resolveCoordinationResource({ kind: "repo", path: root })).baseVersion).not.toBe(clean.baseVersion);
 });

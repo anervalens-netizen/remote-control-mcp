@@ -420,28 +420,25 @@ function refreshSystemdJob(meta: JobMeta, unit: JobUnit | null = inspectJobUnit(
     const identityMismatchUnresolved = meta.systemdIdentityMismatch === true;
     // Even an exit marker cannot prove completion while any cgroup member lives.
     if (!identityMismatchUnresolved && !transitioning && empty === true && meta.pid > 0) {
-      if (meta.state === "cancelling") {
-        if (cancelInFlight.has(meta.id)) {
-          // The stop RPC still owns the terminal write. Do not race it with a
-          // transient lost result between kernel cleanup and stop completion.
-          if (JSON.stringify(meta) !== before) writeMeta(meta);
-          return meta;
-        } else if (!identityMismatchUnresolved) {
-          meta.state = "cancelled";
-          meta.terminationVerified = true;
-          meta.terminationVerification = "identity_bound_job";
-          meta.terminationVerificationScope = "whole_tree";
-          delete meta.recoveryReason;
-        }
-      } else if (existsSync(meta.exitPath)) {
+      if (meta.state === "cancelling" && cancelInFlight.has(meta.id)) {
+        // The stop RPC owns the terminal write while its outcome is pending.
+        if (JSON.stringify(meta) !== before) writeMeta(meta);
+        return meta;
+      }
+      const cancellationIntentOnly = meta.state === "cancelling";
+      if (existsSync(meta.exitPath)) {
         const parsed = Number(readFileSync(meta.exitPath, "utf8").trim());
         meta.state = "completed";
         meta.exitCode = Number.isInteger(parsed) ? parsed : null;
         delete meta.recoveryReason;
       } else {
         meta.state = "lost";
-        meta.recoveryReason = "runner_exited_without_durable_marker";
+        meta.recoveryReason = cancellationIntentOnly
+          ? "systemd_cancellation_outcome_unverified"
+          : "runner_exited_without_durable_marker";
       }
+      // An empty cgroup proves absence, not that cancellation caused it.
+      if (cancellationIntentOnly) meta.terminationVerified = false;
       if (!["running", "cancelling"].includes(meta.state)) meta.finishedAt ??= new Date().toISOString();
     } else if (!identityMismatchUnresolved && !unit) {
       meta.recoveryReason = "systemd_unit_lookup_uncertain";
@@ -468,7 +465,11 @@ function finishTerminalUnitCleanup(id: string): void {
 function deferTerminalUnitCleanup(task: TerminalUnitCleanupTask): void {
   const attempts = task.attempts + 1;
   const cooldown = Math.min(60_000, 1000 * 2 ** Math.min(attempts - 1, 6));
+  terminalUnitCleanupRetry.delete(task.id);
   terminalUnitCleanupRetry.set(task.id, { attempts, retryAfter: Date.now() + cooldown });
+  if (terminalUnitCleanupRetry.size > TERMINAL_UNIT_CLEANUP_QUEUE_LIMIT) {
+    terminalUnitCleanupRetry.delete(terminalUnitCleanupRetry.keys().next().value!);
+  }
 }
 
 async function runTerminalUnitCleanup(task: TerminalUnitCleanupTask): Promise<void> {
@@ -963,6 +964,8 @@ export function jobLineage(input: { id: string; offset?: number; limit?: number 
 }
 
 export function jobStatus(id: string) { return summary(readMeta(id)); }
+/** Durable snapshot only; never starts a synchronous manager/process probe. */
+export function jobStatusSnapshot(id: string) { return summary(readMeta(id), true); }
 
 export function jobOutput(input: { id: string; stream?: "stdout" | "stderr"; offset?: number; length?: number; encoding?: "utf8" | "base64" }) {
   const stream = input.stream ?? "stdout"; const file = outputPath(input.id, stream);

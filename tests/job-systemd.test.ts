@@ -93,7 +93,7 @@ describe("durable systemd admission contracts", () => {
     expect(stop).toHaveBeenCalledWith(job.id);
   });
 
-  it("reconciles a timed-out stop only after the same identity-bound cgroup becomes empty", async () => {
+  it("preserves an uncertain timed-out stop after its cgroup becomes empty", async () => {
     vi.spyOn(systemd, "jobCgroupIsolation").mockReturnValue({ ready: true, reason: "fixture" });
     vi.spyOn(systemd, "admitJobUnit").mockResolvedValue();
     const unit = { active: "active", sub: "running", pid: 23456, invocation: "cancel-later", cgroup: "" };
@@ -117,14 +117,56 @@ describe("durable systemd admission contracts", () => {
     }));
     try {
       const restarted = await import("../apps/agent/src/jobs.ts");
-      expect(await restarted.jobStatusAsync(job.id)).toMatchObject({ state: "cancelled", terminationVerified: true,
-        terminationVerification: "identity_bound_job", terminationVerificationScope: "whole_tree" });
+      expect(await restarted.jobStatusAsync(job.id)).toMatchObject({ state: "lost", terminationVerified: false,
+        recoveryReason: "systemd_cancellation_outcome_unverified" });
       await vi.waitFor(() => expect(restartedInspect).toHaveBeenCalledWith(job.id));
       expect(restartedCollect).not.toHaveBeenCalled();
     } finally { vi.doUnmock("../apps/agent/src/job-systemd.ts"); }
     for (const file of [job.stdoutPath, job.stderrPath, path.join(process.env.RCMCP_STATE_DIR!, "jobs", job.id + ".json"), path.join(process.env.RCMCP_STATE_DIR!, "jobs", job.id + ".launch")]) {
       expect(existsSync(file)).toBe(true);
     }
+  });
+
+  it.each([0, 7])("preserves completed exit %i when only cancellation intent survived", async exitCode => {
+    const id = randomUUID(), jobsRoot = path.join(process.env.RCMCP_STATE_DIR!, "jobs");
+    const exitPath = path.join(jobsRoot, id + ".exit");
+    writeFileSync(path.join(jobsRoot, id + ".json"), JSON.stringify({
+      id, command: "synthetic cancellation recovery", cwd: null, pid: 23456, state: "cancelling",
+      startedAt: new Date().toISOString(), terminationVerified: false,
+      stdoutPath: path.join(jobsRoot, id + ".stdout.log"), stderrPath: path.join(jobsRoot, id + ".stderr.log"),
+      exitPath, systemdUnit: systemd.jobUnitName(id), systemdInvocation: "original",
+      systemdCgroup: "/synthetic/" + systemd.jobUnitName(id),
+    }));
+    writeFileSync(exitPath, String(exitCode));
+    vi.spyOn(systemd, "inspectJobUnitAsync").mockResolvedValue(null);
+    vi.spyOn(systemd, "inspectJobUnitForCleanup").mockResolvedValue({ state: "unknown" });
+    vi.spyOn(systemd, "jobCgroupEmpty").mockReturnValue(true);
+    const stop = vi.spyOn(systemd, "stopJobUnit");
+    expect(await jobStatusAsync(id)).toMatchObject({ state: "completed", exitCode, terminationVerified: false });
+    expect(readFileSync(exitPath, "utf8")).toBe(String(exitCode));
+    expect(stop).not.toHaveBeenCalled();
+  });
+
+  it("bounds deferred retries during manager outages without removing receipts", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(1_800_000_000_000);
+    const inspect = vi.spyOn(systemd, "inspectJobUnitForCleanup").mockResolvedValue({ state: "unknown" });
+    const jobsRoot = path.join(process.env.RCMCP_STATE_DIR!, "jobs"), ids: string[] = [];
+    for (let i = 0; i < 1025; i++) {
+      const id = randomUUID(); ids.push(id);
+      writeFileSync(path.join(jobsRoot, id + ".json"), JSON.stringify({
+        id, command: "synthetic cleanup outage", cwd: null, pid: 0, state: "completed", exitCode: 0,
+        startedAt: new Date().toISOString(), stdoutPath: path.join(jobsRoot, id + ".stdout.log"),
+        stderrPath: path.join(jobsRoot, id + ".stderr.log"), exitPath: path.join(jobsRoot, id + ".exit"),
+        systemdUnit: systemd.jobUnitName(id), systemdInvocation: "original-" + id,
+      }));
+      await jobStatusAsync(id);
+    }
+    await vi.waitFor(() => expect(inspect).toHaveBeenCalledTimes(1025));
+    await jobStatusAsync(ids[0]!);
+    await jobStatusAsync(ids.at(-1)!);
+    await vi.waitFor(() => expect(inspect.mock.calls.filter(([id]) => id === ids[0])).toHaveLength(2));
+    expect(inspect.mock.calls.filter(([id]) => id === ids.at(-1))).toHaveLength(1);
+    expect(ids.every(id => existsSync(path.join(jobsRoot, id + ".json")))).toBe(true);
   });
 
   it("keeps populated or identity-mismatched systemd cancellations non-terminal", async () => {
