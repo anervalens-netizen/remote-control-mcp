@@ -84,3 +84,38 @@ it("clamps at the MCP boundary and returns a successful resumable expiry", async
       requestedWaitMs: 50_000, effectiveWaitMs: 20_000, waitClamped: true, retryAfterMs: 750 });
   } finally { await client.close(); await server.close(); }
 });
+
+
+it("keeps pending probes coalesced after every subscriber has expired", async () => {
+  let resolve!: (value: number) => void;
+  const read = vi.fn(() => new Promise<number>(r => { resolve = r; }));
+  const observers = new SharedJobObserver(read);
+  const first = observers.acquire("same");
+  const one = first.sample(); first.release();
+  await Promise.resolve();
+  expect(observers.snapshot()).toMatchObject({ jobs: 1, subscribers: 0 });
+  const second = observers.acquire("same");
+  const two = second.sample(); second.release();
+  expect(read).toHaveBeenCalledTimes(1);
+  resolve(7);
+  expect(await Promise.all([one, two])).toEqual([7, 7]);
+  expect(observers.snapshot()).toMatchObject({ jobs: 0, subscribers: 0 });
+});
+
+it("bounds detached probes across jobs and frees capacity when they reject", async () => {
+  const rejectors: Array<(error: Error) => void> = [];
+  const observers = new SharedJobObserver(() => new Promise<never>((_resolve, reject) => rejectors.push(reject)), 200, 2);
+  const pending: Promise<unknown>[] = [];
+  for (const id of ["one", "two"]) {
+    const subscriber = observers.acquire(id);
+    pending.push(subscriber.sample().catch(error => error));
+    subscriber.release();
+  }
+  await Promise.resolve();
+  expect(() => observers.acquire("three")).toThrow("capacity");
+  const joined = observers.acquire("one"); joined.release();
+  rejectors.forEach(reject => reject(new Error("manager unavailable")));
+  await Promise.all(pending);
+  expect(observers.snapshot()).toMatchObject({ jobs: 0, subscribers: 0 });
+  const next = observers.acquire("three"); next.release();
+});

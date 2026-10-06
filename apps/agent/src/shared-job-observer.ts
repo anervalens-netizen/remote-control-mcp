@@ -10,6 +10,9 @@ export class SharedJobObserver<T> {
   acquire(id: string) {
     if ([...this.entries.values()].reduce((n, e) => n + e.subscribers, 0) >= this.maxSubscribers) throw new Error("Job observer capacity reached");
     let entry = this.entries.get(id);
+    // Expired subscribers can leave a pending manager probe. Bound these
+    // retained entries too, without preventing callers from joining one.
+    if (!entry && this.entries.size >= this.maxSubscribers) throw new Error("Job observer capacity reached");
     if (!entry) { entry = { subscribers: 0, at: -Infinity }; this.entries.set(id, entry); }
     entry.subscribers++; this.counters.joins++;
     const current = entry; let released = false;
@@ -22,12 +25,17 @@ export class SharedJobObserver<T> {
         const pending = Promise.resolve().then(() => this.read(id));
         current.pending = pending;
         try { const value = await pending; current.value = value; current.at = performance.now(); return value; }
-        finally { if (current.pending === pending) current.pending = undefined; }
+        finally {
+          if (current.pending === pending) {
+            current.pending = undefined;
+            if (current.subscribers === 0 && this.entries.get(id) === current) this.entries.delete(id);
+          }
+        }
       },
       release: () => {
         if (released) return;
         released = true;
-        if (--current.subscribers === 0 && this.entries.get(id) === current) this.entries.delete(id);
+        if (--current.subscribers === 0 && !current.pending && this.entries.get(id) === current) this.entries.delete(id);
       },
     };
   }
