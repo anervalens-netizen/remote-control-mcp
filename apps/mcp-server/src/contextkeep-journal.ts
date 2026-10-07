@@ -1,5 +1,5 @@
 import { measureSync } from "../../../packages/protocol/src/diagnostic-context.ts";
-import { closeSync, constants, fsyncSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, constants, fsyncSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import { z } from "zod";
@@ -95,7 +95,7 @@ function prepareRecoveryDirectory(journalDirectory: string, directory: string): 
   let boundary = target;
   for (;;) {
     try {
-      if (!lstatSync(boundary).isDirectory()) throw new BridgeError("journal");
+      if (!statSync(boundary).isDirectory()) throw new BridgeError("journal");
       break;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
@@ -118,6 +118,10 @@ function prepareRecoveryDirectory(journalDirectory: string, directory: string): 
   const relative = path.relative(plan.boundary, target);
   if (!path.isAbsolute(plan.boundary) || relative === ".." || relative.startsWith(".." + path.sep) || path.isAbsolute(relative))
     throw new BridgeError("journal");
+  // Restoring the journal does not establish a deleted recovery anchor.
+  // Fail before recreation; an operator must restore that anchor or choose a
+  // fresh recovery location so a new durable preparation can be recorded.
+  if (!statSync(plan.boundary).isDirectory()) throw new BridgeError("journal");
   syncDirectory(journalDirectory);
   mkdirSync(target, { recursive: true, mode: 0o700 });
   syncDirectoryAncestry(target, plan.boundary);

@@ -253,3 +253,21 @@ it.skipIf(process.platform === 'win32')('shares the original boundary with anoth
   expect(concurrentRejected).toBe(true);
   expect(readEntry(second.directory, entry.key).state).toBe('tracking');
 });
+
+it.skipIf(process.platform === 'win32')('refuses a restored preparation intent whose established boundary is missing', () => {
+  const f = fixture(), before = readFileSync(f.file);
+  const recovery = path.join(f.recoveryDirectory, 'nested', 'recovery');
+  fault.syncParent = f.recoveryDirectory;
+  expect(() => resolveFixture(f, recovery)).toThrow();
+  fault.syncParent = '';
+  rmSync(f.recoveryDirectory, { recursive: true });
+  expect(() => resolveFixture(f, recovery)).toThrow();
+  expect(readFileSync(f.file)).toEqual(before);
+});
+it.skipIf(process.platform === 'win32')('accepts an explicitly configured directory symlink', () => {
+  const f = fixture();
+  const link = path.join(f.directory, 'configured-recovery');
+  symlinkSync(f.recoveryDirectory, link, 'dir');
+  expect(resolveFixture(f, link).state).toBe('historical_resolved');
+  expect(readdirSync(f.recoveryDirectory)).toHaveLength(1);
+});
