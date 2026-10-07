@@ -7,7 +7,7 @@ import type { AgentClient } from "../apps/mcp-server/src/agent-client.ts";
 import { ContextKeepBridge, jobInputHash } from "../apps/mcp-server/src/contextkeep-bridge.ts";
 import { historicallyResolveEntry, readEntry, saveEntry, type Entry } from "../apps/mcp-server/src/contextkeep-journal.ts";
 
-const fault = vi.hoisted(() => ({ syncParent: '', writableRecovery: false, replaceRecovery: '', preventCleanup: false, afterMkdir: undefined as (() => void) | undefined, beforeMkdir: undefined as (() => void) | undefined }));
+const fault = vi.hoisted(() => ({ afterRecoverySync: undefined as (() => void) | undefined, syncParent: '', writableRecovery: false, replaceRecovery: '', preventCleanup: false, afterMkdir: undefined as (() => void) | undefined, beforeMkdir: undefined as (() => void) | undefined }));
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs')>();
   const handles = new Map<number, { file: string; flags: string | number }>();
@@ -35,11 +35,16 @@ vi.mock('node:fs', async (importOriginal) => {
       throw Object.assign(new Error('synthetic writable handle required'), { code: 'EACCES' });
     if (fault.syncParent && actual.fstatSync(fd).ino === actual.statSync(fault.syncParent).ino)
       throw Object.assign(new Error('synthetic parent sync failure'), { code: 'EIO' });
-    return actual.fsyncSync(fd);
+    const result = actual.fsyncSync(fd);
+    if (handle?.file.endsWith('.before.json')) {
+      const callback = fault.afterRecoverySync; fault.afterRecoverySync = undefined; callback?.();
+    }
+    return result;
   } };
 });
 const dirs: string[] = [], bridges: ContextKeepBridge[] = [];
 afterEach(async () => {
+  fault.afterRecoverySync = undefined;
   fault.syncParent = "";
   fault.writableRecovery = false;
   fault.replaceRecovery = '';
@@ -280,6 +285,19 @@ it.skipIf(process.platform === 'win32')('rejects a replaced recovery anchor duri
   const moved = f.recoveryDirectory + '.moved'; dirs.push(moved);
   fault.beforeMkdir = () => renameSync(f.recoveryDirectory, moved);
   expect(() => resolveFixture(f, recovery)).toThrow();
+  expect(() => resolveFixture(f, recovery)).toThrow();
+  expect(readFileSync(f.file)).toEqual(before);
+});
+
+
+it.skipIf(process.platform === 'win32')('keeps the live receipt when the anchor is replaced after backup flush', () => {
+  const f = fixture(), before = readFileSync(f.file);
+  const recovery = path.join(f.recoveryDirectory, 'nested', 'recovery');
+  const moved = f.recoveryDirectory + '.moved'; dirs.push(moved);
+  fault.afterRecoverySync = () => {
+    renameSync(f.recoveryDirectory, moved);
+    mkdirSync(recovery, { recursive: true });
+  };
   expect(() => resolveFixture(f, recovery)).toThrow();
   expect(readFileSync(f.file)).toEqual(before);
 });

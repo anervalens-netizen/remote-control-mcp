@@ -40,7 +40,11 @@ entries reuse their original synchronization boundary after interruption.
 A partial or invalid intent fails closed and requires inspection; do not remove
 it to force a retry. If a saved anchor is missing after restore, restore the
 anchor or select a fresh recovery location before retrying. Recovery directories
-belong to their configured journal.
+belong to their configured journal. The saved anchor is retained through
+publication on platforms supporting directory descriptors and its identity is
+rechecked immediately before committing the resolution. Stop recovery before
+administratively moving its directory tree; these checks are not filesystem
+snapshot isolation against uncoordinated namespace changes.
 
 
 **Bounded MCP results:** final structured results validate against the advertised JSON Schema after compaction. Large results use explicit pages/previews or `resultOmitted`, with authenticated `result_recover` access to the original JSON. Text and structured previews share cursors and counts. Limits are 64 KiB structured and 256 KiB total tool result. For an ID known before effects, call `result_recovery_prepare` and pass its ID as `_meta.resultRecoveryId`; read it after delivery rejection without replay. Memory retention is up to 15 minutes/64 slots, not restart durability. Use keyed durable jobs for crash recovery. See [result contracts and limits](docs/RELIABILITY.md#bounded-results-and-delivery-recovery-r01r02r04).
