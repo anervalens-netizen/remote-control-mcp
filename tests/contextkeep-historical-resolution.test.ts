@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
@@ -7,10 +7,19 @@ import type { AgentClient } from "../apps/mcp-server/src/agent-client.ts";
 import { ContextKeepBridge, jobInputHash } from "../apps/mcp-server/src/contextkeep-bridge.ts";
 import { historicallyResolveEntry, readEntry, saveEntry, type Entry } from "../apps/mcp-server/src/contextkeep-journal.ts";
 
-const fault = vi.hoisted(() => ({ syncParent: '' }));
+const fault = vi.hoisted(() => ({ syncParent: '', writableRecovery: false }));
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs')>();
-  return { ...actual, fsyncSync: (fd: number) => {
+  const handles = new Map<number, { file: string; flags: string | number }>();
+  return { ...actual, openSync: (file: import('node:fs').PathLike, flags: string | number, mode?: import('node:fs').Mode) => {
+    const fd = actual.openSync(file, flags, mode);
+    handles.set(fd, { file: String(file), flags });
+    return fd;
+  }, fsyncSync: (fd: number) => {
+    const handle = handles.get(fd);
+    if (fault.writableRecovery && handle?.file.endsWith('.before.json') &&
+        typeof handle.flags === 'number' && (handle.flags & 3) === actual.constants.O_RDONLY)
+      throw Object.assign(new Error('synthetic writable handle required'), { code: 'EACCES' });
     if (fault.syncParent && actual.fstatSync(fd).ino === actual.statSync(fault.syncParent).ino)
       throw Object.assign(new Error('synthetic parent sync failure'), { code: 'EIO' });
     return actual.fsyncSync(fd);
@@ -19,6 +28,7 @@ vi.mock('node:fs', async (importOriginal) => {
 const dirs: string[] = [], bridges: ContextKeepBridge[] = [];
 afterEach(async () => {
   fault.syncParent = "";
+  fault.writableRecovery = false;
   await Promise.all(bridges.splice(0).map(bridge => bridge.close()));
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
@@ -159,4 +169,23 @@ it.skipIf(process.platform === 'win32')('does not resolve when a new recovery an
   fault.syncParent = f.recoveryDirectory;
   expect(() => resolveFixture(f, path.join(f.recoveryDirectory, 'nested', 'recovery'))).toThrow();
   expect(readFileSync(f.file)).toEqual(before);
+  expect(readdirSync(f.recoveryDirectory)).toEqual([]);
+  fault.syncParent = '';
+  expect(resolveFixture(f, path.join(f.recoveryDirectory, 'nested', 'recovery')).state).toBe('historical_resolved');
+});
+
+it('flushes a reused recovery file through a writable non-truncating descriptor', () => {
+  const f = fixture(), before = readFileSync(f.file);
+  const recovery = path.join(f.recoveryDirectory, f.entry.key + '.' + f.evidence.journalSha256 + '.before.json');
+  writeFileSync(recovery, before);
+  fault.writableRecovery = true;
+  expect(resolveFixture(f).state).toBe('historical_resolved');
+  expect(readFileSync(recovery)).toEqual(before);
+});
+it.skipIf(process.platform === 'win32')('does not sync unchanged ancestors above the creation boundary', () => {
+  const f = fixture();
+  const existing = path.join(f.recoveryDirectory, 'existing');
+  mkdirSync(existing);
+  fault.syncParent = f.recoveryDirectory;
+  expect(resolveFixture(f, path.join(existing, 'new', 'recovery')).state).toBe('historical_resolved');
 });

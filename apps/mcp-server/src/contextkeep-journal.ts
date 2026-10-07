@@ -1,5 +1,5 @@
 import { measureSync } from "../../../packages/protocol/src/diagnostic-context.ts";
-import { closeSync, constants, fsyncSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, constants, fsyncSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, rmdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import { z } from "zod";
@@ -62,7 +62,7 @@ function rawRegularFile(file: string, synchronize = false) {
   let fd: number | undefined;
   try {
     if (lstatSync(file).isSymbolicLink()) throw new Error();
-    fd = openSync(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    fd = openSync(file, (synchronize ? constants.O_RDWR : constants.O_RDONLY) | (constants.O_NOFOLLOW ?? 0));
     const stat = fstatSync(fd);
     if (!stat.isFile() || stat.size > 64 * 1024) throw new Error();
     const raw = readFileSync(fd);
@@ -74,10 +74,25 @@ function rawRegularFile(file: string, synchronize = false) {
 function rawEntry(directory: string, key: string) {
   return rawRegularFile(journalFile(directory, key));
 }
-function syncDirectoryAncestry(directory: string): void {
+function syncDirectoryAncestry(directory: string, boundary: string): void {
   for (let current = path.resolve(directory); ; current = path.dirname(current)) {
     syncDirectory(current);
-    if (path.dirname(current) === current) return;
+    if (current === boundary || path.dirname(current) === current) return;
+  }
+}
+function prepareRecoveryDirectory(directory: string): void {
+  const firstCreated = mkdirSync(directory, { recursive: true, mode: 0o700 });
+  try {
+    syncDirectoryAncestry(directory, path.resolve(firstCreated ? path.dirname(firstCreated) : directory));
+  } catch (error) {
+    // A retry must not mistake our unsynced new links for an established path.
+    if (firstCreated) {
+      for (let current = path.resolve(directory); ; current = path.dirname(current)) {
+        try { rmdirSync(current); } catch { break; } // Never remove another writer's content.
+        if (current === path.resolve(firstCreated)) break;
+      }
+    }
+    throw error;
   }
 }
 function parseEntry(raw: Buffer, mtimeMs: number, key: string): Entry {
@@ -160,9 +175,7 @@ export function historicallyResolveEntry(directory: string, recoveryDirectory: s
         entry.observed && (evidence.status !== (entry.observed.state === "completed" ? (entry.observed.exitCode === 0 ? "completed" : "failed") : entry.observed.state)) ||
         entry.remoteEvidence && (evidence.revision < entry.remoteEvidence.revision || entry.remoteEvidence.verification === "failed" && evidence.verification !== "failed" ||
           ["failed", "lost"].includes(entry.remoteEvidence.status) && evidence.status !== entry.remoteEvidence.status)) throw new BridgeError("journal");
-    mkdirSync(recoveryDirectory, { recursive: true, mode: 0o700 });
-    // Persist every ancestor link, including links left by a failed prior attempt.
-    syncDirectoryAncestry(recoveryDirectory);
+    prepareRecoveryDirectory(recoveryDirectory);
     const recoveryFile = path.join(recoveryDirectory, input.key + "." + originalRecordSha256 + ".before.json");
     try {
       const fd = openSync(recoveryFile, "wx", 0o600);
@@ -222,9 +235,7 @@ export function reconcileOrphanLock(directory: string, recoveryDirectory: string
     const guard = path.join(directory, input.key + ".reconcile.lock");
     const guardFd = openSync(guard, "wx", 0o600);
     try {
-      mkdirSync(recoveryDirectory, { recursive: true, mode: 0o700 });
-    // Persist every ancestor link, including links left by a failed prior attempt.
-    syncDirectoryAncestry(recoveryDirectory);
+      prepareRecoveryDirectory(recoveryDirectory);
       for (const [suffix, bytes] of [["receipt", raw], ["lock", lockBytes]] as const) {
         const backup = path.join(recoveryDirectory, `${input.key}.${sha}.${suffix}`);
         const fd = openSync(backup, "wx", 0o600);
