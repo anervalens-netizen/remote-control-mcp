@@ -169,7 +169,8 @@ it("schedules durable retry deadlines without reopening waiting entries and rere
   expect(f.opens([entry])).toBe(2); expect(f.call).not.toHaveBeenCalled();
   await vi.advanceTimersByTimeAsync(9999); await bridge.pump(); expect(f.opens([entry])).toBe(2);
   await vi.advanceTimersByTimeAsync(1); await bridge.pump();
-  expect(f.opens([entry])).toBe(3); expect(f.read(entry).state).toBe("delivered");
+  // The successful save rereads the durable receipt under its lock to fence tombstones.
+  expect(f.opens([entry])).toBe(4); expect(f.read(entry).state).toBe("delivered");
   expect(bridge.diagnostics().lastErrorCategories).toEqual({});
 });
 

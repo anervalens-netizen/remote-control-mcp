@@ -1,5 +1,5 @@
 import { measureSync } from "../../../packages/protocol/src/diagnostic-context.ts";
-import { closeSync, constants, fsyncSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, constants, fsyncSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import { z } from "zod";
@@ -58,18 +58,96 @@ function syncDirectory(directory: string) {
   const fd = openSync(directory, "r");
   try { fsyncSync(fd); } finally { closeSync(fd); }
 }
-function rawEntry(directory: string, key: string) {
+function rawRegularFile(file: string, synchronize = false) {
   let fd: number | undefined;
   try {
-    const file = journalFile(directory, key);
-    if (lstatSync(file).isSymbolicLink()) throw new Error();
-    fd = openSync(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    const before = lstatSync(file, { bigint: true });
+    if (!before.isFile()) throw new Error();
+    const writable = synchronize && process.platform === "win32";
+    fd = openSync(file, (writable ? constants.O_RDWR : constants.O_RDONLY) | (constants.O_NOFOLLOW ?? 0));
+    const opened = fstatSync(fd, { bigint: true });
+    const after = lstatSync(file, { bigint: true });
+    if (!after.isFile() || before.dev !== opened.dev || before.ino !== opened.ino ||
+        after.dev !== opened.dev || after.ino !== opened.ino) throw new Error();
     const stat = fstatSync(fd);
     if (!stat.isFile() || stat.size > 64 * 1024) throw new Error();
-    return { raw: readFileSync(fd), stat };
+    const raw = readFileSync(fd);
+    if (synchronize) fsyncSync(fd);
+    return { raw, stat };
   } catch { throw new BridgeError("journal"); }
   finally { if (fd !== undefined) closeSync(fd); }
 }
+function rawEntry(directory: string, key: string) {
+  return rawRegularFile(journalFile(directory, key));
+}
+function syncDirectoryAncestry(directory: string, boundary: string): void {
+  for (let current = path.resolve(directory); ; current = path.dirname(current)) {
+    syncDirectory(current);
+    if (current === boundary || path.dirname(current) === current) return;
+  }
+}
+function withRecoveryDirectory<T>(journalDirectory: string, directory: string, action: (verify: () => void) => T): T {
+  const target = path.resolve(directory);
+  // Publish the synchronization boundary BEFORE creating any recovery links.
+  // All entries in this journal share the same durable intent, including
+  // retries after process loss and overlapping first-time preparations.
+  const planFile = path.join(journalDirectory, ".recovery-directory-" + createHash("sha256").update(target).digest("hex") + ".json");
+  let boundary = target;
+  for (;;) {
+    try {
+      if (!statSync(boundary).isDirectory()) throw new BridgeError("journal");
+      break;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      const parent = path.dirname(boundary);
+      if (parent === boundary) throw new BridgeError("journal");
+      boundary = parent;
+    }
+  }
+  const anchorIdentity = statSync(boundary, { bigint: true });
+  try {
+    const fd = openSync(planFile, "wx", 0o600);
+    try { writeFileSync(fd, JSON.stringify({ target, boundary, device: anchorIdentity.dev.toString(), inode: anchorIdentity.ino.toString() })); fsyncSync(fd); }
+    finally { closeSync(fd); }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+  }
+  // A concurrent partial write fails closed. A complete one is flushed by
+  // this caller too, before it may create directories or publish a tombstone.
+  const plan = z.strictObject({ target: z.literal(target), boundary: z.string(), device: z.string(), inode: z.string() }).parse(
+    JSON.parse(rawRegularFile(planFile, true).raw.toString("utf8")));
+  const relative = path.relative(plan.boundary, target);
+  if (!path.isAbsolute(plan.boundary) || relative === ".." || relative.startsWith(".." + path.sep) || path.isAbsolute(relative))
+    throw new BridgeError("journal");
+  // Restoring the journal does not establish a deleted recovery anchor.
+  // Fail before recreation; an operator must restore that anchor or choose a
+  // fresh recovery location so a new durable preparation can be recorded.
+  // Keep the original directory object alive through publication where directory
+  // descriptors are supported, then recheck its attachment at the commit point.
+  const anchorFd = process.platform === "win32" ? undefined : openSync(plan.boundary, constants.O_RDONLY | constants.O_DIRECTORY);
+  try {
+    const validateAnchor = () => {
+      const anchor = statSync(plan.boundary, { bigint: true });
+      if (!anchor.isDirectory() || anchor.dev.toString() !== plan.device || anchor.ino.toString() !== plan.inode)
+        throw new BridgeError("journal");
+      if (anchorFd !== undefined) {
+        const pinned = fstatSync(anchorFd, { bigint: true });
+        if (pinned.dev !== anchor.dev || pinned.ino !== anchor.ino) throw new BridgeError("journal");
+      }
+    };
+    validateAnchor();
+    syncDirectory(journalDirectory);
+    mkdirSync(target, { recursive: true, mode: 0o700 });
+    validateAnchor();
+    syncDirectoryAncestry(target, plan.boundary);
+    return action(() => {
+      validateAnchor();
+      if (anchorFd !== undefined) fsyncSync(anchorFd);
+      validateAnchor();
+    });
+  } finally { if (anchorFd !== undefined) closeSync(anchorFd); }
+}
+
 function parseEntry(raw: Buffer, mtimeMs: number, key: string): Entry {
   try {
     const value: unknown = JSON.parse(raw.toString("utf8"));
@@ -114,16 +192,20 @@ function withEntryLock<T>(directory: string, key: string, action: () => T): T {
     }
   }
 }
-function saveEntryUnlocked(directory: string, entry: Entry, create = false): void {
+function saveEntryUnlocked(directory: string, entry: Entry, create = false, beforeCommit?: () => void): void {
   const file = journalFile(directory, entry.key), temporary = file + "." + randomUUID() + ".tmp";
   const fd = openSync(create ? file : temporary, "wx", 0o600);
   try { writeFileSync(fd, JSON.stringify(entry)); fsyncSync(fd); }
   finally { closeSync(fd); }
+  beforeCommit?.();
   if (!create) renameSync(temporary, file);
   syncDirectory(directory);
 }
 export function saveEntry(directory: string, entry: Entry, create = false): void {
-  return measureSync("persistence", () => withEntryLock(directory, entry.key, () => saveEntryUnlocked(directory, entry, create)));
+  return measureSync("persistence", () => withEntryLock(directory, entry.key, () => {
+    if (!create && readEntry(directory, entry.key).state === "historical_resolved") throw new BridgeError("journal");
+    saveEntryUnlocked(directory, entry, create);
+  }));
 }
 
 export function historicallyResolveEntry(directory: string, recoveryDirectory: string, input: {
@@ -147,7 +229,7 @@ export function historicallyResolveEntry(directory: string, recoveryDirectory: s
         entry.observed && (evidence.status !== (entry.observed.state === "completed" ? (entry.observed.exitCode === 0 ? "completed" : "failed") : entry.observed.state)) ||
         entry.remoteEvidence && (evidence.revision < entry.remoteEvidence.revision || entry.remoteEvidence.verification === "failed" && evidence.verification !== "failed" ||
           ["failed", "lost"].includes(entry.remoteEvidence.status) && evidence.status !== entry.remoteEvidence.status)) throw new BridgeError("journal");
-    mkdirSync(recoveryDirectory, { recursive: true, mode: 0o700 });
+    return withRecoveryDirectory(directory, recoveryDirectory, verifyRecovery => {
     const recoveryFile = path.join(recoveryDirectory, input.key + "." + originalRecordSha256 + ".before.json");
     try {
       const fd = openSync(recoveryFile, "wx", 0o600);
@@ -156,7 +238,7 @@ export function historicallyResolveEntry(directory: string, recoveryDirectory: s
       syncDirectory(recoveryDirectory);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST" ||
-          createHash("sha256").update(readFileSync(recoveryFile)).digest("hex") !== originalRecordSha256)
+          createHash("sha256").update(rawRegularFile(recoveryFile, true).raw).digest("hex") !== originalRecordSha256)
         throw new BridgeError("journal");
     }
     const resolvedAt = input.resolvedAt ?? new Date().toISOString();
@@ -167,8 +249,9 @@ export function historicallyResolveEntry(directory: string, recoveryDirectory: s
       ...entry, version: 3, state: "historical_resolved", attachAcknowledged: false,
       attempts: 0, nextAttemptAt: 0, lastError: undefined, historicalResolution: proof,
     };
-    saveEntryUnlocked(directory, resolved);
+    saveEntryUnlocked(directory, resolved, false, verifyRecovery);
     return resolved;
+    });
   });
 }
 
@@ -207,7 +290,7 @@ export function reconcileOrphanLock(directory: string, recoveryDirectory: string
     const guard = path.join(directory, input.key + ".reconcile.lock");
     const guardFd = openSync(guard, "wx", 0o600);
     try {
-      mkdirSync(recoveryDirectory, { recursive: true, mode: 0o700 });
+      return withRecoveryDirectory(directory, recoveryDirectory, verifyRecovery => {
       for (const [suffix, bytes] of [["receipt", raw], ["lock", lockBytes]] as const) {
         const backup = path.join(recoveryDirectory, `${input.key}.${sha}.${suffix}`);
         const fd = openSync(backup, "wx", 0o600);
@@ -216,11 +299,12 @@ export function reconcileOrphanLock(directory: string, recoveryDirectory: string
       syncDirectory(recoveryDirectory);
       const resolved: Entry = { ...entry, version: 3, state: "historical_resolved", attachAcknowledged: false,
         historicalResolution: { reason: "retrospective_verification", resolvedAt: new Date().toISOString(), evidenceRecordId: evidence.evidenceRecordId, originalRecordSha256: sha, evidence } };
-      saveEntryUnlocked(directory, resolved);
-      closeSync(lockFd); lockFd = undefined;
+      saveEntryUnlocked(directory, resolved, false, verifyRecovery);
+      if (lockFd !== undefined) closeSync(lockFd); lockFd = undefined;
       renameSync(lock, path.join(directory, input.key + ".resolved-lock." + input.expectedLockSha256));
       syncDirectory(directory);
       return resolved;
+      });
     } finally { closeSync(guardFd); unlinkSync(guard); syncDirectory(directory); }
   } finally { if (lockFd !== undefined) closeSync(lockFd); }
 }
