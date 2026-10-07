@@ -1,5 +1,5 @@
 import { measureSync } from "../../../packages/protocol/src/diagnostic-context.ts";
-import { closeSync, constants, fsyncSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, rmdirSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, constants, fsyncSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import { z } from "zod";
@@ -61,8 +61,14 @@ function syncDirectory(directory: string) {
 function rawRegularFile(file: string, synchronize = false) {
   let fd: number | undefined;
   try {
-    if (lstatSync(file).isSymbolicLink()) throw new Error();
-    fd = openSync(file, (synchronize ? constants.O_RDWR : constants.O_RDONLY) | (constants.O_NOFOLLOW ?? 0));
+    const before = lstatSync(file, { bigint: true });
+    if (!before.isFile()) throw new Error();
+    const writable = synchronize && process.platform === "win32";
+    fd = openSync(file, (writable ? constants.O_RDWR : constants.O_RDONLY) | (constants.O_NOFOLLOW ?? 0));
+    const opened = fstatSync(fd, { bigint: true });
+    const after = lstatSync(file, { bigint: true });
+    if (!after.isFile() || before.dev !== opened.dev || before.ino !== opened.ino ||
+        after.dev !== opened.dev || after.ino !== opened.ino) throw new Error();
     const stat = fstatSync(fd);
     if (!stat.isFile() || stat.size > 64 * 1024) throw new Error();
     const raw = readFileSync(fd);
@@ -80,20 +86,41 @@ function syncDirectoryAncestry(directory: string, boundary: string): void {
     if (current === boundary || path.dirname(current) === current) return;
   }
 }
-function prepareRecoveryDirectory(directory: string): void {
-  const firstCreated = mkdirSync(directory, { recursive: true, mode: 0o700 });
-  try {
-    syncDirectoryAncestry(directory, path.resolve(firstCreated ? path.dirname(firstCreated) : directory));
-  } catch (error) {
-    // A retry must not mistake our unsynced new links for an established path.
-    if (firstCreated) {
-      for (let current = path.resolve(directory); ; current = path.dirname(current)) {
-        try { rmdirSync(current); } catch { break; } // Never remove another writer's content.
-        if (current === path.resolve(firstCreated)) break;
-      }
+function prepareRecoveryDirectory(journalDirectory: string, directory: string): void {
+  const target = path.resolve(directory);
+  // Publish the synchronization boundary BEFORE creating any recovery links.
+  // All entries in this journal share the same durable intent, including
+  // retries after process loss and overlapping first-time preparations.
+  const planFile = path.join(journalDirectory, ".recovery-directory-" + createHash("sha256").update(target).digest("hex") + ".json");
+  let boundary = target;
+  for (;;) {
+    try {
+      if (!lstatSync(boundary).isDirectory()) throw new BridgeError("journal");
+      break;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      const parent = path.dirname(boundary);
+      if (parent === boundary) throw new BridgeError("journal");
+      boundary = parent;
     }
-    throw error;
   }
+  try {
+    const fd = openSync(planFile, "wx", 0o600);
+    try { writeFileSync(fd, JSON.stringify({ target, boundary })); fsyncSync(fd); }
+    finally { closeSync(fd); }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+  }
+  // A concurrent partial write fails closed. A complete one is flushed by
+  // this caller too, before it may create directories or publish a tombstone.
+  const plan = z.strictObject({ target: z.literal(target), boundary: z.string() }).parse(
+    JSON.parse(rawRegularFile(planFile, true).raw.toString("utf8")));
+  const relative = path.relative(plan.boundary, target);
+  if (!path.isAbsolute(plan.boundary) || relative === ".." || relative.startsWith(".." + path.sep) || path.isAbsolute(relative))
+    throw new BridgeError("journal");
+  syncDirectory(journalDirectory);
+  mkdirSync(target, { recursive: true, mode: 0o700 });
+  syncDirectoryAncestry(target, plan.boundary);
 }
 function parseEntry(raw: Buffer, mtimeMs: number, key: string): Entry {
   try {
@@ -175,7 +202,7 @@ export function historicallyResolveEntry(directory: string, recoveryDirectory: s
         entry.observed && (evidence.status !== (entry.observed.state === "completed" ? (entry.observed.exitCode === 0 ? "completed" : "failed") : entry.observed.state)) ||
         entry.remoteEvidence && (evidence.revision < entry.remoteEvidence.revision || entry.remoteEvidence.verification === "failed" && evidence.verification !== "failed" ||
           ["failed", "lost"].includes(entry.remoteEvidence.status) && evidence.status !== entry.remoteEvidence.status)) throw new BridgeError("journal");
-    prepareRecoveryDirectory(recoveryDirectory);
+    prepareRecoveryDirectory(directory, recoveryDirectory);
     const recoveryFile = path.join(recoveryDirectory, input.key + "." + originalRecordSha256 + ".before.json");
     try {
       const fd = openSync(recoveryFile, "wx", 0o600);
@@ -235,7 +262,7 @@ export function reconcileOrphanLock(directory: string, recoveryDirectory: string
     const guard = path.join(directory, input.key + ".reconcile.lock");
     const guardFd = openSync(guard, "wx", 0o600);
     try {
-      prepareRecoveryDirectory(recoveryDirectory);
+      prepareRecoveryDirectory(directory, recoveryDirectory);
       for (const [suffix, bytes] of [["receipt", raw], ["lock", lockBytes]] as const) {
         const backup = path.join(recoveryDirectory, `${input.key}.${sha}.${suffix}`);
         const fd = openSync(backup, "wx", 0o600);

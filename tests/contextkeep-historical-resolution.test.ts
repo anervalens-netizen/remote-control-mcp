@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
@@ -7,14 +7,26 @@ import type { AgentClient } from "../apps/mcp-server/src/agent-client.ts";
 import { ContextKeepBridge, jobInputHash } from "../apps/mcp-server/src/contextkeep-bridge.ts";
 import { historicallyResolveEntry, readEntry, saveEntry, type Entry } from "../apps/mcp-server/src/contextkeep-journal.ts";
 
-const fault = vi.hoisted(() => ({ syncParent: '', writableRecovery: false }));
+const fault = vi.hoisted(() => ({ syncParent: '', writableRecovery: false, replaceRecovery: '', preventCleanup: false, afterMkdir: undefined as (() => void) | undefined }));
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs')>();
   const handles = new Map<number, { file: string; flags: string | number }>();
   return { ...actual, openSync: (file: import('node:fs').PathLike, flags: string | number, mode?: import('node:fs').Mode) => {
+    if (fault.replaceRecovery === String(file) && typeof flags === 'number') {
+      fault.replaceRecovery = '';
+      actual.renameSync(file, String(file) + '.moved');
+      actual.writeFileSync(file, actual.readFileSync(String(file) + '.moved'));
+    }
     const fd = actual.openSync(file, flags, mode);
     handles.set(fd, { file: String(file), flags });
     return fd;
+  }, mkdirSync: (file: import('node:fs').PathLike, options?: import('node:fs').MakeDirectoryOptions & { recursive: true }) => {
+    const result = actual.mkdirSync(file, options);
+    const callback = fault.afterMkdir; fault.afterMkdir = undefined; callback?.();
+    return result;
+  }, rmdirSync: (file: import('node:fs').PathLike) => {
+    if (fault.preventCleanup) throw new Error('synthetic cleanup interruption');
+    return actual.rmdirSync(file);
   }, fsyncSync: (fd: number) => {
     const handle = handles.get(fd);
     if (fault.writableRecovery && handle?.file.endsWith('.before.json') &&
@@ -29,6 +41,9 @@ const dirs: string[] = [], bridges: ContextKeepBridge[] = [];
 afterEach(async () => {
   fault.syncParent = "";
   fault.writableRecovery = false;
+  fault.replaceRecovery = '';
+  fault.preventCleanup = false;
+  fault.afterMkdir = undefined;
   await Promise.all(bridges.splice(0).map(bridge => bridge.close()));
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
@@ -169,7 +184,7 @@ it.skipIf(process.platform === 'win32')('does not resolve when a new recovery an
   fault.syncParent = f.recoveryDirectory;
   expect(() => resolveFixture(f, path.join(f.recoveryDirectory, 'nested', 'recovery'))).toThrow();
   expect(readFileSync(f.file)).toEqual(before);
-  expect(readdirSync(f.recoveryDirectory)).toEqual([]);
+  expect(() => resolveFixture(f, path.join(f.recoveryDirectory, 'nested', 'recovery'))).toThrow();
   fault.syncParent = '';
   expect(resolveFixture(f, path.join(f.recoveryDirectory, 'nested', 'recovery')).state).toBe('historical_resolved');
 });
@@ -179,7 +194,11 @@ it('flushes a reused recovery file through a writable non-truncating descriptor'
   const recovery = path.join(f.recoveryDirectory, f.entry.key + '.' + f.evidence.journalSha256 + '.before.json');
   writeFileSync(recovery, before);
   fault.writableRecovery = true;
-  expect(resolveFixture(f).state).toBe('historical_resolved');
+  const platform = Object.getOwnPropertyDescriptor(process, 'platform')!;
+  try {
+    Object.defineProperty(process, 'platform', { value: 'win32' });
+    expect(resolveFixture(f).state).toBe('historical_resolved');
+  } finally { Object.defineProperty(process, 'platform', platform); }
   expect(readFileSync(recovery)).toEqual(before);
 });
 it.skipIf(process.platform === 'win32')('does not sync unchanged ancestors above the creation boundary', () => {
@@ -188,4 +207,49 @@ it.skipIf(process.platform === 'win32')('does not sync unchanged ancestors above
   mkdirSync(existing);
   fault.syncParent = f.recoveryDirectory;
   expect(resolveFixture(f, path.join(existing, 'new', 'recovery')).state).toBe('historical_resolved');
+});
+
+it('rejects a recovery object replaced between path inspection and open', () => {
+  const f = fixture(), before = readFileSync(f.file);
+  const recovery = path.join(f.recoveryDirectory, f.entry.key + '.' + f.evidence.journalSha256 + '.before.json');
+  writeFileSync(recovery, before);
+  fault.replaceRecovery = recovery;
+  expect(() => resolveFixture(f)).toThrow();
+  expect(readFileSync(f.file)).toEqual(before);
+});
+it.skipIf(process.platform === 'win32')('retains the preparation boundary when an interrupted attempt leaves new directories', () => {
+  const f = fixture(), before = readFileSync(f.file);
+  const recovery = path.join(f.recoveryDirectory, 'nested', 'recovery');
+  fault.preventCleanup = true;
+  fault.syncParent = f.recoveryDirectory;
+  expect(() => resolveFixture(f, recovery)).toThrow();
+  expect(() => resolveFixture(f, recovery)).toThrow();
+  expect(readFileSync(f.file)).toEqual(before);
+  fault.syncParent = '';
+  expect(resolveFixture(f, recovery).state).toBe('historical_resolved');
+});
+it.skipIf(process.platform === 'win32')('can reuse a preserved read-only recovery file on POSIX', () => {
+  const f = fixture(), before = readFileSync(f.file);
+  const recovery = path.join(f.recoveryDirectory, f.entry.key + '.' + f.evidence.journalSha256 + '.before.json');
+  writeFileSync(recovery, before);
+  chmodSync(recovery, 0o400);
+  expect(resolveFixture(f).state).toBe('historical_resolved');
+  expect(readFileSync(recovery)).toEqual(before);
+});
+
+it.skipIf(process.platform === 'win32')('shares the original boundary with another entry while first-time creation is in progress', () => {
+  const f = fixture();
+  const entry = { ...f.entry, key: 'b'.repeat(64) };
+  const second = { ...f, entry, file: path.join(f.directory, entry.key + '.json') };
+  writeFileSync(second.file, JSON.stringify(entry));
+  second.evidence = { ...f.evidence, journalSha256: createHash('sha256').update(readFileSync(second.file)).digest('hex') };
+  const recovery = path.join(f.recoveryDirectory, 'nested', 'recovery');
+  fault.syncParent = f.recoveryDirectory;
+  let concurrentRejected = false;
+  fault.afterMkdir = () => {
+    try { resolveFixture(second, recovery); } catch { concurrentRejected = true; }
+  };
+  expect(() => resolveFixture(f, recovery)).toThrow();
+  expect(concurrentRejected).toBe(true);
+  expect(readEntry(second.directory, entry.key).state).toBe('tracking');
 });

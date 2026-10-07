@@ -33,6 +33,14 @@ Connect an MCP client to the configured controller's `/mcp` endpoint using the c
 
 ## Result and recovery contracts
 
+Journal recovery keeps a durable directory-preparation intent in the journal's
+state directory before creating nested recovery directories. Preserve these
+`.recovery-directory-*.json` files with journal backups: retries and concurrent
+entries reuse their original synchronization boundary after interruption.
+A partial or invalid intent fails closed and requires inspection; do not remove
+it to force a retry. Recovery directories belong to their configured journal.
+
+
 **Bounded MCP results:** final structured results validate against the advertised JSON Schema after compaction. Large results use explicit pages/previews or `resultOmitted`, with authenticated `result_recover` access to the original JSON. Text and structured previews share cursors and counts. Limits are 64 KiB structured and 256 KiB total tool result. For an ID known before effects, call `result_recovery_prepare` and pass its ID as `_meta.resultRecoveryId`; read it after delivery rejection without replay. Memory retention is up to 15 minutes/64 slots, not restart durability. Use keyed durable jobs for crash recovery. See [result contracts and limits](docs/RELIABILITY.md#bounded-results-and-delivery-recovery-r01r02r04).
 
 **Execution facts:** batch `ok`/`partial` describe agent requests. Additive `summary`/`executionPartial` cover all items, even omitted previews; exit status, signal, timeout, cancellation, uncertainty and effect verification remain distinct. A successful read of a failed job is still a successful read. Client acceptance is unknown to the controller.
