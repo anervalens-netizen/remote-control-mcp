@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
@@ -7,7 +7,7 @@ import type { AgentClient } from "../apps/mcp-server/src/agent-client.ts";
 import { ContextKeepBridge, jobInputHash } from "../apps/mcp-server/src/contextkeep-bridge.ts";
 import { historicallyResolveEntry, readEntry, saveEntry, type Entry } from "../apps/mcp-server/src/contextkeep-journal.ts";
 
-const fault = vi.hoisted(() => ({ syncParent: '', writableRecovery: false, replaceRecovery: '', preventCleanup: false, afterMkdir: undefined as (() => void) | undefined }));
+const fault = vi.hoisted(() => ({ syncParent: '', writableRecovery: false, replaceRecovery: '', preventCleanup: false, afterMkdir: undefined as (() => void) | undefined, beforeMkdir: undefined as (() => void) | undefined }));
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs')>();
   const handles = new Map<number, { file: string; flags: string | number }>();
@@ -21,6 +21,7 @@ vi.mock('node:fs', async (importOriginal) => {
     handles.set(fd, { file: String(file), flags });
     return fd;
   }, mkdirSync: (file: import('node:fs').PathLike, options?: import('node:fs').MakeDirectoryOptions & { recursive: true }) => {
+    const before = fault.beforeMkdir; fault.beforeMkdir = undefined; before?.();
     const result = actual.mkdirSync(file, options);
     const callback = fault.afterMkdir; fault.afterMkdir = undefined; callback?.();
     return result;
@@ -44,6 +45,7 @@ afterEach(async () => {
   fault.replaceRecovery = '';
   fault.preventCleanup = false;
   fault.afterMkdir = undefined;
+  fault.beforeMkdir = undefined;
   await Promise.all(bridges.splice(0).map(bridge => bridge.close()));
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
@@ -270,4 +272,14 @@ it.skipIf(process.platform === 'win32')('accepts an explicitly configured direct
   symlinkSync(f.recoveryDirectory, link, 'dir');
   expect(resolveFixture(f, link).state).toBe('historical_resolved');
   expect(readdirSync(f.recoveryDirectory)).toHaveLength(1);
+});
+
+it.skipIf(process.platform === 'win32')('rejects a replaced recovery anchor during creation and on subsequent retry', () => {
+  const f = fixture(), before = readFileSync(f.file);
+  const recovery = path.join(f.recoveryDirectory, 'nested', 'recovery');
+  const moved = f.recoveryDirectory + '.moved'; dirs.push(moved);
+  fault.beforeMkdir = () => renameSync(f.recoveryDirectory, moved);
+  expect(() => resolveFixture(f, recovery)).toThrow();
+  expect(() => resolveFixture(f, recovery)).toThrow();
+  expect(readFileSync(f.file)).toEqual(before);
 });

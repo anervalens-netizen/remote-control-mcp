@@ -104,16 +104,17 @@ function prepareRecoveryDirectory(journalDirectory: string, directory: string): 
       boundary = parent;
     }
   }
+  const anchorIdentity = statSync(boundary, { bigint: true });
   try {
     const fd = openSync(planFile, "wx", 0o600);
-    try { writeFileSync(fd, JSON.stringify({ target, boundary })); fsyncSync(fd); }
+    try { writeFileSync(fd, JSON.stringify({ target, boundary, device: anchorIdentity.dev.toString(), inode: anchorIdentity.ino.toString() })); fsyncSync(fd); }
     finally { closeSync(fd); }
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
   }
   // A concurrent partial write fails closed. A complete one is flushed by
   // this caller too, before it may create directories or publish a tombstone.
-  const plan = z.strictObject({ target: z.literal(target), boundary: z.string() }).parse(
+  const plan = z.strictObject({ target: z.literal(target), boundary: z.string(), device: z.string(), inode: z.string() }).parse(
     JSON.parse(rawRegularFile(planFile, true).raw.toString("utf8")));
   const relative = path.relative(plan.boundary, target);
   if (!path.isAbsolute(plan.boundary) || relative === ".." || relative.startsWith(".." + path.sep) || path.isAbsolute(relative))
@@ -121,9 +122,15 @@ function prepareRecoveryDirectory(journalDirectory: string, directory: string): 
   // Restoring the journal does not establish a deleted recovery anchor.
   // Fail before recreation; an operator must restore that anchor or choose a
   // fresh recovery location so a new durable preparation can be recorded.
-  if (!statSync(plan.boundary).isDirectory()) throw new BridgeError("journal");
+  const validateAnchor = () => {
+    const anchor = statSync(plan.boundary, { bigint: true });
+    if (!anchor.isDirectory() || anchor.dev.toString() !== plan.device || anchor.ino.toString() !== plan.inode)
+      throw new BridgeError("journal");
+  };
+  validateAnchor();
   syncDirectory(journalDirectory);
   mkdirSync(target, { recursive: true, mode: 0o700 });
+  validateAnchor();
   syncDirectoryAncestry(target, plan.boundary);
 }
 function parseEntry(raw: Buffer, mtimeMs: number, key: string): Entry {
