@@ -58,17 +58,27 @@ function syncDirectory(directory: string) {
   const fd = openSync(directory, "r");
   try { fsyncSync(fd); } finally { closeSync(fd); }
 }
-function rawEntry(directory: string, key: string) {
+function rawRegularFile(file: string, synchronize = false) {
   let fd: number | undefined;
   try {
-    const file = journalFile(directory, key);
     if (lstatSync(file).isSymbolicLink()) throw new Error();
     fd = openSync(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
     const stat = fstatSync(fd);
     if (!stat.isFile() || stat.size > 64 * 1024) throw new Error();
-    return { raw: readFileSync(fd), stat };
+    const raw = readFileSync(fd);
+    if (synchronize) fsyncSync(fd);
+    return { raw, stat };
   } catch { throw new BridgeError("journal"); }
   finally { if (fd !== undefined) closeSync(fd); }
+}
+function rawEntry(directory: string, key: string) {
+  return rawRegularFile(journalFile(directory, key));
+}
+function syncDirectoryAncestry(directory: string): void {
+  for (let current = path.resolve(directory); ; current = path.dirname(current)) {
+    syncDirectory(current);
+    if (path.dirname(current) === current) return;
+  }
 }
 function parseEntry(raw: Buffer, mtimeMs: number, key: string): Entry {
   try {
@@ -123,7 +133,10 @@ function saveEntryUnlocked(directory: string, entry: Entry, create = false): voi
   syncDirectory(directory);
 }
 export function saveEntry(directory: string, entry: Entry, create = false): void {
-  return measureSync("persistence", () => withEntryLock(directory, entry.key, () => saveEntryUnlocked(directory, entry, create)));
+  return measureSync("persistence", () => withEntryLock(directory, entry.key, () => {
+    if (!create && readEntry(directory, entry.key).state === "historical_resolved") throw new BridgeError("journal");
+    saveEntryUnlocked(directory, entry, create);
+  }));
 }
 
 export function historicallyResolveEntry(directory: string, recoveryDirectory: string, input: {
@@ -148,6 +161,8 @@ export function historicallyResolveEntry(directory: string, recoveryDirectory: s
         entry.remoteEvidence && (evidence.revision < entry.remoteEvidence.revision || entry.remoteEvidence.verification === "failed" && evidence.verification !== "failed" ||
           ["failed", "lost"].includes(entry.remoteEvidence.status) && evidence.status !== entry.remoteEvidence.status)) throw new BridgeError("journal");
     mkdirSync(recoveryDirectory, { recursive: true, mode: 0o700 });
+    // Persist every ancestor link, including links left by a failed prior attempt.
+    syncDirectoryAncestry(recoveryDirectory);
     const recoveryFile = path.join(recoveryDirectory, input.key + "." + originalRecordSha256 + ".before.json");
     try {
       const fd = openSync(recoveryFile, "wx", 0o600);
@@ -156,7 +171,7 @@ export function historicallyResolveEntry(directory: string, recoveryDirectory: s
       syncDirectory(recoveryDirectory);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST" ||
-          createHash("sha256").update(readFileSync(recoveryFile)).digest("hex") !== originalRecordSha256)
+          createHash("sha256").update(rawRegularFile(recoveryFile, true).raw).digest("hex") !== originalRecordSha256)
         throw new BridgeError("journal");
     }
     const resolvedAt = input.resolvedAt ?? new Date().toISOString();
@@ -208,6 +223,8 @@ export function reconcileOrphanLock(directory: string, recoveryDirectory: string
     const guardFd = openSync(guard, "wx", 0o600);
     try {
       mkdirSync(recoveryDirectory, { recursive: true, mode: 0o700 });
+    // Persist every ancestor link, including links left by a failed prior attempt.
+    syncDirectoryAncestry(recoveryDirectory);
       for (const [suffix, bytes] of [["receipt", raw], ["lock", lockBytes]] as const) {
         const backup = path.join(recoveryDirectory, `${input.key}.${sha}.${suffix}`);
         const fd = openSync(backup, "wx", 0o600);

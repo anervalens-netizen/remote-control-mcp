@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
@@ -7,8 +7,18 @@ import type { AgentClient } from "../apps/mcp-server/src/agent-client.ts";
 import { ContextKeepBridge, jobInputHash } from "../apps/mcp-server/src/contextkeep-bridge.ts";
 import { historicallyResolveEntry, readEntry, saveEntry, type Entry } from "../apps/mcp-server/src/contextkeep-journal.ts";
 
+const fault = vi.hoisted(() => ({ syncParent: '' }));
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  return { ...actual, fsyncSync: (fd: number) => {
+    if (fault.syncParent && actual.fstatSync(fd).ino === actual.statSync(fault.syncParent).ino)
+      throw Object.assign(new Error('synthetic parent sync failure'), { code: 'EIO' });
+    return actual.fsyncSync(fd);
+  } };
+});
 const dirs: string[] = [], bridges: ContextKeepBridge[] = [];
 afterEach(async () => {
+  fault.syncParent = "";
   await Promise.all(bridges.splice(0).map(bridge => bridge.close()));
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
@@ -123,4 +133,30 @@ it("never upgrades a retained negative fact through historical disposition", () 
     })).toThrow();
   }
   expect(readFileSync(f.file)).toEqual(before); expect(readdirSync(f.recoveryDirectory)).toHaveLength(0);
+});
+
+function resolveFixture(f: ReturnType<typeof fixture>, recoveryDirectory = f.recoveryDirectory) {
+  return historicallyResolveEntry(f.directory, recoveryDirectory, {
+    evidence: f.evidence, key: f.entry.key, expectedHash: f.entry.hash, expectedJobId: f.entry.jobId!,
+    expectedRunId: f.entry.correlation.runId, evidenceRecordId: f.evidenceRecordId,
+  });
+}
+it('rejects a stale worker save after historical resolution', () => {
+  const f = fixture();
+  const resolved = resolveFixture(f);
+  expect(() => saveEntry(f.directory, { ...f.entry, attempts: 31 })).toThrow();
+  expect(readEntry(f.directory, f.entry.key)).toEqual(resolved);
+});
+it.skipIf(process.platform === 'win32')('rejects a recovery symlink to the live receipt', () => {
+  const f = fixture(), before = readFileSync(f.file);
+  const recovery = path.join(f.recoveryDirectory, f.entry.key + '.' + f.evidence.journalSha256 + '.before.json');
+  symlinkSync(f.file, recovery);
+  expect(() => resolveFixture(f)).toThrow();
+  expect(readFileSync(f.file)).toEqual(before);
+});
+it.skipIf(process.platform === 'win32')('does not resolve when a new recovery ancestor cannot be synced', () => {
+  const f = fixture(), before = readFileSync(f.file);
+  fault.syncParent = f.recoveryDirectory;
+  expect(() => resolveFixture(f, path.join(f.recoveryDirectory, 'nested', 'recovery'))).toThrow();
+  expect(readFileSync(f.file)).toEqual(before);
 });
