@@ -10,7 +10,7 @@ import { afterEach, expect, it } from "vitest";
 const closers: (() => Promise<unknown>)[] = [];
 afterEach(async () => { while (closers.length) await closers.pop()!(); });
 const executablePath = process.env.RCMCP_TEST_BROWSER ?? [chromium.executablePath(), "/usr/bin/chromium", "/usr/bin/google-chrome"].find(p => existsSync(p));
-it.skipIf(!executablePath)("renders two isolated panels through the official bridge, preserves stale state and treats output as text", async () => {
+it.skipIf(!executablePath)("isolates panels, pages text output and recovers stale observations without replay", async () => {
   const scopes = ["11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222"];
   const traceId = "33333333-3333-4333-8333-333333333333";
   const data = scopes.map(diagnosticScopeId => ({ diagnosticScopeId, observedAt: new Date().toISOString(),
@@ -29,7 +29,7 @@ it.skipIf(!executablePath)("renders two isolated panels through the official bri
         let value;
         if(params.name==='dashboard_snapshot')value={...fixtures[i],...(params.arguments.includeFleet===false?{fleet:null}:{})};
         else if(params.arguments.reference.traceId)value={observedAt:new Date().toISOString(),reference:params.arguments.reference,observation:{state:'returned',events:[],jobs:[{device:'lab-fixture',identity:'root',jobId:'fixture-job'}]},output:null,coverage:'Observed metadata only'};
-        else value={observedAt:new Date().toISOString(),reference:params.arguments.reference,observation:{id:'fixture-job',state:'completed',code:7},output:params.arguments.output?{stream:'stdout',data:'<img src=x onerror="window.__injected=true">',nextOffset:45,eof:true}:null,coverage:'Fresh agent observation'};
+        else value={observedAt:new Date().toISOString(),reference:params.arguments.reference,observation:{id:'fixture-job',state:'completed',code:7},output:params.arguments.output?{stream:'stdout',data:params.arguments.output.offset===0?'<img src=x onerror="window.__injected=true">':'second page: end',nextOffset:params.arguments.output.offset===0?45:61,eof:params.arguments.output.offset!==0}:null,coverage:'Fresh agent observation'};
         return {content:[],structuredContent:value};
       };
       bridge.oninitialized=async()=>{await bridge.sendToolInput({arguments:{}});await bridge.sendToolResult({content:[],structuredContent:fixtures[i]});};
@@ -56,6 +56,13 @@ it.skipIf(!executablePath)("renders two isolated panels through the official bri
   await first.locator("pre").waitFor();
   expect(await first.locator("pre").innerText()).toContain("<img");
   expect(await first.locator("pre img").count()).toBe(0);
+  expect(await first.getByRole("complementary").innerText()).toContain("Exit code: 7");
+  await first.getByRole("button", { name: "Next output page", exact: true }).click();
+  await expect.poll(() => first.locator("pre").innerText()).toBe("second page: end");
+  expect(await first.getByRole("button", { name: "Next output page", exact: true }).isEnabled()).toBe(false);
+  const outputCalls = await page.evaluate(() => (window as any).calls.filter((call: any) => call.arguments.output));
+  expect(outputCalls.map((call: any) => call.arguments.output.offset)).toEqual([0, 45]);
+  expect(outputCalls.every((call: any) => call.panel === 0 && call.arguments.reference.job.jobId === "fixture-job")).toBe(true);
   expect(await second.getByRole("complementary").count()).toBe(0);
   await first.getByRole("button", { name: "Close", exact: true }).click();
   await page.evaluate(() => { (window as any).fail = true; });
@@ -68,5 +75,14 @@ it.skipIf(!executablePath)("renders two isolated panels through the official bri
   if (!process.env.RCMCP_UI_EVIDENCE_DIR) closers.push(() => rm(evidence, { recursive: true, force: true }));
   await mkdir(evidence, { recursive: true });
   await page.screenshot({ path: path.join(evidence, "console.png"), fullPage: true });
+  await page.evaluate(() => { (window as any).fail = false; });
+  await first.getByRole("button", { name: "Refresh", exact: true }).click();
+  await first.getByRole("alert").waitFor({ state: "hidden" });
+  expect(await first.locator(".device-title .badge").innerText()).toBe("REACHABLE");
+  expect(await second.getByText(scopes[1]!, { exact: true }).count()).toBe(1);
+  const calls = await page.evaluate(() => (window as any).calls);
+  expect(calls.every((call: any) => ["dashboard_snapshot", "operation_inspect"].includes(call.name))).toBe(true);
+  expect(calls.filter((call: any) => call.name === "dashboard_snapshot").every((call: any) => call.arguments.diagnosticScopeId === scopes[call.panel])).toBe(true);
+  await page.screenshot({ path: path.join(evidence, "recovered.png"), fullPage: true });
   expect(errors).toEqual([]);
 }, 20_000);
