@@ -121,9 +121,11 @@ function Console() {
     <div className="freshness">Last successful refresh: {when(lastSuccess)} · Device probes carry their own observation times.</div>
     <section><h2>Fleet <small>{fleet.length} configured</small></h2><div className="fleet-grid">{fleet.map(row => <button className={`device ${device === row.device ? "selected" : ""}`} key={row.device} onClick={() => { setDevice(row.device); setIdentity(row.identity ?? "root"); setJobCursor(undefined); }}>
       <div className="device-title">{row.device}<Badge value={disconnected || !row.observedAt || Date.now() - Date.parse(row.observedAt) > 60_000 ? "stale" : row.connectivity ?? "unknown"}/></div><p>{row.identity ?? "Unselected identity"} · {disconnected ? "Last observed: " : ""}{row.readiness ?? "Readiness unknown"}</p>
-      <small>Configured: {row.configuredIdentities?.join(", ") ?? "Not reported"}</small>
-      <small>{row.expectedAvailability === "intermittent" ? "Intermittent availability · " : ""}{when(row.observedAt)}</small>
-      {row.runtime?.sha && <code title={row.runtime.sha}>{String(row.runtime.sha).slice(0, 12)}</code>}
+      <div className="device-meta">
+        <small>Configured: {row.configuredIdentities?.join(", ") ?? "Not reported"}</small>
+        <small>{row.expectedAvailability === "intermittent" ? "Intermittent availability · " : ""}{when(row.observedAt)}</small>
+        {row.runtime?.sha && <code title={row.runtime.sha}>{String(row.runtime.sha).slice(0, 12)}</code>}
+      </div>
       {row.reason && <p className="muted">{row.reason}</p>}
     </button>)}</div>{fleet.length === 0 && <p>No fleet observations available.</p>}</section>
     <section><div className="section-title"><h2>{all ? "Observed operations" : "Associated operations"}</h2><label><input type="checkbox" checked={all} onChange={e => { setAll(e.target.checked); setCursor(undefined); }}/> All observed scopes</label></div>
