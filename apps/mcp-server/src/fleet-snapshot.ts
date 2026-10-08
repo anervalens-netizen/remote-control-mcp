@@ -24,6 +24,7 @@ export async function fleetSnapshot(client: AgentClient, input: FleetInput = {},
         device, requestedDevice: name, context, identity: executionLabel(context),
         requestedIdentity: input.identity ?? (input.context ? executionLabel(input.context) : "auto"),
         contextAvailable: available, identityConfigured: available,
+        configuredIdentities: android ? ["owner"] : ["root", ...(config.userUrl ?? config.desktopUrl ? ["owner"] : []), ...(config.desktopUrl ? ["interactive"] : [])],
         expectedAvailability: config.expectedAvailability ?? "continuous",
       };
       if (android) {

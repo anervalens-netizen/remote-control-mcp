@@ -57,7 +57,7 @@ describe("console foundation contracts", () => {
     const client = await harness(agent);
     const result = await client.callTool({ name: "fleet_status", arguments: { devices: ["LAB"], identity: "owner" } });
     expect(result.isError).not.toBe(true);
-    expect(result.structuredContent).toMatchObject({ devices: [{ device: "lab-primary", identity: "owner", identityConfigured: false, connectivity: "unknown", expectedAvailability: "intermittent" }] });
+    expect(result.structuredContent).toMatchObject({ devices: [{ device: "lab-primary", identity: "owner", identityConfigured: false, configuredIdentities: ["root"], connectivity: "unknown", expectedAvailability: "intermittent" }] });
     expect(probe).not.toHaveBeenCalled();
     expect(JSON.stringify(result.structuredContent)).not.toContain("budget");
   });

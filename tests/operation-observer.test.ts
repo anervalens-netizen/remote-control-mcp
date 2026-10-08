@@ -103,3 +103,38 @@ it("tracks real RPC/job references, strips scope before dispatch, and excludes 1
   expect((await operationsFor(agent).snapshot()).items).toHaveLength(1);
 
 });
+
+it("does not expire uncertain effects or durable job references after the handler returns", async () => {
+  const root = await directory();
+  const observer = new OperationObserver(root, 10, 32768, 0);
+  const uncertain = await observer.begin("exec", undefined);
+  await observer.finish(uncertain!, { code: null, cancellationRequested: true }, true, false);
+  const failed = await observer.begin("exec", undefined);
+  await observer.event(failed!, { stage: "agent_dispatch", device: "lab", identity: "owner" });
+  await observer.finish(failed!, undefined, false, false);
+  const job = await observer.begin("job_start", undefined);
+  await observer.event(job!, { stage: "agent_response", device: "lab", identity: "owner", successful: true }, { device: "lab", identity: "owner", jobId: "durable-job" });
+  await observer.finish(job!, { state: "running" }, true, false);
+  const restarted = new OperationObserver(root, 10, 32768, 0);
+  await restarted.begin("info", undefined);
+  expect(await restarted.inspect(uncertain!)).toMatchObject({ state: "unknown", executionOutcome: "uncertain" });
+  expect(await restarted.inspect(failed!)).toMatchObject({ state: "unknown", requestSucceeded: false });
+  expect(await restarted.inspect(job!)).toMatchObject({ state: "returned", jobs: [{ jobId: "durable-job" }] });
+});
+
+it("expires job observations only after an authoritative terminal read, preserving lost jobs", async () => {
+  const observer = new OperationObserver(undefined, 10, 32768, 0);
+  const reference = { device: "lab", identity: "owner" as const, jobId: "job" };
+  const id = await observer.begin("job_start", undefined);
+  await observer.event(id!, { stage: "agent_response" }, reference);
+  await observer.finish(id!, {}, true, false);
+  await observer.reconcileJob(reference, "lost");
+  await observer.begin("info", undefined);
+  expect(await observer.inspect(id!)).not.toBeNull();
+  await observer.reconcileJob({ ...reference, identity: "root" }, "completed");
+  await observer.begin("info", undefined);
+  expect(await observer.inspect(id!)).not.toBeNull();
+  await observer.reconcileJob(reference, "completed");
+  await observer.begin("info", undefined);
+  expect(await observer.inspect(id!)).toBeNull();
+});

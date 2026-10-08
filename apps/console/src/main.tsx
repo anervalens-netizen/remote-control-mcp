@@ -24,6 +24,10 @@ async function call(name: string, args: Json) {
   return result.structuredContent as Json;
 }
 const when = (value?: string) => value ? new Date(value).toLocaleTimeString() : "Not observed";
+const observedDuration = (operation: Json) => {
+  const milliseconds = Date.parse(operation.updatedAt) - Date.parse(operation.startedAt);
+  return Number.isFinite(milliseconds) ? `${(Math.max(0, milliseconds) / 1000).toFixed(1)} s` : "Unknown";
+};
 const pretty = (value: unknown) => typeof value === "string" ? value : JSON.stringify(value, null, 2);
 function Badge({ value }: { value: string }) {
   const tone = ["ready", "reachable", "completed", "returned"].includes(value) ? "good" : ["running", "cancelling"].includes(value) ? "active" : "unknown";
@@ -117,6 +121,7 @@ function Console() {
     <div className="freshness">Last successful refresh: {when(lastSuccess)} · Device probes carry their own observation times.</div>
     <section><h2>Fleet <small>{fleet.length} configured</small></h2><div className="fleet-grid">{fleet.map(row => <button className={`device ${device === row.device ? "selected" : ""}`} key={row.device} onClick={() => { setDevice(row.device); setIdentity(row.identity ?? "root"); setJobCursor(undefined); }}>
       <div className="device-title">{row.device}<Badge value={disconnected || !row.observedAt || Date.now() - Date.parse(row.observedAt) > 60_000 ? "stale" : row.connectivity ?? "unknown"}/></div><p>{row.identity ?? "Unselected identity"} · {disconnected ? "Last observed: " : ""}{row.readiness ?? "Readiness unknown"}</p>
+      <small>Configured: {row.configuredIdentities?.join(", ") ?? "Not reported"}</small>
       <small>{row.expectedAvailability === "intermittent" ? "Intermittent availability · " : ""}{when(row.observedAt)}</small>
       {row.runtime?.sha && <code title={row.runtime.sha}>{String(row.runtime.sha).slice(0, 12)}</code>}
       {row.reason && <p className="muted">{row.reason}</p>}
@@ -125,7 +130,7 @@ function Console() {
       <div className="scope"><code>{scope ?? "Waiting for an opener snapshot"}</code><button disabled={!scope} onClick={associate}>Associate future operations</button></div>
       <p className="muted">Association is explicit. An empty view does not mean the conversation has no active work.</p>
       {data?.operations?.coverage?.partial && <div className="notice">Partial observation history: {data.operations.coverage.faults.join(", ")}</div>}
-      <div className="table-wrap"><table><thead><tr><th>Operation</th><th>Handler</th><th>Started</th><th>Jobs</th></tr></thead><tbody>{operations.map((op: Json) => <tr key={op.traceId}><td><button className="link" onClick={() => setSelection({ traceId: op.traceId })}>{op.tool}</button><code>{op.traceId.slice(0, 8)}</code></td><td><Badge value={op.state}/>{op.executionOutcome && <small>{op.executionOutcome}</small>}</td><td>{when(op.startedAt)}</td><td>{op.jobCount}</td></tr>)}</tbody></table></div>
+      <div className="table-wrap"><table><thead><tr><th>Operation</th><th>Handler</th><th>Started</th><th>Observed duration</th><th>Jobs</th></tr></thead><tbody>{operations.map((op: Json) => <tr key={op.traceId}><td><button className="link" onClick={() => setSelection({ traceId: op.traceId })}>{op.tool}</button><code>{op.traceId.slice(0, 8)}</code></td><td><Badge value={op.state}/>{op.executionOutcome && <small>{op.executionOutcome}</small>}</td><td>{when(op.startedAt)}</td><td title="Controller time between first and latest recorded events; not workload runtime">{observedDuration(op)}</td><td>{op.jobCount}</td></tr>)}</tbody></table></div>
       {!operations.length && <p className="empty">No operations in this observed scope.</p>}
       <div className="pagination"><button disabled={!cursor} onClick={() => setCursor(undefined)}>Newest</button><button disabled={!data?.operations?.nextCursor} onClick={() => setCursor(data?.operations?.nextCursor)}>Older observations</button></div>
     </section>

@@ -168,7 +168,10 @@ Limits are 5,000 entries, 16 MiB and seven days for terminal observations. Activ
 and uncertain observations are retained at capacity; coverage becomes partial
 instead of blocking workload execution. After restart an unfinished handler is
 unknown. A returned handler is not proof of client consumption, job completion
-or effect verification. Job references must be reconciled through the agent.
+or effect verification. Observations containing job references remain protected
+until an explicit job inspection reads a completed or cancelled state from the
+agent; missing, running and lost jobs do not establish completion. Failed or
+disconnected dispatched calls and uncertain execution results remain unknown.
 Diagnostic UI reads do not consume operation result-recovery slots.
 
 `fleet_status` probes authenticated host info and light metrics in parallel within

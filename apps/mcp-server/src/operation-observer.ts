@@ -11,12 +11,14 @@ const identity = z.enum(["owner", "root", "interactive"]);
 const contextKeepReference = z.object({ projectId: z.string().uuid(), taskId: z.string().uuid(), runId: z.string().uuid() });
 export const jobReferenceSchema = z.object({ device: z.string().max(256), identity, jobId: z.string().min(1).max(256) }).strict();
 export type JobReference = z.infer<typeof jobReferenceSchema>;
+const sameJob = (a: JobReference, b: JobReference) => a.device === b.device && a.identity === b.identity && a.jobId === b.jobId;
 const eventSchema = z.object({ stage: z.enum(["handler_started", "agent_dispatch", "agent_response", "handler_returned"]), at: z.string().datetime(), device: z.string().max(256).optional(), identity: identity.optional(), successful: z.boolean().optional() }).strict();
 const operationSchema = z.object({
   version: z.literal(1), traceId: z.string().uuid(), controllerInstanceId: z.string().uuid(), tool: z.string().max(128),
   diagnosticScopeId: z.string().uuid().optional(), requestHash: z.string().length(64).optional(), sessionHash: z.string().length(64).optional(),
   contextKeep: contextKeepReference.optional(),
   startedAt: z.string().datetime(), updatedAt: z.string().datetime(), state: z.enum(["running", "returned", "unknown"]),
+  terminalJobs: z.array(jobReferenceSchema).max(64).optional(),
   events: z.array(eventSchema).max(128), eventsPartial: z.boolean(), jobs: z.array(jobReferenceSchema).max(64), jobsPartial: z.boolean(),
   requestSucceeded: z.boolean().optional(), executionOutcome: z.string().max(32).optional(), exitCode: z.number().int().nullable().optional(),
   callerDisconnected: z.boolean().optional(), clientAcceptance: z.literal("unknown"), effectVerification: z.literal("unverified"),
@@ -74,7 +76,9 @@ export class OperationObserver {
   }
   private async prune() {
     for (const [id, record] of this.entries) {
-      if (record.state !== "returned" || Date.now() - Date.parse(record.updatedAt) < this.retentionMs) continue;
+      // Handler completion does not establish completion of a durable job.
+      // Keep references unless their terminal state has authoritative evidence.
+      if (record.state !== "returned" || record.jobs.some(job => !record.terminalJobs?.some(terminal => sameJob(job, terminal))) || record.jobsPartial || Date.now() - Date.parse(record.updatedAt) < this.retentionMs) continue;
       if (this.directory) await fs.unlink(path.join(this.directory, `${id}.json`));
       this.entries.delete(id);
       this.totalBytes -= this.sizes.get(id) ?? 0;
@@ -148,9 +152,27 @@ export class OperationObserver {
       record.updatedAt = new Date().toISOString(); record.state = "returned";
       record.requestSucceeded = requestSucceeded; record.callerDisconnected = disconnected;
       if (record.tool === "exec" && result) { record.executionOutcome = executionOutcome(result); if (typeof result.code === "number" || result.code === null) record.exitCode = result.code; }
+      // A failed/disconnected call can leave effects running after dispatch.
+      // Preserve that uncertainty independently of the handler-return event.
+      if (record.executionOutcome === "uncertain" || (result?.timedOut === true && result.terminationVerified !== true) ||
+          ((!requestSucceeded || disconnected) && record.events.some(event => event.stage === "agent_dispatch"))) record.state = "unknown";
       if (recoveryId) record.recoveryId = recoveryId;
       if (record.events.length < 128) record.events.push({ stage: "handler_returned", at: record.updatedAt }); else record.eventsPartial = true;
       await this.save(record);
+    });
+  }
+  /** Only a fresh agent status may establish that a referenced job is terminal. */
+  async reconcileJob(job: JobReference, state: unknown) {
+    await this.ready;
+    if (!["running", "cancelling", "completed", "cancelled", "lost"].includes(String(state))) return;
+    await this.serialize(async () => {
+      for (const original of this.entries.values()) {
+        if (!original.jobs.some(candidate => sameJob(candidate, job))) continue;
+        const record = structuredClone(original);
+        record.terminalJobs = (record.terminalJobs ?? []).filter(candidate => !sameJob(candidate, job));
+        if (state === "completed" || state === "cancelled") record.terminalJobs.push(jobReferenceSchema.parse(job));
+        await this.save(record);
+      }
     });
   }
   async snapshot(input: { diagnosticScopeId?: string; cursor?: string; limit?: number } = {}) {
