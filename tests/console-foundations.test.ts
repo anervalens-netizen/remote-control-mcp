@@ -70,6 +70,17 @@ describe("console foundation contracts", () => {
     expect(await fleetSnapshot(agent, { identity: "auto" })).toMatchObject({ devices: [{ identity: "root", requestedIdentity: "auto", identityConfigured: true, endpointResponded: true, readiness: "ready" }] });
   });
 
+  it("reports Android reverse availability as intermittent with owner selected", async () => {
+    const client = {
+      devices: [{ name: "synthetic-tablet", transport: "android-reverse" }],
+      androidStatus: () => ({ name: "synthetic-tablet", online: false, readiness: "offline", readinessReason: "No recent poll", state: null }),
+    } as unknown as AgentClient;
+    expect(await fleetSnapshot(client)).toMatchObject({ devices: [{
+      device: "synthetic-tablet", identity: "owner", configuredIdentities: ["owner"],
+      expectedAvailability: "intermittent", connectivity: "unknown", metricsStatus: "not_applicable",
+    }] });
+  });
+
   it.each([false, true])("distinguishes controller preview from agent capture (agent truncated=%s)", agentTruncated => {
     const receipt = { stdout: "x".repeat(80_000), stderr: "", stdoutTruncated: agentTruncated, stderrTruncated: false };
     const result = compactStructuredContent(receipt);

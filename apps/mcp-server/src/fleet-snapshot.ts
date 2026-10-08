@@ -25,7 +25,7 @@ export async function fleetSnapshot(client: AgentClient, input: FleetInput = {},
         requestedIdentity: input.identity ?? (input.context ? executionLabel(input.context) : "auto"),
         contextAvailable: available, identityConfigured: available,
         configuredIdentities: android ? ["owner"] : ["root", ...(config.userUrl ?? config.desktopUrl ? ["owner"] : []), ...(config.desktopUrl ? ["interactive"] : [])],
-        expectedAvailability: config.expectedAvailability ?? "continuous",
+        expectedAvailability: config.expectedAvailability ?? (android ? "intermittent" : "continuous"),
       };
       if (android) {
         const status = client.androidStatus(device) as { name: string; online: boolean; readiness: string; readinessReason: string; state: null | Record<string, unknown> };
