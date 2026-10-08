@@ -56,6 +56,7 @@ function Console() {
   const [cursor, setCursor] = useState<string>();
   const [jobCursor, setJobCursor] = useState<string>();
   const [copied, setCopied] = useState(false);
+  const [copyFallback, setCopyFallback] = useState("");
   const [manualJob, setManualJob] = useState("");
   const selectedRef = useRef(selection); selectedRef.current = selection;
   useEffect(() => {
@@ -91,7 +92,7 @@ function Console() {
   }, [ready, scope, all, device, identity, cursor, jobCursor, revision]);
   useEffect(() => {
     let stale = false;
-    setDetail(undefined); setDetailError("");
+    setDetail(undefined); setDetailError(""); setCopied(false); setCopyFallback("");
     if (selection && connected) void call("operation_inspect", { reference: selection }).then(value => { if (!stale) setDetail(value); }).catch(() => { if (!stale) setDetailError("Detail unavailable. The operation has not been retried."); });
     return () => { stale = true; };
   }, [selection]);
@@ -132,7 +133,7 @@ function Console() {
       <div className="scope"><code>{scope ?? "Waiting for an opener snapshot"}</code><button disabled={!scope} onClick={associate}>Associate future operations</button></div>
       <p className="muted">Association is explicit. An empty view does not mean the conversation has no active work.</p>
       {data?.operations?.coverage?.partial && <div className="notice">Partial observation history: {data.operations.coverage.faults.join(", ")}</div>}
-      <div className="table-wrap"><table><thead><tr><th>Operation</th><th>Handler</th><th>Started</th><th>Observed duration</th><th>Jobs</th></tr></thead><tbody>{operations.map((op: Json) => <tr key={op.traceId}><td><button className="link" onClick={() => setSelection({ traceId: op.traceId })}>{op.tool}</button><code>{op.traceId.slice(0, 8)}</code></td><td><Badge value={op.state}/>{op.executionOutcome && <small>{op.executionOutcome}</small>}</td><td>{when(op.startedAt)}</td><td title="Controller time between first and latest recorded events; not workload runtime">{observedDuration(op)}</td><td>{op.jobCount}</td></tr>)}</tbody></table></div>
+      <div className="table-wrap"><table><thead><tr><th>Operation</th><th>Association</th><th>Handler</th><th>Started</th><th>Observed duration</th><th>Jobs</th></tr></thead><tbody>{operations.map((op: Json) => <tr key={op.traceId}><td><button className="link" onClick={() => setSelection({ traceId: op.traceId })}>{op.tool}</button><code>{op.traceId.slice(0, 8)}</code></td><td>{op.diagnosticScopeId ? <code title={op.diagnosticScopeId}>{op.diagnosticScopeId === scope ? "This scope" : op.diagnosticScopeId.slice(0, 8)}</code> : <span>Unassociated</span>}</td><td><Badge value={op.state}/>{op.executionOutcome && <small>{op.executionOutcome}</small>}</td><td>{when(op.startedAt)}</td><td title="Controller time between first and latest recorded events; not workload runtime">{observedDuration(op)}</td><td>{op.jobCount}</td></tr>)}</tbody></table></div>
       {!operations.length && <p className="empty">No operations in this observed scope.</p>}
       <div className="pagination"><button disabled={!cursor} onClick={() => setCursor(undefined)}>Newest</button><button disabled={!data?.operations?.nextCursor} onClick={() => setCursor(data?.operations?.nextCursor)}>Older observations</button></div>
     </section>
@@ -155,7 +156,13 @@ function Console() {
       </> : <p>Observation not retained. Inspect a known durable job reference; do not repeat the operation.</p>}
       {selection.job && <div className="pagination"><button disabled={busy} onClick={() => output("stdout")}>Read stdout</button><button disabled={busy} onClick={() => output("stderr")}>Read stderr</button></div>}
       {detail.output && <><pre>{String(detail.output.data ?? "")}</pre><button disabled={busy || detail.output.eof} onClick={() => output(detail.output.stream, detail.output.nextOffset)}>Next output page</button></>}
-      <button onClick={async () => { try { await navigator.clipboard.writeText(JSON.stringify({ reference: detail.reference, observedAt: detail.observedAt, observation: detail.observation, coverage: detail.coverage }, null, 2)); setCopied(true); } catch { setDetailError("Clipboard is unavailable in this host."); } }}>{copied ? "Copied" : "Copy diagnostic summary"}</button>
+      <button onClick={async () => {
+        const reference = selection;
+        const summary = JSON.stringify({ reference: detail.reference, observedAt: detail.observedAt, observation: detail.observation, coverage: detail.coverage }, null, 2);
+        try { await navigator.clipboard.writeText(summary); if (selectedRef.current === reference) { setCopied(true); setCopyFallback(""); } }
+        catch { if (selectedRef.current === reference) { setCopied(false); setCopyFallback(summary); } }
+      }}>{copied ? "Copied" : "Copy diagnostic summary"}</button>
+      {copyFallback && <div className="copy-fallback"><p>Automatic copying is unavailable. Select the summary below and copy it manually.</p><textarea aria-label="Diagnostic summary" readOnly value={copyFallback} onFocus={event => event.currentTarget.select()}/></div>}
       </>}
     </aside>}
     <footer>Handler response, job exit, verified effect and client acceptance are separate facts.</footer>
