@@ -508,7 +508,7 @@ the job settles; they are not individually transactional commits.
 
 ## MCP/SDK compatibility matrix (R11)
 
-The pinned SDK remains **1.30.0**. Authenticated HTTP health includes a bounded
+The pinned SDK remains **1.31.0**. Authenticated HTTP health includes a bounded
 `compatibility` snapshot (last 32 observations): installed SDK version, catalog
 revision, session mode, response mode and the protocol version actually emitted
 by the SDK's initialize response. Legacy calls without initialize report

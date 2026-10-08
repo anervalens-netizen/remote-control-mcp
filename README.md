@@ -172,7 +172,7 @@ or effect verification. Observations containing job references remain protected
 until an explicit job inspection reads a completed or cancelled state from the
 agent; missing, running and lost jobs do not establish completion. Failed or
 disconnected dispatched calls and uncertain execution results remain unknown.
-Diagnostic UI reads do not consume operation result-recovery slots.
+Diagnostic UI reads do not consume operation result-recovery slots. Fleet and operation views use bounded pages; trace details expose a separate page offset. Ordinary authoritative job status/follow/cancel responses reconcile terminal observations without relying on a console visit. Recovered receipts retain their operation trace.
 
 `fleet_status` probes authenticated host info and light metrics in parallel within
 one read-only budget (`probeTimeoutMs`, default 1500 ms; configurable through
@@ -222,7 +222,7 @@ and `RCMCP_COORDINATION_FILE_MODE=0660` on each agent. The default file mode is
 private `0600`; directory permissions/group ownership are never changed. Arbitrary shell/external edits
 remain outside fencing; see [bounds and recovery](docs/RELIABILITY.md#high-level-resource-coordination-r10).
 
-SDK 1.30.0 remains pinned. Authenticated health reports observed initialize
+SDK 1.31.0 remains pinned. Authenticated health reports observed initialize
 protocol versions and session/JSON/SSE modes, without inferring negotiation from
 headers or documentation. The synthetic compatibility matrix covers the
 installed client and production HTTP path, including discovery, validation,

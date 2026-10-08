@@ -15,19 +15,19 @@ importers:
     dependencies:
       '@modelcontextprotocol/ext-apps':
         specifier: 1.7.5
-        version: 1.7.5(patch_hash=c799c0169fae582f0fae7406fcb67e5df354b93c468292a8e746291a2c691c9f)(@modelcontextprotocol/sdk@1.30.0(@cfworker/json-schema@4.1.1)(zod@4.6.5))(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(zod@4.6.5)
+        version: 1.7.5(patch_hash=c799c0169fae582f0fae7406fcb67e5df354b93c468292a8e746291a2c691c9f)(@modelcontextprotocol/sdk@1.31.0(@cfworker/json-schema@4.1.1)(zod@4.6.5))(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(zod@4.6.5)
       '@modelcontextprotocol/node':
         specifier: 2.1.1
         version: 2.1.1(@modelcontextprotocol/server@2.3.1)
       '@modelcontextprotocol/sdk':
-        specifier: 1.30.0
-        version: 1.30.0(@cfworker/json-schema@4.1.1)(zod@4.6.5)
+        specifier: 1.31.0
+        version: 1.31.0(@cfworker/json-schema@4.1.1)(zod@4.6.5)
       '@modelcontextprotocol/server':
         specifier: 2.3.1
         version: 2.3.1
       '@openai/mcp-extensions':
         specifier: 0.1.0
-        version: 0.1.0(@modelcontextprotocol/ext-apps@1.7.5(patch_hash=c799c0169fae582f0fae7406fcb67e5df354b93c468292a8e746291a2c691c9f)(@modelcontextprotocol/sdk@1.30.0(@cfworker/json-schema@4.1.1)(zod@4.6.5))(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(zod@4.6.5))(@modelcontextprotocol/sdk@1.30.0(@cfworker/json-schema@4.1.1)(zod@4.6.5))
+        version: 0.1.0(@modelcontextprotocol/ext-apps@1.7.5(patch_hash=c799c0169fae582f0fae7406fcb67e5df354b93c468292a8e746291a2c691c9f)(@modelcontextprotocol/sdk@1.31.0(@cfworker/json-schema@4.1.1)(zod@4.6.5))(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(zod@4.6.5))(@modelcontextprotocol/sdk@1.31.0(@cfworker/json-schema@4.1.1)(zod@4.6.5))
       cross-spawn:
         specifier: 7.0.6
         version: 7.0.6
@@ -304,8 +304,8 @@ packages:
     peerDependencies:
       '@modelcontextprotocol/server': ^2.3.0
 
-  '@modelcontextprotocol/sdk@1.30.0':
-    resolution: {integrity: sha512-xKd8OIzlqNzcqcNumGAa6g+PW2kjD5vrpcKOnfldAUPP3j7lnqMPwlTXQm8gF+UwH72z0lqaRbjr9hqGz0eITA==}
+  '@modelcontextprotocol/sdk@1.31.0':
+    resolution: {integrity: sha512-UvTMgnNlnIBO/22ob2RcVGDlcvOslQs8T59+FTGdA0L27a39fdGF/EDETNtDVK4DZGpwomlsYpRdA8UXcVL/pw==}
     engines: {node: '>=18'}
     peerDependencies:
       '@cfworker/json-schema': ^4.1.1
@@ -1199,8 +1199,8 @@ packages:
   sonic-boom@4.2.1:
     resolution: {integrity: sha512-w6AxtubXa2wTXAUsZMMWERrsIRAdrK0Sc+FUytWvYAhBJLyuI4llrMIC1DtlNSdI99EI86KZum2MMq3EAZlF9Q==}
 
-  source-map-js@1.2.1:
-    resolution: {integrity: sha512-UXWMKhLOwVKb728IUtQPXxfYU+usdybtUrK/8uGE8CQMvrhOpwvzDBwj0QhSL7MQc7vIsISBG8VQ8+IDQxpfQA==}
+  source-map-js@1.2.2:
+    resolution: {integrity: sha512-KGj/8Y43x35aZVDtt+J4mK1hoLGHULMYfSkODJNQjNDC3oW1PqPoxMwo0pLUsWM/UEGzON/NxeHywEfNXNP3Vw==}
     engines: {node: '>=0.10.0'}
 
   split2@4.2.0:
@@ -1508,9 +1508,9 @@ snapshots:
     dependencies:
       zod: 4.6.5
 
-  '@modelcontextprotocol/ext-apps@1.7.5(patch_hash=c799c0169fae582f0fae7406fcb67e5df354b93c468292a8e746291a2c691c9f)(@modelcontextprotocol/sdk@1.30.0(@cfworker/json-schema@4.1.1)(zod@4.6.5))(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(zod@4.6.5)':
+  '@modelcontextprotocol/ext-apps@1.7.5(patch_hash=c799c0169fae582f0fae7406fcb67e5df354b93c468292a8e746291a2c691c9f)(@modelcontextprotocol/sdk@1.31.0(@cfworker/json-schema@4.1.1)(zod@4.6.5))(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(zod@4.6.5)':
     dependencies:
-      '@modelcontextprotocol/sdk': 1.30.0(@cfworker/json-schema@4.1.1)(zod@4.6.5)
+      '@modelcontextprotocol/sdk': 1.31.0(@cfworker/json-schema@4.1.1)(zod@4.6.5)
       '@standard-schema/spec': 1.1.0
       zod: 4.6.5
     optionalDependencies:
@@ -1523,7 +1523,7 @@ snapshots:
       '@modelcontextprotocol/server': 2.3.1
       hono: 4.13.8
 
-  '@modelcontextprotocol/sdk@1.30.0(@cfworker/json-schema@4.1.1)(zod@4.6.5)':
+  '@modelcontextprotocol/sdk@1.31.0(@cfworker/json-schema@4.1.1)(zod@4.6.5)':
     dependencies:
       '@hono/node-server': 2.1.1(hono@4.13.8)
       ajv: 8.20.0
@@ -1552,13 +1552,13 @@ snapshots:
       '@modelcontextprotocol/core': 2.3.1
       zod: 4.6.5
 
-  '@openai/mcp-extensions@0.1.0(@modelcontextprotocol/ext-apps@1.7.5(patch_hash=c799c0169fae582f0fae7406fcb67e5df354b93c468292a8e746291a2c691c9f)(@modelcontextprotocol/sdk@1.30.0(@cfworker/json-schema@4.1.1)(zod@4.6.5))(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(zod@4.6.5))(@modelcontextprotocol/sdk@1.30.0(@cfworker/json-schema@4.1.1)(zod@4.6.5))':
+  '@openai/mcp-extensions@0.1.0(@modelcontextprotocol/ext-apps@1.7.5(patch_hash=c799c0169fae582f0fae7406fcb67e5df354b93c468292a8e746291a2c691c9f)(@modelcontextprotocol/sdk@1.31.0(@cfworker/json-schema@4.1.1)(zod@4.6.5))(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(zod@4.6.5))(@modelcontextprotocol/sdk@1.31.0(@cfworker/json-schema@4.1.1)(zod@4.6.5))':
     dependencies:
       '@cfworker/json-schema': 4.1.1
-      '@modelcontextprotocol/sdk': 1.30.0(@cfworker/json-schema@4.1.1)(zod@4.6.5)
+      '@modelcontextprotocol/sdk': 1.31.0(@cfworker/json-schema@4.1.1)(zod@4.6.5)
       zod: 4.4.3
     optionalDependencies:
-      '@modelcontextprotocol/ext-apps': 1.7.5(patch_hash=c799c0169fae582f0fae7406fcb67e5df354b93c468292a8e746291a2c691c9f)(@modelcontextprotocol/sdk@1.30.0(@cfworker/json-schema@4.1.1)(zod@4.6.5))(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(zod@4.6.5)
+      '@modelcontextprotocol/ext-apps': 1.7.5(patch_hash=c799c0169fae582f0fae7406fcb67e5df354b93c468292a8e746291a2c691c9f)(@modelcontextprotocol/sdk@1.31.0(@cfworker/json-schema@4.1.1)(zod@4.6.5))(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(zod@4.6.5)
 
   '@oxc-project/types@0.150.0': {}
 
@@ -2183,7 +2183,7 @@ snapshots:
     dependencies:
       nanoid: 3.3.19
       picocolors: 1.1.1
-      source-map-js: 1.2.1
+      source-map-js: 1.2.2
 
   process-warning@4.0.1: {}
 
@@ -2343,7 +2343,7 @@ snapshots:
     dependencies:
       atomic-sleep: 1.0.0
 
-  source-map-js@1.2.1: {}
+  source-map-js@1.2.2: {}
 
   split2@4.2.0: {}
 

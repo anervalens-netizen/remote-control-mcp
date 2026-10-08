@@ -140,7 +140,14 @@ export class OperationObserver {
       record.updatedAt = new Date().toISOString();
       if (record.events.length < 128) record.events.push({ ...event, at: record.updatedAt }); else record.eventsPartial = true;
       if (job && !record.jobs.some(j => j.device === job.device && j.identity === job.identity && j.jobId === job.jobId)) {
-        if (record.jobs.length < 64) record.jobs.push(jobReferenceSchema.parse(job)); else record.jobsPartial = true;
+        if (record.jobs.length < 64) {
+          record.jobs.push(jobReferenceSchema.parse(job));
+          // Job IDs are immutable. Carry already observed terminal evidence to
+          // later output reads; EOF alone never creates such evidence.
+          if ([...this.entries.values()].some(row => row.terminalJobs?.some(terminal => sameJob(job, terminal)))) {
+            (record.terminalJobs ??= []).push(jobReferenceSchema.parse(job));
+          }
+        } else record.jobsPartial = true;
       }
       await this.save(record);
     });
@@ -183,10 +190,23 @@ export class OperationObserver {
     let after: { at: string; id: string } | undefined;
     if (input.cursor) after = z.object({ at: z.string().datetime(), id: z.string().uuid() }).strict().parse(JSON.parse(Buffer.from(input.cursor, "base64url").toString("utf8")));
     const remaining = after ? rows.filter(r => r.startedAt < after.at || r.startedAt === after.at && r.traceId < after.id) : rows;
-    const selected = remaining.slice(0, limit);
+    // A row count alone is not a wire-size bound. Keep exact reference/cursor
+    // identity while previewing metadata that is available through inspect.
+    const selected: ObservedOperation[] = [];
+    const previews: Record<string, unknown>[] = [];
+    let pageBytes = 0;
+    for (const row of remaining.slice(0, limit)) {
+      const { events, jobs, terminalJobs, ...r } = row;
+      const preview = { ...structuredClone(r), jobs: structuredClone(jobs.slice(0, 3)),
+        jobsPreview: jobs.length > 3, jobCount: jobs.length, eventCount: events.length,
+        terminalJobCount: terminalJobs?.length ?? 0 };
+      const bytes = Buffer.byteLength(JSON.stringify(preview));
+      if (selected.length && pageBytes + bytes > 24 * 1024) break;
+      selected.push(row); previews.push(preview); pageBytes += bytes;
+    }
     const last = selected.at(-1);
     return { controllerInstanceId: this.controllerInstanceId, observedAt: new Date().toISOString(),
-      items: selected.map(({ events, jobs, ...r }) => ({ ...structuredClone(r), jobs: structuredClone(jobs.slice(0, 3)), jobsPreview: jobs.length > 3, jobCount: jobs.length, eventCount: events.length })),
+      items: previews,
       nextCursor: remaining.length > selected.length && last ? Buffer.from(JSON.stringify({ at: last.startedAt, id: last.traceId })).toString("base64url") : null,
       coverage: { partial: this.faults.size > 0, faults: [...this.faults], persistence: this.directory ? "metadata_journal" : "controller_memory", scope: "Observed handler calls only; association is client-declared; job state must be read from its agent.", totalKnown: this.entries.size } };
   }

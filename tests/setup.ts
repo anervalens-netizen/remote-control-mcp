@@ -9,6 +9,9 @@ import { afterAll } from "vitest";
 const stateDir = path.join(os.tmpdir(), `rcmcp-vitest-${process.pid}-${randomUUID()}`);
 mkdirSync(stateDir, { recursive: true });
 process.env.RCMCP_STATE_DIR = stateDir;
+// Native runs may inherit an installed agent environment. Fixture state must
+// never share its coordination, secret or bridge journal directories.
+for (const key of ["RCMCP_COORDINATION_DIR", "RCMCP_SECRET_DIR", "RCMCP_CONTEXTKEEP_STATE_DIR"]) delete process.env[key];
 // Existing fixtures explicitly exercise legacy process-lineage guarantees.
 // The systemd integration suite enables and qualifies kernel containment.
 process.env.RCMCP_JOB_CGROUP_ISOLATION = "0";

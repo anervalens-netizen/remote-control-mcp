@@ -44,6 +44,8 @@ function Console() {
   const [scope, setScope] = useState<string | undefined>(launch?.diagnosticScopeId);
   const [all, setAll] = useState(false);
   const [fleet, setFleet] = useState<Json[]>(launch?.fleet?.devices ?? []);
+  const [fleetPage, setFleetPage] = useState<Json>(launch?.fleet ?? {});
+  const [fleetCursor, setFleetCursor] = useState<string>();
   const [device, setDevice] = useState("");
   const [identity, setIdentity] = useState("root");
   const [selection, setSelection] = useState<Json | undefined>(launch?.selected);
@@ -60,7 +62,7 @@ function Console() {
   const [manualJob, setManualJob] = useState("");
   const selectedRef = useRef(selection); selectedRef.current = selection;
   useEffect(() => {
-    changed = () => { setReady(connected); setError(bridgeError); if (launch && launch !== lastLaunch.current) { lastLaunch.current = launch; setData(launch); setScope(launch.diagnosticScopeId); setFleet(launch.fleet?.devices ?? []); lastFleet.current = Date.now(); setSelection(launch.selected); setLastSuccess(launch.observedAt); } };
+    changed = () => { setReady(connected); setError(bridgeError); if (launch && launch !== lastLaunch.current) { lastLaunch.current = launch; setData(launch); setScope(launch.diagnosticScopeId); setFleet(launch.fleet?.devices ?? []); setFleetPage(launch.fleet ?? {}); setFleetCursor(undefined); lastFleet.current = Date.now(); setSelection(launch.selected); setLastSuccess(launch.observedAt); } };
     changed();
     return () => { changed = () => {}; };
   }, []);
@@ -75,10 +77,10 @@ function Console() {
       snapshotInFlight.current = true; setBusy(true);
       try {
         const includeFleet = Date.now() - lastFleet.current >= 30_000;
-        const next = await call("dashboard_snapshot", { ...(all ? {} : { diagnosticScopeId: scope }), includeFleet, cursor,
+        const next = await call("dashboard_snapshot", { ...(all ? {} : { diagnosticScopeId: scope }), includeFleet, fleetCursor, cursor,
           ...(device ? { jobDevice: device, jobIdentity: identity, jobCursor } : {}) });
         if (stopped) return;
-        setData(next); if (next.fleet) { setFleet(next.fleet.devices); lastFleet.current = Date.now(); }
+        setData(next); if (next.fleet) { setFleet(next.fleet.devices); setFleetPage(next.fleet); lastFleet.current = Date.now(); }
         setLastSuccess(next.observedAt); setError(""); failures = 0;
       } catch { if (!stopped) { setError("Connection unavailable. Displayed observations may be old; device and job state are unknown until refreshed."); failures++; } }
       finally { snapshotInFlight.current = false; if (!stopped) { setBusy(false); timer = setTimeout(tick, Math.min(60000, 5000 * 2 ** failures)); } }
@@ -89,7 +91,7 @@ function Console() {
     const visible = () => { if (!document.hidden) { clearTimeout(timer); void tick(); } };
     document.addEventListener("visibilitychange", visible);
     return () => { stopped = true; clearTimeout(timer); document.removeEventListener("visibilitychange", visible); };
-  }, [ready, scope, all, device, identity, cursor, jobCursor, revision]);
+  }, [ready, scope, all, device, identity, cursor, fleetCursor, jobCursor, revision]);
   useEffect(() => {
     let stale = false;
     setDetail(undefined); setDetailError(""); setCopied(false); setCopyFallback("");
@@ -120,7 +122,7 @@ function Console() {
     {!connected && <div className="notice">{bridgeError || "Connecting to the app host…"}</div>}
     {error && <div className="notice" role="alert">{error}</div>}
     <div className="freshness">Last successful refresh: {when(lastSuccess)} · Device probes carry their own observation times.</div>
-    <section><h2>Fleet <small>{fleet.length} configured</small></h2><div className="fleet-grid">{fleet.map(row => <button className={`device ${device === row.device ? "selected" : ""}`} key={row.device} onClick={() => { setDevice(row.device); setIdentity(row.identity ?? "root"); setJobCursor(undefined); }}>
+    <section><h2>Fleet <small>{fleet.length} shown · {fleetPage.totalConfigured ?? fleet.length} configured</small></h2><div className="fleet-grid">{fleet.map(row => <button className={`device ${device === row.device ? "selected" : ""}`} key={row.device} onClick={() => { setDevice(row.device); setIdentity(row.identity ?? "root"); setJobCursor(undefined); }}>
       <div className="device-title">{row.device}<Badge value={disconnected || !row.observedAt || Date.now() - Date.parse(row.observedAt) > 60_000 ? "stale" : row.connectivity ?? "unknown"}/></div><p>{row.identity ?? "Unselected identity"} · {disconnected ? "Last observed: " : ""}{row.readiness ?? "Readiness unknown"}</p>
       <div className="device-meta">
         <small>Configured: {row.configuredIdentities?.join(", ") ?? "Not reported"}</small>
@@ -128,7 +130,8 @@ function Console() {
         {row.runtime?.sha && <code title={row.runtime.sha}>{String(row.runtime.sha).slice(0, 12)}</code>}
       </div>
       {row.reason && <p className="muted">{row.reason}</p>}
-    </button>)}</div>{fleet.length === 0 && <p>No fleet observations available.</p>}</section>
+    </button>)}</div>{fleet.length === 0 && <p>No fleet observations available.</p>}
+      <div className="pagination"><button disabled={!fleetCursor || busy} onClick={() => { lastFleet.current = 0; setFleetCursor(undefined); }}>First devices</button><button disabled={!fleetPage.nextCursor || busy} onClick={() => { lastFleet.current = 0; setFleetCursor(fleetPage.nextCursor); }}>Next devices</button></div></section>
     <section><div className="section-title"><h2>{all ? "Observed operations" : "Associated operations"}</h2><label><input type="checkbox" checked={all} onChange={e => { setAll(e.target.checked); setCursor(undefined); }}/> All observed scopes</label></div>
       <div className="scope"><code>{scope ?? "Waiting for an opener snapshot"}</code><button disabled={!scope} onClick={associate}>Associate future operations</button></div>
       <p className="muted">Association is explicit. An empty view does not mean the conversation has no active work.</p>
@@ -152,6 +155,12 @@ function Console() {
         {detail.observation.exitCode !== undefined && <p>Exit code: {pretty(detail.observation.exitCode)}</p>}{detail.observation.code !== undefined && <p>Exit code: {pretty(detail.observation.code)}</p>}
         {detail.observation.events?.map((event: Json, i: number) => <div className="event" key={i}><time>{when(event.at)}</time><span>{event.stage.replaceAll("_", " ")}</span><small>{event.device} {event.identity}</small></div>)}
         {detail.observation.eventsPartial && <p className="notice">Additional stages were omitted by the observation limit.</p>}
+        {detail.observation.nextDetailOffset != null && <button disabled={busy} onClick={async () => {
+          const reference = selection; setBusy(true);
+          try { const next = await call("operation_inspect", { reference, detailOffset: detail.observation.nextDetailOffset }); if (selectedRef.current === reference) setDetail(next); }
+          catch { if (selectedRef.current === reference) setDetailError("Detail page unavailable. The operation has not been retried."); }
+          finally { setBusy(false); }
+        }}>Next detail page</button>}
         {detail.observation.jobs?.map((job: Json) => <button className="job-row" key={JSON.stringify(job)} onClick={() => setSelection({ job })}>{job.device} · {job.identity}<code>{job.jobId}</code></button>)}
       </> : <p>Observation not retained. Inspect a known durable job reference; do not repeat the operation.</p>}
       {selection.job && <div className="pagination"><button disabled={busy} onClick={() => output("stdout")}>Read stdout</button><button disabled={busy} onClick={() => output("stderr")}>Read stderr</button></div>}

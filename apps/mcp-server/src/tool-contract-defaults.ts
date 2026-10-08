@@ -191,7 +191,10 @@ export function installDefaultToolOutputContracts(server: McpServer, diagnostics
         if (name.startsWith("job_") && typeof structured.id === "string") trace.correlation.job = correlationHash(structured.id);
         if ((name === "batch_exec" || name === "batch_recover") && typeof structured.operationId === "string") trace.correlation.operation = /^[a-f0-9]{64}$/.test(structured.operationId) ? structured.operationId : correlationHash(structured.operationId);
         if ((name === "job_wait" || name === "job_output_since") && typeof structured.waitedMs === "number") recordStage("executionWait", structured.waitedMs);
-        if (reference) reference = recovery.finish(reference.id, { ...result, structuredContent: structured });
+        // Retain the trace in the immutable receipt, before delivery compaction.
+        const traced = { ...structured, ...(observer && operationId
+          ? { operationTrace: { traceId: operationId, controllerInstanceId: observer.controllerInstanceId } } : {}) };
+        if (reference) reference = recovery.finish(reference.id, { ...result, structuredContent: traced });
         if (name === "exec") {
           detail.execution = { [executionOutcome(structured)]: 1 };
           detail.requestErrors = Number((result as any).isError === true);
@@ -199,8 +202,7 @@ export function installDefaultToolOutputContracts(server: McpServer, diagnostics
           detail.execution = structured.summary as ResultDiagnostic["execution"];
           detail.requestErrors = (structured.summary as any).requestErrors;
         }
-        const full = { ...structured, ...(reference ? { resultRecovery: reference } : {}),
-          ...(observer && operationId ? { operationTrace: { traceId: operationId, controllerInstanceId: observer.controllerInstanceId } } : {}) };
+        const full = { ...traced, ...(reference ? { resultRecovery: reference } : {}) };
         const historyPage = name === "job_history" || (name === "job_list" && Object.hasOwn(structured, "nextCursor"));
         let final = historyPage && !(result as any).isError ? compactHistoryPage(full) : compactStructuredContent(full, STRUCTURED_CONTENT_MAX_BYTES, advertisedSchema);
         const failedValidation = !measureSync("finalValidation", () => advertisedSchema.safeParse(final)).success;

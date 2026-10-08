@@ -7,7 +7,7 @@ import type { DeployInput, JobFollowInput, ProjectRunInput } from "../../../pack
 import type { DesktopUiaInput, DesktopWindowsInput, DesktopBatchInput } from "../../../packages/protocol/src/desktop.ts";
 import { filterProcesses, summarizeDockerSnapshot, type DockerSnapshot } from "../../../packages/protocol/src/filtering.ts";
 import fs from "node:fs";
-import { observeAgent } from "./operation-observer.ts";
+import { observeAgent, operationsFor } from "./operation-observer.ts";
 import type { DeviceConfig, ExecRequest, ExecResult } from "../../../packages/protocol/src/index.ts";
 import type { AndroidController } from "./android-controller.ts";
 import {
@@ -222,7 +222,19 @@ export class AgentClient {
         const candidate = route === "/v1/jobs/start" || route === "/v1/jobs/status" || route === "/v1/jobs/follow"
           ? value?.id ?? value?.job?.id
           : route === "/v1/project/run" ? value?.result?.id : route === "/v1/deploy/run" ? value?.job?.id : undefined;
-        await observeAgent("agent_response", this.getDevice(name).name, context, true, typeof candidate === "string" ? candidate : undefined);
+        const returnedJob = typeof candidate === "string" ? candidate : knownJobId;
+        const deviceName = this.getDevice(name).name;
+        await observeAgent("agent_response", deviceName, context, true, returnedJob);
+        // Only authoritative job routes carry lifecycle evidence. Output EOF,
+        // missing receipts and a cancellation request do not prove termination.
+        if (["/v1/jobs/start", "/v1/jobs/status", "/v1/jobs/follow", "/v1/jobs/cancel"].includes(route)) {
+          const status = value?.state === "resolved" ? value.job : value;
+          if (typeof returnedJob === "string" && status?.id === returnedJob) {
+            await operationsFor(this).reconcileJob({ device: deviceName,
+              identity: context === "system" ? "root" : context === "user" ? "owner" : "interactive",
+              jobId: returnedJob }, status.state);
+          }
+        }
         return result;
       } catch (error) {
         if (signal?.aborted) throw error;
