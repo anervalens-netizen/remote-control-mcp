@@ -3,6 +3,7 @@ import type { RegisteredTool } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { agentInstructions } from "./instructions.ts";
+import { consoleResource, consoleIcon } from "./console-resource.ts";
 
 type HandlerContext = {
   signal: AbortSignal;
@@ -23,12 +24,14 @@ export function createModernMcpHandler(registry: () => Record<string, unknown>) 
       { name: "remote-control-mcp", version: "0.1.0" },
       { instructions: agentInstructions, supportedProtocolVersions: ["2026-07-28"] },
     );
+    server.registerResource(consoleResource.name, consoleResource.uri, consoleResource.metadata, consoleResource.read);
     for (const [name, value] of Object.entries(registry())) {
       const tool = value as RegisteredTool;
       if (!tool.enabled) continue;
       if (typeof tool.handler !== "function") throw new Error("Unsupported MCP tool handler kind");
       const handler = tool.handler as unknown as Handler;
       const config = {
+        ...(name === "open_remote_control_console" ? { icons: [consoleIcon] } : {}),
         title: tool.title,
         description: tool.description,
         outputSchema: tool.outputSchema as z.ZodType | undefined,

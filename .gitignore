@@ -28,3 +28,5 @@ private/
 *.pem
 .env.*
 !.env.example
+
+apps/console/dist/

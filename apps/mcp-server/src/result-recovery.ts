@@ -9,6 +9,7 @@ export const recoveryReferenceSchema = z.object({
 const invocationSchema = z.object({ tool: z.string(), requestId: z.union([z.string(), z.number()]).optional(), requestIdHash: z.string().optional(), sessionIdHash: z.string().optional() });
 type Invocation = z.infer<typeof invocationSchema>;
 export const resultMetadataFields = {
+  operationTrace: z.object({ traceId: z.string().uuid(), controllerInstanceId: z.string().uuid() }).optional(),
   resultRecovery: recoveryReferenceSchema.optional(),
   contentTruncated: z.boolean().optional(),
   contentOriginalBytes: z.number().int().nonnegative().optional(),
