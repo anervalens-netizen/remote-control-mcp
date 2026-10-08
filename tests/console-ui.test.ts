@@ -44,6 +44,7 @@ it.skipIf(!executablePath)("isolates panels, pages text output and recovers stal
   closers.push(async () => { http.closeAllConnections(); await new Promise<void>(resolve => http.close(() => resolve())); });
   const browser = await chromium.launch({ executablePath, headless: true, args: ["--no-sandbox"] }); closers.push(() => browser.close());
   const page = await browser.newPage({ viewport: { width: 1500, height: 950 } });
+  await page.addInitScript(() => Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: async () => { throw new Error("fixture clipboard denied"); } } }));
   const errors: string[] = []; page.on("pageerror", error => errors.push(error.message));
   await page.goto(`http://127.0.0.1:${(http.address() as { port: number }).port}`);
   const first = page.frameLocator("#panel-0"), second = page.frameLocator("#panel-1");
@@ -56,6 +57,14 @@ it.skipIf(!executablePath)("isolates panels, pages text output and recovers stal
   await first.locator("pre").waitFor();
   expect(await first.locator("pre").innerText()).toContain("<img");
   expect(await first.locator("pre img").count()).toBe(0);
+  await first.getByRole("button", { name: "Copy diagnostic summary", exact: true }).click();
+  const summary = first.getByRole("textbox", { name: "Diagnostic summary", exact: true });
+  await summary.waitFor();
+  const summaryData = JSON.parse(await summary.inputValue());
+  expect(summaryData.reference.job.jobId).toBe("fixture-job");
+  expect(summaryData.observation.code).toBe(7);
+  expect(summaryData).not.toHaveProperty("output");
+  expect(await summary.getAttribute("readonly")).not.toBeNull();
   expect(await first.getByRole("complementary").innerText()).toContain("Exit code: 7");
   await first.getByRole("button", { name: "Next output page", exact: true }).click();
   await expect.poll(() => first.locator("pre").innerText()).toBe("second page: end");
@@ -65,6 +74,7 @@ it.skipIf(!executablePath)("isolates panels, pages text output and recovers stal
   expect(outputCalls.every((call: any) => call.panel === 0 && call.arguments.reference.job.jobId === "fixture-job")).toBe(true);
   expect(await second.getByRole("complementary").count()).toBe(0);
   await first.getByRole("button", { name: "Close", exact: true }).click();
+  expect(await summary.count()).toBe(0);
   await page.evaluate(() => { (window as any).fail = true; });
   await first.getByRole("button", { name: "Refresh", exact: true }).click();
   await first.getByRole("alert").waitFor();
