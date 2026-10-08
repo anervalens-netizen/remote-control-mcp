@@ -15,7 +15,7 @@ it.skipIf(!executablePath)("isolates panels, pages text output and recovers stal
   const traceId = "33333333-3333-4333-8333-333333333333";
   const data = scopes.map(diagnosticScopeId => ({ diagnosticScopeId, observedAt: new Date().toISOString(),
     fleet: { devices: [{ device: "lab-fixture", identity: "root", online: true, connectivity: "reachable", readiness: "ready", observedAt: new Date().toISOString() }] },
-    operations: { items: [{ tool: "fixture-operation", traceId, state: "returned", startedAt: new Date().toISOString(), jobCount: 1 }], nextCursor: null, coverage: { partial: false } }, jobs: null }));
+    operations: { items: [{ tool: "fixture-operation", traceId, diagnosticScopeId, state: "returned", startedAt: new Date().toISOString(), jobCount: 1 }], nextCursor: null, coverage: { partial: false } }, jobs: null }));
   const host = await build({ stdin: { contents: `
     import {AppBridge, PostMessageTransport} from '@modelcontextprotocol/ext-apps/app-bridge';
     window.calls=[]; window.fail=false;
@@ -27,7 +27,7 @@ it.skipIf(!executablePath)("isolates panels, pages text output and recovers stal
         window.calls.push({panel:i,...params});
         if(window.fail)throw new Error('synthetic disconnected');
         let value;
-        if(params.name==='dashboard_snapshot')value={...fixtures[i],...(params.arguments.includeFleet===false?{fleet:null}:{})};
+        if(params.name==='dashboard_snapshot')value={...fixtures[i],...(params.arguments.diagnosticScopeId?{}:{diagnosticScopeId:undefined,operations:{...fixtures[i].operations,items:[...fixtures[i].operations.items,{tool:'unassociated-fixture',traceId:'44444444-4444-4444-8444-444444444444',state:'returned',jobCount:0}]}}),...(params.arguments.includeFleet===false?{fleet:null}:{})};
         else if(params.arguments.reference.traceId)value={observedAt:new Date().toISOString(),reference:params.arguments.reference,observation:{state:'returned',events:[],jobs:[{device:'lab-fixture',identity:'root',jobId:'fixture-job'}]},output:null,coverage:'Observed metadata only'};
         else value={observedAt:new Date().toISOString(),reference:params.arguments.reference,observation:{id:'fixture-job',state:'completed',code:7},output:params.arguments.output?{stream:'stdout',data:params.arguments.output.offset===0?'<img src=x onerror="window.__injected=true">':'second page: end',nextOffset:params.arguments.output.offset===0?45:61,eof:params.arguments.output.offset!==0}:null,coverage:'Fresh agent observation'};
         return {content:[],structuredContent:value};
@@ -51,6 +51,13 @@ it.skipIf(!executablePath)("isolates panels, pages text output and recovers stal
   await first.getByText(scopes[0]!, { exact: true }).waitFor();
   await second.getByText(scopes[1]!, { exact: true }).waitFor();
   expect(await page.evaluate(() => (window as any).calls.length)).toBe(0);
+  expect(await first.getByText("This scope", { exact: true }).count()).toBe(1);
+  await first.getByRole("checkbox", { name: "All observed scopes" }).check();
+  await first.getByText("Unassociated", { exact: true }).waitFor();
+  expect(await second.getByText("Unassociated", { exact: true }).count()).toBe(0);
+  await first.getByRole("checkbox", { name: "All observed scopes" }).uncheck();
+  await first.getByText("This scope", { exact: true }).waitFor();
+  expect(await first.getByText("Unassociated", { exact: true }).count()).toBe(0);
   await first.getByRole("button", { name: "fixture-operation", exact: true }).click();
   await first.getByRole("button", { name: /fixture-job/ }).click();
   await first.getByRole("button", { name: "Read stdout", exact: true }).click();
@@ -92,7 +99,7 @@ it.skipIf(!executablePath)("isolates panels, pages text output and recovers stal
   expect(await second.getByText(scopes[1]!, { exact: true }).count()).toBe(1);
   const calls = await page.evaluate(() => (window as any).calls);
   expect(calls.every((call: any) => ["dashboard_snapshot", "operation_inspect"].includes(call.name))).toBe(true);
-  expect(calls.filter((call: any) => call.name === "dashboard_snapshot").every((call: any) => call.arguments.diagnosticScopeId === scopes[call.panel])).toBe(true);
+  expect(calls.filter((call: any) => call.name === "dashboard_snapshot").every((call: any) => (call.panel === 0 && !call.arguments.diagnosticScopeId) || call.arguments.diagnosticScopeId === scopes[call.panel])).toBe(true);
   await page.screenshot({ path: path.join(evidence, "recovered.png"), fullPage: true });
   expect(errors).toEqual([]);
 }, 20_000);
