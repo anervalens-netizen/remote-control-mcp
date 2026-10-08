@@ -16,9 +16,11 @@ import { registerCapabilityTools } from "./capability-tools.ts";
 import { registerRepoTools } from "./repo-tools.ts";
 import { installDefaultToolOutputContracts } from "./tool-contract-defaults.ts";
 import { registerAndroidTools } from "./android-tools.ts";
+import { registerConsoleTools } from "./console-tools.ts";
+import { consoleResource } from "./console-resource.ts";
 
 export function registerTools(server: McpServer, client: AgentClient): void {
-  installDefaultToolOutputContracts(server, diagnosticsFor(client));
+  installDefaultToolOutputContracts(server, diagnosticsFor(client), client);
   registerWaitDiagnostics(server, diagnosticsFor(client));
   registerCoreTools(server, client);
   registerCoordinationTools(server, client);
@@ -34,4 +36,6 @@ export function registerTools(server: McpServer, client: AgentClient): void {
   registerCapabilityTools(server, client);
   registerRepoTools(server, client);
   registerAndroidTools(server, client);
+  registerConsoleTools(server, client);
+  server.registerResource(consoleResource.name, consoleResource.uri, consoleResource.metadata, consoleResource.read);
 }

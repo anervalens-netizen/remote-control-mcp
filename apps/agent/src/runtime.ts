@@ -2,6 +2,7 @@ import { execFile, execFileSync, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { accessSync, constants as fsConstants, existsSync, mkdirSync, readFileSync } from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { userInfo } from "node:os";
 import { readWindowsIdentity, type WindowsTokenIdentity } from "./windows-identity.ts";
 import process from "node:process";
@@ -16,7 +17,7 @@ export const runtimeInstanceId = randomUUID();
 
 function packageVersion(): string | null {
   try {
-    const parsed = JSON.parse(readFileSync(path.join(process.cwd(), "package.json"), "utf8")) as { version?: string };
+    const parsed = JSON.parse(readFileSync(new URL("../../../package.json", import.meta.url), "utf8")) as { version?: string };
     return parsed.version ?? null;
   } catch { return null; }
 }
@@ -31,7 +32,7 @@ function repositoryRootFromMarkers(start: string): string | null {
   }
 }
 
-export function gitRuntimeSha(cwd = process.cwd()): string | null {
+export function gitRuntimeSha(cwd = fileURLToPath(new URL("../../../", import.meta.url))): string | null {
   if (process.env.RCMCP_RUNTIME_SHA) return process.env.RCMCP_RUNTIME_SHA;
   const repositoryRoot = repositoryRootFromMarkers(cwd);
   if (!repositoryRoot) return null;

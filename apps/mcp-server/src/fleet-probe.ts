@@ -27,6 +27,7 @@ export async function probeFleetHost(
   callerSignal?: AbortSignal,
 ) {
   callerSignal?.throwIfAborted();
+  const started = performance.now();
   const budget = new AbortController();
   const timer = setTimeout(() => budget.abort(new DOMException("Fleet probe budget exceeded", "TimeoutError")), timeoutMs);
   timer.unref();
@@ -56,6 +57,10 @@ export async function probeFleetHost(
     return {
       device,
       online: reachable,
+      endpointResponded: reachable,
+      agentResponseValid: Boolean(info || metrics),
+      runtime: info?.runtime ?? null,
+      probeDurationMs: performance.now() - started,
       connectivity: reachable ? "reachable" : "unknown",
       observedAt: new Date().toISOString(),
       probeBudgetMs: timeoutMs,

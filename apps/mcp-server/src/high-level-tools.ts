@@ -13,7 +13,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { AgentClient } from "./agent-client.ts";
 import { mapLimit, settledLimit } from "./concurrency.ts";
-import { fleetProbeBudget, probeFleetHost } from "./fleet-probe.ts";
+import { fleetSnapshot } from "./fleet-snapshot.ts";
 import { advancedClient } from "./advanced-client.ts";
 import { elevationSchema, executionInputSchema, executionLabel, identitySchema, legacyContextSchema, resolveExecutionContext } from "./execution-identity.ts";
 
@@ -126,38 +126,8 @@ export function registerHighLevelTools(server: McpServer, client: AgentClient): 
   server.registerTool("fleet_status", {
     description: "Compact health/resource summary for all or selected devices. Android reverse devices report controller readiness instead of unavailable host metrics.",
     annotations: { readOnlyHint: true, openWorldHint: false },
-    inputSchema: { devices: z.array(z.string().min(1)).max(64).optional(), context: z.enum(["system", "user"]).optional(), concurrency: z.number().int().min(1).max(32).optional(), probeTimeoutMs: z.number().int().min(100).max(30000).optional() },
-  }, async ({ devices, context, concurrency, probeTimeoutMs }, extra) => {
-    const names = devices?.length ? devices : client.devices.map((item) => item.name);
-    const runContext = context ?? "system";
-    const results = await mapLimit(names, concurrency, async (device) => {
-      try {
-        const configuredDevice = client.devices.find((item) => item.name.toLowerCase() === device.toLowerCase());
-        if (configuredDevice?.transport === "android-reverse") {
-          const status = client.androidStatus(device) as {
-            name: string; online: boolean; readiness: string; readinessReason: string;
-            state: null | { model?: string; network?: string; batteryPercent?: number | null; screenOn?: boolean; keyguardLocked?: boolean; accessibility?: boolean };
-          };
-          const androidContext = context === undefined ? "user" : runContext;
-          if (androidContext === "system") {
-            return { device, online: status.online, connectivity: status.online ? "reachable" : "unknown", observedAt: new Date().toISOString(), metricsStatus: "not_applicable", platform: "android", context: "system", contextAvailable: false, readiness: status.readiness, readinessReason: status.readinessReason, error: "system context is not configured for android-reverse" };
-          }
-          return {
-            device, online: status.online, connectivity: status.online ? "reachable" : "unknown", observedAt: new Date().toISOString(), metricsStatus: "not_applicable", hostname: status.state?.model ?? status.name, platform: "android", arch: null,
-            uptimeSeconds: null, cpuCount: null, cpuModel: null, memoryUsedPercent: null, rootUsedPercent: null, rootAvailableBytes: null,
-            readiness: status.readiness, readinessReason: status.readinessReason, context: "user", contextAvailable: true,
-            network: status.state?.network ?? null, batteryPercent: status.state?.batteryPercent ?? null,
-            screenOn: status.state?.screenOn ?? null, keyguardLocked: status.state?.keyguardLocked ?? null, accessibility: status.state?.accessibility ?? null,
-          };
-        }
-        return await probeFleetHost(client, device, runContext, fleetProbeBudget(probeTimeoutMs), extra.signal);
-      } catch (error) {
-        extra.signal.throwIfAborted();
-        return { device, online: false, connectivity: "unknown", observedAt: new Date().toISOString(), metricsStatus: "unavailable", error: error instanceof Error ? error.message : String(error) };
-      }
-    }, extra.signal);
-    return text({ devices: results });
-  });
+    inputSchema: { devices: z.array(z.string().min(1)).max(64).optional(), context: z.enum(["system", "user"]).optional(), identity: identitySchema, concurrency: z.number().int().min(1).max(32).optional(), probeTimeoutMs: z.number().int().min(100).max(30000).optional() },
+  }, async (input, extra) => text(await fleetSnapshot(client, input, extra.signal)));
 
   server.registerTool("process_find", {
     description: "Find processes with agent-side filtering so the complete process table does not cross the network.",

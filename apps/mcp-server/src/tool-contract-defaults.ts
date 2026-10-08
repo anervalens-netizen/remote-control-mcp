@@ -9,8 +9,13 @@ import { withErrorOutputContract } from "./error-output-contract.ts";
 import { withToolErrors } from "./tool-errors.ts";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { toolResultSchemas, type ToolResultName } from "./semantic-result-schemas.ts";
+import type { AgentClient } from "./agent-client.ts";
+import { canonicalDeviceArguments } from "./device-aliases.ts";
+import { z } from "zod";
+import { consoleReadTools, operationContext, operationsFor } from "./operation-observer.ts";
 
 const installedServers = new WeakSet<object>();
+const scopedTools = new Set(["exec", "batch_exec", "job_start", "job_start_many", "project_run", "deploy_run", "repo_apply_patch", "fs_edit", "service_action"]);
 
 // Hints describe effects; they never authorize or restrict the owner. Do not
 // infer read-only from a name: mixed/action tools deliberately have no default.
@@ -67,12 +72,16 @@ export function compactStructuredContent(value: Record<string, unknown>, maxByte
   } else if (typeof value.stdout === "string" && typeof value.stderr === "string") {
     const stdout = utf8Preview(value.stdout, 2048), stderr = utf8Preview(value.stderr, 2048);
     candidate = truncatedEnvelope({ ...value, stdout, stderr,
+      agentStdoutTruncated: value.agentStdoutTruncated ?? value.stdoutTruncated ?? null,
+      agentStderrTruncated: value.agentStderrTruncated ?? value.stderrTruncated ?? null,
+      controllerStdoutTruncated: stdout !== value.stdout,
+      controllerStderrTruncated: stderr !== value.stderr,
       stdoutTruncated: value.stdoutTruncated === true || stdout !== value.stdout,
       stderrTruncated: value.stderrTruncated === true || stderr !== value.stderr,
       stdoutReturnedBytes: Buffer.byteLength(stdout), stderrReturnedBytes: Buffer.byteLength(stderr) }, originalBytes, maxBytes);
   }
   if (candidate && jsonBytes(candidate) <= maxBytes && (!schema || schema.safeParse(candidate).success)) return candidate;
-  return truncatedEnvelope({ resultOmitted: true, resultRecovery: value.resultRecovery, ...(value.summary ? { summary: value.summary } : {}) }, originalBytes, maxBytes);
+  return truncatedEnvelope({ resultOmitted: true, resultRecovery: value.resultRecovery, ...(value.operationTrace ? { operationTrace: value.operationTrace } : {}), ...(value.summary ? { summary: value.summary } : {}) }, originalBytes, maxBytes);
 }
 
 /** History payload fields may be previewed, but never identifiers or cursors.
@@ -122,27 +131,43 @@ export function structuredFromContent(content: unknown): Record<string, unknown>
 }
 
 /** Install semantic output contracts and bound duplicated structured payloads once per MCP server. */
-export function installDefaultToolOutputContracts(server: McpServer, diagnostics?: ToolDiagnostics): void {
+export function installDefaultToolOutputContracts(server: McpServer, diagnostics?: ToolDiagnostics, client?: AgentClient): void {
   if (installedServers.has(server)) return;
   const recovery = new ResultRecoveryStore();
   const target = server as any;
   const original = target.registerTool.bind(server);
   target.registerTool = (name: string, config: any, callback: (...args: any[]) => any) => {
+    if (scopedTools.has(name) && config?.inputSchema) {
+      const scope = { diagnosticScopeId: z.string().uuid().optional().describe("Client-declared console association; not an authorization or durable effect key.") };
+      const input = config.inputSchema;
+      config = { ...config, inputSchema: typeof input.safeExtend === "function" ? input.safeExtend(scope) : { ...input, ...scope } };
+    }
     const schema = config?.outputSchema ?? toolResultSchemas[name as ToolResultName];
     if (!schema) throw new Error(`Missing semantic output contract for registered tool: ${name}`);
     const advertisedSchema = withErrorOutputContract(schema);
     const wrappedCallback = async (...args: any[]) => {
+      if (client) args[0] = canonicalDeviceArguments(args[0], client.devices ?? []);
       const trace = createTrace(name, args[0], args[1]?.requestId, args[1]?.sessionId);
       return diagnosticContext.run(trace, async () => {
       const started = performance.now();
       const extra = args[1];
+      const observer = client && !consoleReadTools.has(name) && !name.startsWith("result_recover") ? operationsFor(client) : undefined;
+      const scope = args[0]?.diagnosticScopeId ?? extra?._meta?.diagnosticScopeId;
+      if (scopedTools.has(name) && args[0] && Object.hasOwn(args[0], "diagnosticScopeId")) {
+        const { diagnosticScopeId: _, ...input } = args[0]; args[0] = input;
+      }
+      let operationId: string | undefined;
+      let observedResult: Record<string, unknown> | undefined;
+      let requestSucceeded = false;
       const stopProgress = startToolProgress(name, extra);
       const detail: ResultDiagnostic = { trace };
       let preparingAt: number | undefined;
       let outcome: ReturnType<typeof toolOutcome> = "error";
       let reference: ReturnType<ResultRecoveryStore["begin"]> | undefined;
       try {
-        if (!name.startsWith("result_recover")) {
+        if (scope !== undefined) z.string().uuid().parse(scope);
+        operationId = await observer?.begin(name, scope, extra?.requestId, extra?.sessionId, args[0]?.contextKeep);
+        if (!name.startsWith("result_recover") && !consoleReadTools.has(name)) {
           // A caller can reserve the ID before effects. Unknown/reused IDs fail
           // closed; recovery is never an execution retry mechanism.
           const requested = extra?._meta?.resultRecoveryId;
@@ -150,7 +175,8 @@ export function installDefaultToolOutputContracts(server: McpServer, diagnostics
           if (requested !== undefined) reference = recovery.reference(requested);
           reference = recovery.begin(requested, { tool: name, requestId: extra?.requestId, sessionId: extra?.sessionId });
         }
-        const result = await measureAsync("handler", () => withToolErrors(() => callback(...args)));
+        const invoke = () => measureAsync("handler", () => withToolErrors(() => callback(...args)));
+        const result = await (observer && operationId ? operationContext.run({ observer, traceId: operationId }, invoke) : invoke());
         preparingAt = performance.now();
         if (!result || typeof result !== "object") {
           if (reference) reference = recovery.finish(reference.id, { resultInvalid: true, callbackResult: result ?? null });
@@ -159,6 +185,8 @@ export function installDefaultToolOutputContracts(server: McpServer, diagnostics
         const current = (result as any).structuredContent;
         const structured = current && typeof current === "object" && !Array.isArray(current)
           ? current as Record<string, unknown> : structuredFromContent((result as any).content);
+        observedResult = structured;
+        requestSucceeded = (result as any).isError !== true && structured.ok !== false;
         if ((name === "batch_exec" || name === "batch_recover") && Array.isArray(structured.items)) trace.jobHashes = structured.items.slice(0, 64).filter(i => typeof i?.jobId === "string").map(i => correlationHash(i.jobId));
         if (name.startsWith("job_") && typeof structured.id === "string") trace.correlation.job = correlationHash(structured.id);
         if ((name === "batch_exec" || name === "batch_recover") && typeof structured.operationId === "string") trace.correlation.operation = /^[a-f0-9]{64}$/.test(structured.operationId) ? structured.operationId : correlationHash(structured.operationId);
@@ -171,7 +199,8 @@ export function installDefaultToolOutputContracts(server: McpServer, diagnostics
           detail.execution = structured.summary as ResultDiagnostic["execution"];
           detail.requestErrors = (structured.summary as any).requestErrors;
         }
-        const full = { ...structured, ...(reference ? { resultRecovery: reference } : {}) };
+        const full = { ...structured, ...(reference ? { resultRecovery: reference } : {}),
+          ...(observer && operationId ? { operationTrace: { traceId: operationId, controllerInstanceId: observer.controllerInstanceId } } : {}) };
         const historyPage = name === "job_history" || (name === "job_list" && Object.hasOwn(structured, "nextCursor"));
         let final = historyPage && !(result as any).isError ? compactHistoryPage(full) : compactStructuredContent(full, STRUCTURED_CONTENT_MAX_BYTES, advertisedSchema);
         const failedValidation = !measureSync("finalValidation", () => advertisedSchema.safeParse(final)).success;
@@ -187,7 +216,7 @@ export function installDefaultToolOutputContracts(server: McpServer, diagnostics
           output.structuredContent = final;
         }
         if (final.structuredContentTruncated || final.contentTruncated || failedValidation || jsonBytes(output) > TOTAL_RESULT_MAX_BYTES) {
-          output = { isError: output.isError, content: [{ type: "text", text: JSON.stringify(final) }], structuredContent: final };
+          output = { isError: output.isError, ...(output._meta ? { _meta: output._meta } : {}), content: [{ type: "text", text: JSON.stringify(final) }], structuredContent: final };
         }
         // Validate the actual object, after every wrapper. The contract uses the
         // exact advertised JSON Schema in addition to Zod's semantic refinements.
@@ -211,7 +240,8 @@ export function installDefaultToolOutputContracts(server: McpServer, diagnostics
         if (preparingAt !== undefined) recordStage("resultPreparation", performance.now() - preparingAt);
         trace.callerDisconnected = Boolean(extra?.signal?.aborted);
         stopProgress();
-        diagnostics?.record(name, args[0], performance.now() - started, outcome, detail);
+        if (observer && operationId) await observer.finish(operationId, observedResult, requestSucceeded, trace.callerDisconnected, reference?.id);
+        if (!consoleReadTools.has(name)) diagnostics?.record(name, args[0], performance.now() - started, outcome, detail);
       }
       });
     };

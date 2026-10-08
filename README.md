@@ -16,6 +16,21 @@ node .github/check-public-data.mjs --history HEAD
 
 Tests use isolated temporary state. Do not override them with production state directories. The lockfile fixes resolved packages; direct versions and action commit hashes are pinned. Change those deliberately and rerun the entire relevant suite, including SDK/session compatibility tests.
 
+The read-only console is built with `pnpm build:console` (included in `pnpm check`).
+Build it before starting the controller from a fresh checkout or immutable
+release. Ship `apps/console/dist/console.html` and its SHA-256 manifest alongside
+the verified source; the source attestation alone does not attest generated
+assets. Keep the build receipt with the private release record. Both MCP HTTP
+protocols and every legacy session expose the same `ui://` resource. The opener
+is `open_remote_control_console`; actual placement depends on the app host.
+
+MCP Apps 1.7.5 is pinned with a declaration-only patch adding the missing `.js`
+extensions to relative type imports for NodeNext. Runtime SDK code is unchanged;
+the project retains full type checking. The console uses the SDK host bridge,
+bundles its assets, permits no direct network access, and keeps credentials on
+the server. It loads output only on request and renders it as text. Automated
+bridge/browser tests use synthetic data and do not certify a real ChatGPT host.
+
 ## Configuration and startup
 
 Copy `.env.example` into a private configuration directory. Replace placeholders with independently generated secrets; never commit the resulting file. Start an agent per required execution identity. Give owner and system agents separate ports and state directories; keep their existing private data directories stable across upgrades.
@@ -126,6 +141,38 @@ The bridge avoids writing to known terminal/verified runs; concurrent observatio
 and verification ordering ultimately depends on the ContextKeep write contract.
 
 ## Performance and history observations
+
+Device inventories may declare explicit `aliases` and
+`expectedAvailability: "intermittent"`. Aliases resolve to the canonical name
+before tool handlers construct durable keys or coordination resources. Names and
+aliases must be unique across HTTP and Android devices, ignoring case. Alias
+resolution never rewrites command text, environment variables or arbitrary data.
+
+`fleet_status` accepts `identity: "auto" | "root" | "owner" | "interactive"`.
+Auto chooses system for HTTP agents and owner for Android; the selected identity
+and whether it is configured are reported separately from reachability. A missing
+identity is not a failed network probe. Conflicting explicit identity/context
+selectors are rejected for fleet observation; effectful routing is unchanged.
+
+Controller previews preserve `agentStdoutTruncated`/`agentStderrTruncated` and
+add `controllerStdoutTruncated`/`controllerStderrTruncated` when shortening output.
+Recovery restores only the captured receipt, never bytes discarded by the agent.
+
+Observed tools expose an `operationTrace` with a unique trace and controller
+instance ID. Selected starting tools accept optional `diagnosticScopeId` (UUID)
+for client-declared association, independently of durable effect keys. This
+metadata is removed before agent dispatch. Observations preserve bounded metadata
+only under `RCMCP_STATE_DIR/operation-observations-v1`; without a configured state
+root they are memory-only. Keep that directory private and owned by one controller.
+Limits are 5,000 entries, 16 MiB and seven days for terminal observations. Active
+and uncertain observations are retained at capacity; coverage becomes partial
+instead of blocking workload execution. After restart an unfinished handler is
+unknown. A returned handler is not proof of client consumption, job completion
+or effect verification. Observations containing job references remain protected
+until an explicit job inspection reads a completed or cancelled state from the
+agent; missing, running and lost jobs do not establish completion. Failed or
+disconnected dispatched calls and uncertain execution results remain unknown.
+Diagnostic UI reads do not consume operation result-recovery slots.
 
 `fleet_status` probes authenticated host info and light metrics in parallel within
 one read-only budget (`probeTimeoutMs`, default 1500 ms; configurable through
