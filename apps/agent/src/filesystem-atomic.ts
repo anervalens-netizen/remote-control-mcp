@@ -444,6 +444,12 @@ export async function replaceByRename(source: string, destination: string, force
     }
     try {
       await execFileAsync("mv", ["--no-clobber", "--no-target-directory", "--", source, destination], { windowsHide: true, maxBuffer: 1024 * 1024 });
+      // Some coreutils versions return zero when --no-clobber skips an
+      // existing destination. A successful process exit is not a move receipt.
+      let sourceRemains = true;
+      try { await lstat(source); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") sourceRemains = false; else throw error; }
+      if (sourceRemains) throw new Error("No-replace move did not remove the source; inspect both paths before retrying");
     } catch (error) {
       let sourceStillExists = false;
       let destinationExists = false;

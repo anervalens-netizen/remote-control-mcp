@@ -1,5 +1,9 @@
 packages:
   - apps/*
   - packages/*
+
 onlyBuiltDependencies:
   - node-pty
+
+patchedDependencies:
+  '@modelcontextprotocol/ext-apps@1.7.5': patches/mcp-ext-apps-1.7.5-types.patch

@@ -1,6 +1,7 @@
 import { configuredContextKeepBridge,closeContextKeepBridges } from "./contextkeep-bridge.ts";
 import { execFileSync } from 'node:child_process';
 import process from 'node:process';
+import { fileURLToPath } from 'node:url';
 import { AgentClient } from './agent-client.ts';
 import { assertMcpHttpAuth, createMcpHttpServer } from './http-server.ts';
 import { AndroidController, loadAndroidControllerConfig } from './android-controller.ts';
@@ -10,7 +11,7 @@ const port = Number(process.env.RCMCP_MCP_PORT ?? '45230');
 const allowUnauthenticated = process.env.RCMCP_ALLOW_UNAUTHENTICATED === '1';
 assertMcpHttpAuth(process.env.RCMCP_MCP_TOKEN, allowUnauthenticated);
 const sha = process.env.RCMCP_RUNTIME_SHA ?? (() => {
-  try { return execFileSync('git', ['rev-parse', 'HEAD'], { cwd: process.cwd(), encoding: 'utf8', timeout: 2000, windowsHide: true }).trim(); }
+  try { return execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fileURLToPath(new URL('../../../', import.meta.url)), encoding: 'utf8', timeout: 2000, windowsHide: true }).trim(); }
   catch { return null; }
 })();
 const configuredSessionIdleMs = process.env.RCMCP_SESSION_IDLE_MS === undefined

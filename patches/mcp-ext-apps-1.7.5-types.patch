@@ -1,0 +1,135 @@
+diff --git a/dist/src/app-bridge.d.ts b/dist/src/app-bridge.d.ts
+index 4be3ae664593749ccc0476bd54b6d0ebdf6511d0..cc4d9c40d8651699235f8a4a85ab6bba76a5737f 100644
+--- a/dist/src/app-bridge.d.ts
++++ b/dist/src/app-bridge.d.ts
+@@ -2,11 +2,11 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+ import { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
+ import { CallToolRequest, CallToolResult, CreateMessageRequest, CreateMessageResult, CreateMessageResultWithTools, EmptyResult, Implementation, ListPromptsRequest, ListPromptsResult, ListResourcesRequest, ListResourcesResult, ListResourceTemplatesRequest, ListResourceTemplatesResult, ListToolsRequest, LoggingMessageNotification, PingRequest, PromptListChangedNotification, ReadResourceRequest, ReadResourceResult, ResourceListChangedNotification, Tool, ToolListChangedNotification } from "@modelcontextprotocol/sdk/types.js";
+ import { Protocol, ProtocolOptions, RequestOptions } from "@modelcontextprotocol/sdk/shared/protocol.js";
+-import { ProtocolWithEvents } from "./events";
+-import { type AppNotification, type AppRequest, type AppResult, type McpUiSandboxResourceReadyNotification, type McpUiSizeChangedNotification, type McpUiToolCancelledNotification, type McpUiToolInputNotification, type McpUiToolInputPartialNotification, type McpUiToolResultNotification, McpUiAppCapabilities, McpUiUpdateModelContextRequest, McpUiHostCapabilities, McpUiHostContext, McpUiHostContextChangedNotification, McpUiInitializedNotification, McpUiMessageRequest, McpUiMessageResult, McpUiOpenLinkRequest, McpUiOpenLinkResult, McpUiDownloadFileRequest, McpUiDownloadFileResult, McpUiResourceTeardownRequest, McpUiRequestTeardownNotification, McpUiSandboxProxyReadyNotification, McpUiRequestDisplayModeRequest, McpUiRequestDisplayModeResult, McpUiResourcePermissions } from "./types";
+-export * from "./types";
+-export { RESOURCE_URI_META_KEY, RESOURCE_MIME_TYPE } from "./app";
+-export { PostMessageTransport } from "./message-transport";
++import { ProtocolWithEvents } from "./events.js";
++import { type AppNotification, type AppRequest, type AppResult, type McpUiSandboxResourceReadyNotification, type McpUiSizeChangedNotification, type McpUiToolCancelledNotification, type McpUiToolInputNotification, type McpUiToolInputPartialNotification, type McpUiToolResultNotification, McpUiAppCapabilities, McpUiUpdateModelContextRequest, McpUiHostCapabilities, McpUiHostContext, McpUiHostContextChangedNotification, McpUiInitializedNotification, McpUiMessageRequest, McpUiMessageResult, McpUiOpenLinkRequest, McpUiOpenLinkResult, McpUiDownloadFileRequest, McpUiDownloadFileResult, McpUiResourceTeardownRequest, McpUiRequestTeardownNotification, McpUiSandboxProxyReadyNotification, McpUiRequestDisplayModeRequest, McpUiRequestDisplayModeResult, McpUiResourcePermissions } from "./types.js";
++export * from "./types.js";
++export { RESOURCE_URI_META_KEY, RESOURCE_MIME_TYPE } from "./app.js";
++export { PostMessageTransport } from "./message-transport.js";
+ /**
+  * Extract UI resource URI from tool metadata.
+  *
+diff --git a/dist/src/app.d.ts b/dist/src/app.d.ts
+index 5d5316aa74a2e9450f44f5a41917457c1a90e50b..a46fceb5f585cfcb49abcb29883cab97a0437616 100644
+--- a/dist/src/app.d.ts
++++ b/dist/src/app.d.ts
+@@ -1,16 +1,16 @@
+ import { type RequestOptions, ProtocolOptions } from "@modelcontextprotocol/sdk/shared/protocol.js";
+ import { CallToolRequest, CallToolResult, CreateMessageRequest, CreateMessageResult, CreateMessageResultWithTools, Implementation, ListResourcesRequest, ListResourcesResult, ListToolsRequest, ListToolsResult, LoggingMessageNotification, ReadResourceRequest, ReadResourceResult, ToolAnnotations, ToolListChangedNotification } from "@modelcontextprotocol/sdk/types.js";
+-import { AppNotification, AppRequest, AppResult } from "./types";
+-import { ProtocolWithEvents } from "./events";
++import { AppNotification, AppRequest, AppResult } from "./types.js";
++import { ProtocolWithEvents } from "./events.js";
+ export { ProtocolWithEvents };
+-import { McpUiAppCapabilities, McpUiUpdateModelContextRequest, McpUiHostCapabilities, McpUiHostContext, McpUiHostContextChangedNotification, McpUiMessageRequest, McpUiOpenLinkRequest, McpUiDownloadFileRequest, McpUiResourceTeardownRequest, McpUiResourceTeardownResult, McpUiRequestTeardownNotification, McpUiSizeChangedNotification, McpUiToolCancelledNotification, McpUiToolInputNotification, McpUiToolInputPartialNotification, McpUiToolResultNotification, McpUiRequestDisplayModeRequest } from "./types";
++import { McpUiAppCapabilities, McpUiUpdateModelContextRequest, McpUiHostCapabilities, McpUiHostContext, McpUiHostContextChangedNotification, McpUiMessageRequest, McpUiOpenLinkRequest, McpUiDownloadFileRequest, McpUiResourceTeardownRequest, McpUiResourceTeardownResult, McpUiRequestTeardownNotification, McpUiSizeChangedNotification, McpUiToolCancelledNotification, McpUiToolInputNotification, McpUiToolInputPartialNotification, McpUiToolResultNotification, McpUiRequestDisplayModeRequest } from "./types.js";
+ import { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
+-import { StandardSchemaV1 } from "./standard-schema";
++import { StandardSchemaV1 } from "./standard-schema.js";
+ import { z } from "zod/v4";
+-export type { StandardSchemaV1, StandardSchemaWithJSON, } from "./standard-schema";
+-export { PostMessageTransport } from "./message-transport";
+-export * from "./types";
+-export { applyHostStyleVariables, applyHostFonts, getDocumentTheme, applyDocumentTheme, } from "./styles";
++export type { StandardSchemaV1, StandardSchemaWithJSON, } from "./standard-schema.js";
++export { PostMessageTransport } from "./message-transport.js";
++export * from "./types.js";
++export { applyHostStyleVariables, applyHostFonts, getDocumentTheme, applyDocumentTheme, } from "./styles.js";
+ /**
+  * Metadata key for associating a UI resource URI with a tool.
+  *
+diff --git a/dist/src/react/index.d.ts b/dist/src/react/index.d.ts
+index e76e197a8eca57a2b2a04caae956e58256b452c8..9693fb1162c9cce2af7275f9b2af867dcd92297a 100644
+--- a/dist/src/react/index.d.ts
++++ b/dist/src/react/index.d.ts
+@@ -31,7 +31,7 @@
+  * }
+  * ```
+  */
+-export * from "./useApp";
+-export * from "./useAutoResize";
+-export * from "./useDocumentTheme";
+-export * from "./useHostStyles";
++export * from "./useApp.js";
++export * from "./useAutoResize.js";
++export * from "./useDocumentTheme.js";
++export * from "./useHostStyles.js";
+diff --git a/dist/src/react/useApp.d.ts b/dist/src/react/useApp.d.ts
+index 917bc5e1521a8cbbf8242358c190c6a413a5544a..ef48b8bd2a6b7fc533b89442e98c3768bf6f59dc 100644
+--- a/dist/src/react/useApp.d.ts
++++ b/dist/src/react/useApp.d.ts
+@@ -1,6 +1,6 @@
+ import { Implementation } from "@modelcontextprotocol/sdk/types.js";
+-import { App, AppOptions, McpUiAppCapabilities } from "../app";
+-export * from "../app";
++import { App, AppOptions, McpUiAppCapabilities } from "../app.js";
++export * from "../app.js";
+ /**
+  * Options for configuring the {@link useApp `useApp`} hook.
+  *
+diff --git a/dist/src/react/useAutoResize.d.ts b/dist/src/react/useAutoResize.d.ts
+index f143fbca8a67cf6498ab173a5dc9d20bed93fb77..9566862ae78f6274cd2e88447891e14ac887c6ac 100644
+--- a/dist/src/react/useAutoResize.d.ts
++++ b/dist/src/react/useAutoResize.d.ts
+@@ -1,5 +1,5 @@
+ import { RefObject } from "react";
+-import { App } from "../app";
++import { App } from "../app.js";
+ /**
+  * React hook that automatically reports UI size changes to the host.
+  *
+diff --git a/dist/src/react/useDocumentTheme.d.ts b/dist/src/react/useDocumentTheme.d.ts
+index 39b531cf0641e4f02059468019f500370fecd5dc..c129e3d9b8bad9ef18c3366dce5335c2adc5c6fc 100644
+--- a/dist/src/react/useDocumentTheme.d.ts
++++ b/dist/src/react/useDocumentTheme.d.ts
+@@ -1,4 +1,4 @@
+-import { McpUiTheme } from "../types";
++import { McpUiTheme } from "../types.js";
+ /**
+  * React hook that provides the current document theme reactively.
+  *
+diff --git a/dist/src/react/useHostStyles.d.ts b/dist/src/react/useHostStyles.d.ts
+index 6b41cfde20ad496a7226fec14ad3afebeb0f97b2..a5d7c36a86256b84cef9e01339492bcc99d13909 100644
+--- a/dist/src/react/useHostStyles.d.ts
++++ b/dist/src/react/useHostStyles.d.ts
+@@ -1,5 +1,5 @@
+-import { App } from "../app";
+-import { McpUiHostContext } from "../types";
++import { App } from "../app.js";
++import { McpUiHostContext } from "../types.js";
+ /**
+  * React hook that applies host style variables and theme as CSS custom properties.
+  *
+diff --git a/dist/src/server/index.d.ts b/dist/src/server/index.d.ts
+index 92c98fa0fd65caa7cf143adf19f763d271fba481..0c85538cabfe726ffd0ab2e568a45c974e04b814 100644
+--- a/dist/src/server/index.d.ts
++++ b/dist/src/server/index.d.ts
+@@ -33,7 +33,7 @@
+ import { RESOURCE_URI_META_KEY, RESOURCE_MIME_TYPE, McpUiResourceMeta, McpUiToolMeta, McpUiClientCapabilities } from "../app.js";
+ import type { McpServer, RegisteredTool, ResourceMetadata, ToolCallback, ReadResourceCallback as _ReadResourceCallback, RegisteredResource } from "@modelcontextprotocol/sdk/server/mcp.js";
+ import type { AnySchema, ZodRawShapeCompat } from "@modelcontextprotocol/sdk/server/zod-compat.js";
+-import type { StandardSchemaWithJSON } from "../standard-schema";
++import type { StandardSchemaWithJSON } from "../standard-schema.js";
+ import type { ClientCapabilities, ReadResourceResult, ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
+ export { RESOURCE_URI_META_KEY, RESOURCE_MIME_TYPE };
+ export type { ResourceMetadata, ToolCallback };
+diff --git a/dist/src/styles.d.ts b/dist/src/styles.d.ts
+index f84bcf1b21ee1cfc15cfc87c5312aebc6424b1ae..2884ce2f4e538c6a3eccaa276cd03bd5b9cde76c 100644
+--- a/dist/src/styles.d.ts
++++ b/dist/src/styles.d.ts
+@@ -1,4 +1,4 @@
+-import { McpUiStyles, McpUiTheme } from "./types";
++import { McpUiStyles, McpUiTheme } from "./types.js";
+ /**
+  * Get the current document theme from the root HTML element.
+  *

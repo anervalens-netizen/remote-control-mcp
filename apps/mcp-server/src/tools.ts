@@ -19,13 +19,15 @@ export function registerTools(server: McpServer, client: AgentClient): void {
     outputSchema: {
       devices: z.array(z.object({
         name: z.string(),
+        aliases: z.array(z.string()).optional(),
+        expectedAvailability: z.enum(["continuous", "intermittent"]).optional(),
         url: z.string(),
         contexts: z.object({ system: z.boolean(), user: z.boolean(), desktop: z.boolean() }),
       })),
     },
     annotations: { readOnlyHint: true, openWorldHint: false },
   }, async () => {
-    const devices = client.devices.map(({ name, url }) => ({ name, url, contexts: client.configuredContexts(name) }));
+    const devices = client.devices.map(({ name, url, aliases, expectedAvailability }) => ({ name, url, aliases, expectedAvailability, contexts: client.configuredContexts(name) }));
     return structured({ devices }, devices);
   });
 

@@ -7,6 +7,7 @@ import type { DeployInput, JobFollowInput, ProjectRunInput } from "../../../pack
 import type { DesktopUiaInput, DesktopWindowsInput, DesktopBatchInput } from "../../../packages/protocol/src/desktop.ts";
 import { filterProcesses, summarizeDockerSnapshot, type DockerSnapshot } from "../../../packages/protocol/src/filtering.ts";
 import fs from "node:fs";
+import { observeAgent } from "./operation-observer.ts";
 import type { DeviceConfig, ExecRequest, ExecResult } from "../../../packages/protocol/src/index.ts";
 import type { AndroidController } from "./android-controller.ts";
 import {
@@ -138,15 +139,15 @@ export class AgentClient {
       name: descriptor.name, url: descriptor.url, transport: "android-reverse" as const,
     })) ?? [];
     const names = new Set<string>();
-    for (const device of devices) {
-      const key = device.name.toLowerCase();
-      if (names.has(key)) throw new Error(`Duplicate device name: ${device.name}`);
-      names.add(key);
-    }
-    for (const device of configured) {
-      const key = device.name.toLowerCase();
-      if (names.has(key)) throw new Error(`Android device name collides with an existing device: ${device.name}`);
-      names.add(key);
+    for (const device of [...devices, ...configured] as DeviceConfig[]) {
+      if (device.aliases !== undefined && !Array.isArray(device.aliases)) throw new Error("Device aliases must be an array");
+      if (device.expectedAvailability !== undefined && !["continuous", "intermittent"].includes(device.expectedAvailability)) throw new Error("Invalid expectedAvailability");
+      for (const name of [device.name, ...(device.aliases ?? [])]) {
+        if (typeof name !== "string" || !name.trim() || name !== name.trim()) throw new Error("Invalid device name or alias");
+        const key = name.toLowerCase();
+        if (names.has(key)) throw new Error(`Duplicate device name or alias (including Android): ${name}`);
+        names.add(key);
+      }
     }
     this.devices = [...devices, ...configured];
     this.token = token;
@@ -155,7 +156,7 @@ export class AgentClient {
   }
 
   getDevice(name: string): DeviceConfig {
-    const device = this.devices.find((item) => item.name.toLowerCase() === name.toLowerCase());
+    const device = this.devices.find((item) => [item.name, ...(item.aliases ?? [])].some(value => value.toLowerCase() === name.toLowerCase()));
     if (!device) throw new Error(`Unknown device: ${name}`);
     return device;
   }
@@ -202,6 +203,9 @@ export class AgentClient {
     const deadline = createDeadline(timeoutMs, options.signal);
     const signal = deadline.signal;
     try {
+      const knownJobId = ["/v1/jobs/status", "/v1/jobs/follow", "/v1/jobs/output", "/v1/jobs/cancel"].includes(route)
+        && body && typeof body === "object" && "id" in body && typeof body.id === "string" ? body.id : undefined;
+      await observeAgent("agent_dispatch", this.getDevice(name).name, context, undefined, knownJobId);
       const response = await fetch(`${endpoint.base}${route}`, {
         method: body === undefined ? "GET" : "POST", headers, redirect: "error",
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
@@ -213,13 +217,20 @@ export class AgentClient {
         throw new AgentRequestError(`${name} ${context} ${route} failed: HTTP ${response.status}${detail}`, name, context, route, "http", response.status, recovery, truncated, jobStartFailure, agentCode, coordinationConflict);
       }
       try {
-        return await response.json() as T;
+        const result = await response.json() as T;
+        const value = result as any;
+        const candidate = route === "/v1/jobs/start" || route === "/v1/jobs/status" || route === "/v1/jobs/follow"
+          ? value?.id ?? value?.job?.id
+          : route === "/v1/project/run" ? value?.result?.id : route === "/v1/deploy/run" ? value?.job?.id : undefined;
+        await observeAgent("agent_response", this.getDevice(name).name, context, true, typeof candidate === "string" ? candidate : undefined);
+        return result;
       } catch (error) {
         if (signal?.aborted) throw error;
         const detail = error instanceof Error ? error.message : String(error);
         throw new AgentRequestError(`${name} ${context} ${route} invalid JSON response: ${detail}`, name, context, route, "protocol");
       }
     } catch (error) {
+      await observeAgent("agent_response", this.getDevice(name).name, context, false);
       const kind = error instanceof AgentRequestError ? error.kind : options.signal?.aborted && !deadline.timedOut() ? "cancelled" : deadline.timedOut() ? "timeout" : "network";
       const trace = diagnosticContext.getStore();
       if (trace) trace.agentErrors[kind] = (trace.agentErrors[kind] ?? 0) + 1;
