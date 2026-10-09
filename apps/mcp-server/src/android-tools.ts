@@ -1,3 +1,4 @@
+import { androidFilePushFields } from "./android-file-push.ts";
 import { randomUUID } from "node:crypto";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
@@ -167,6 +168,11 @@ export function registerAndroidTools(server: McpServer, client: AgentClient): vo
     const deadline = Date.now() + request.timeoutMs + 15_000;
     return resultResponse(await client.androidAction(device, commandId, request, deadline, extra.signal));
   });
+
+  server.registerTool("android_file_push", {
+    description: "Push a generation-verified source-agent file into Android Downloads over authenticated reverse transport. Keep commandId stable; inspect uncertain commands without replay. Maximum 512 MiB.",
+    inputSchema: androidFilePushFields, outputSchema: z.object({ commandId: z.string().uuid(), status: z.string() }).passthrough(),
+  }, async (input, extra) => resultResponse(await client.androidFilePush(input, extra.signal)));
 
   server.registerTool("android_command_status", {
     description: "Look up an Android command without replaying it. Controller uncertainty may later resolve from the same delivery; compacted history is reported distinctly as history_unavailable while no-replay remains enforced.",

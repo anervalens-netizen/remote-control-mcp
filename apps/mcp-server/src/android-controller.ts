@@ -3,6 +3,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { performance } from "node:perf_hooks";
 import { chmodSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { AndroidFilePushStore } from "./android-file-push.ts";
 import { z } from "zod";
 import {
   androidCommandRequestSchema,
@@ -13,6 +14,7 @@ import {
   androidSnapshotSchema,
   androidImageSchema,
   androidUiNodeSchema,
+  androidReceiveFileRequestSchema,
   type AndroidCommandRequest,
   type AndroidPollRequest,
   type AndroidPollResponse,
@@ -29,11 +31,16 @@ const DEFAULT_MAX_PHONE_POLL_RESPONSE_BYTES = 16 * 1024 * 1024;
 const PHONE_POLL_RESPONSE_MARGIN_BYTES = 64 * 1024;
 const SEEN_FILTER_BYTES = 128 * 1024;
 const SEEN_FILTER_HASHES = 6;
-const androidOperations = ["observe", "tap", "swipe", "set_text", "node_action", "global_action", "open_app", "shell"] as const;
+const androidOperations = ["observe", "tap", "swipe", "set_text", "node_action", "global_action", "open_app", "shell", "receive_file"] as const;
 type AndroidOperation = (typeof androidOperations)[number];
 function isAndroidOperation(value: unknown): value is AndroidOperation {
   return typeof value === "string" && (androidOperations as readonly string[]).includes(value);
 }
+
+const fileReceiptSchema = z.object({
+  transferId: z.string().uuid(), sha256: z.string().regex(/^[a-f0-9]{64}$/), bytes: z.number().int().min(0).max(512 * 1024 * 1024),
+  published: z.literal(true), uri: z.string().regex(/^content:\/\/media\/[A-Za-z0-9_/-]+$/).max(300).optional(),
+}).strict();
 
 const configSchema = z.object({
   host: z.string().min(1), port: z.number().int().min(0).max(65535), stateDir: z.string().min(1),
@@ -54,6 +61,8 @@ type PersistedCommand = {
   expiresAt?: number;
   dispatchedAt?: number;
   resultDigest?: string;
+  fileRequest?: Extract<AndroidCommandRequest, { operation: "receive_file" }>;
+  fileResult?: Record<string, unknown>;
 };
 
 type PersistedStore = { version: 1; commands: PersistedCommand[] };
@@ -66,7 +75,7 @@ type CommandResult = {
   error?: { code: string; message: string };
 };
 
-type CommandLookup = CommandResult | {
+type CommandLookup = { commandId: string; status: "staging"; noReplay: true } | CommandResult | {
   commandId: string;
   status: InternalStatus;
   fingerprint?: string;
@@ -302,6 +311,7 @@ function protocolError(error: z.ZodError): AndroidControllerError {
 
 function commandResult(command: RuntimeCommand): CommandResult {
   if (command.result) return command.result;
+  if (command.fileResult) return { commandId: command.commandId, status: command.status as TerminalStatus, ok: command.status === "completed", result: command.fileResult };
   if (command.status === "completed" || command.status === "error") return { commandId: command.commandId, status: command.status, ok: command.status === "completed", result: { payloadRetained: false } };
   if (command.status === "cancelled") return { commandId: command.commandId, status: "cancelled", ok: false, error: { code: "cancelled", message: "Command was cancelled before dispatch" } };
   if (command.status === "expired") return { commandId: command.commandId, status: "expired", ok: false, error: { code: "expired", message: "Command expired before dispatch" } };
@@ -348,11 +358,13 @@ export class AndroidController {
   private server: Server | null = null;
   private closed = false;
   readonly config: AndroidControllerConfig;
+  readonly filePush: AndroidFilePushStore;
 
   constructor(config: AndroidControllerConfig, options: AndroidControllerOptions = {}) {
     this.config = parseAndroidControllerConfig(config);
     this.stateDir = this.config.stateDir;
     ensurePrivateDir(this.stateDir);
+    this.filePush = new AndroidFilePushStore(this.stateDir, this);
     this.pollWaitMs = Number.isFinite(options.pollWaitMs) && (options.pollWaitMs ?? 0) >= 1 ? Math.floor(options.pollWaitMs!) : DEFAULT_POLL_WAIT_MS;
     this.offlineAfterMs = Number.isFinite(options.offlineAfterMs) && (options.offlineAfterMs ?? 0) >= 1 ? Math.floor(options.offlineAfterMs!) : DEFAULT_OFFLINE_AFTER_MS;
     this.maxDetailedCommands = Number.isFinite(options.maxDetailedCommands) && (options.maxDetailedCommands ?? 0) >= 1 ? Math.floor(options.maxDetailedCommands!) : DEFAULT_MAX_DETAILED_COMMANDS;
@@ -377,6 +389,15 @@ export class AndroidController {
       if (!item || !z.string().uuid().safeParse(item.commandId).success || !/^[a-f0-9]{64}$/.test(item.fingerprint)
         || !["queued", "dispatched", "completed", "error", "outcome_unknown", "cancelled", "expired"].includes(item.status)
         || device.commands.has(item.commandId)) throw new Error("Invalid Android command journal; no commands may be replayed");
+      if (item.operation === "receive_file" && (!androidReceiveFileRequestSchema.safeParse(item.fileRequest).success || item.fileRequest?.operation !== "receive_file" || digest(item.fileRequest) !== item.fingerprint)) throw new Error("Invalid Android file expectation in journal");
+      if (item.fileResult !== undefined) {
+        const receipt = fileReceiptSchema.safeParse(item.fileResult);
+        if (item.operation !== "receive_file" || item.status !== "completed" || !receipt.success
+          || receipt.data.transferId !== item.fileRequest?.transferId || receipt.data.sha256 !== item.fileRequest.sha256
+          || receipt.data.bytes !== item.fileRequest.bytes
+          || item.resultDigest !== digest({ commandId: item.commandId, status: "completed", ok: true, result: receipt.data })) throw new Error("Invalid Android file receipt in journal");
+      }
+      if (item.operation === "receive_file" && item.status === "completed" && !item.fileResult) throw new Error("Completed Android file journal lacks verified receipt");
       if (item.resultDigest !== undefined && !/^[a-f0-9]{64}$/.test(item.resultDigest)) throw new Error("Invalid Android result digest in journal");
       if (item.operation !== undefined && !isAndroidOperation(item.operation)) throw new Error("Invalid Android operation in journal");
       if (item.deliveryId !== undefined && (!z.string().uuid().safeParse(item.deliveryId).success || !z.string().uuid().safeParse(item.sessionId).success)) {
@@ -422,9 +443,9 @@ export class AndroidController {
   private persist(device: Device): void {
     const store: PersistedStore = {
       version: 1,
-      commands: [...device.commands.values()].map(({ commandId, fingerprint, operation, status, deliveryId, sessionId, expiresAt, dispatchedAt, resultDigest }) => ({
+      commands: [...device.commands.values()].map(({ commandId, fingerprint, operation, status, deliveryId, sessionId, expiresAt, dispatchedAt, resultDigest, fileRequest, fileResult }) => ({
         commandId, fingerprint, ...(operation ? { operation } : {}), status, ...(deliveryId ? { deliveryId } : {}), ...(sessionId ? { sessionId } : {}),
-        ...(expiresAt ? { expiresAt } : {}), ...(dispatchedAt ? { dispatchedAt } : {}), ...(resultDigest ? { resultDigest } : {}),
+        ...(expiresAt ? { expiresAt } : {}), ...(dispatchedAt ? { dispatchedAt } : {}), ...(resultDigest ? { resultDigest } : {}), ...(fileRequest ? { fileRequest } : {}), ...(fileResult ? { fileResult } : {}),
       })),
     };
     atomicWrite(device.filePath, store);
@@ -499,6 +520,7 @@ export class AndroidController {
     const rememberFailure = (error: unknown) => { failure ??= error; };
 
     try {
+      try { this.filePush.close(); } catch (error) { rememberFailure(error); }
       for (const device of this.devicesByName.values()) {
         try {
           this.finishPoll(device, { version: 1, serverTime: Date.now(), command: null });
@@ -671,6 +693,7 @@ export class AndroidController {
     const previous = {
       status: command.status,
       result: command.result,
+      fileResult: command.fileResult,
       resultDigest: command.resultDigest,
       queue: device.queue,
       active: device.active,
@@ -679,6 +702,7 @@ export class AndroidController {
     device.queue = device.queue.filter(id => id !== command.commandId);
     command.status = status;
     command.result = completedResult;
+    if (command.operation === "receive_file" && ok && result) command.fileResult = result;
     command.resultDigest = command.unknownSynthetic ? undefined : digest(completedResult);
     // Keep only controller-synthesized uncertainty active until a late
     // authoritative result or a new execution session. A phone-submitted
@@ -692,6 +716,7 @@ export class AndroidController {
     } catch (persistError) {
       command.status = previous.status;
       command.result = previous.result;
+      command.fileResult = previous.fileResult;
       command.resultDigest = previous.resultDigest;
       device.queue = previous.queue;
       device.active = previous.active;
@@ -821,7 +846,7 @@ export class AndroidController {
       throw new AndroidControllerError("command_tombstoned", "commandId was compacted after a terminal outcome and will not be replayed", 409);
     }
     if (!this.online(device)) throw new AndroidControllerError("offline", "Android device has no recent authenticated poll", 409);
-    const command: RuntimeCommand = { commandId, fingerprint, operation: request.data.operation, status: "queued", request: request.data, expiresAt: deadline };
+    const command: RuntimeCommand = { commandId, fingerprint, operation: request.data.operation, status: "queued", request: request.data, ...(request.data.operation === "receive_file" ? { fileRequest: request.data } : {}), expiresAt: deadline };
     device.commands.set(commandId, command);
     device.queue.push(commandId);
     // The identity tombstone is durable before the command can be dispatched.
@@ -880,13 +905,15 @@ export class AndroidController {
   lookup(first: string, second?: string): CommandLookup | null {
     const deviceName = second === undefined ? this.devicesByName.size === 1 ? [...this.devicesByName.keys()][0]! : undefined : first;
     const commandId = second === undefined ? first : second;
+    if (!z.string().uuid().safeParse(commandId).success) throw new AndroidControllerError("invalid_command_id", "Android commandId must be a UUID", 400);
     if (!deviceName) throw new AndroidControllerError("device_required", "An Android device name is required when multiple devices are configured", 400);
     const device = this.find(deviceName);
-    const command = device.commands.get(commandId);
-    if (!command) return seenHas(device.seenFilter, commandId)
+    const command = device.commands.get(commandId) ?? device.commands.get(commandId.toLowerCase()) ?? device.commands.get(commandId.toUpperCase());
+    if (!command) return (seenHas(device.seenFilter, commandId) || seenHas(device.seenFilter, commandId.toLowerCase()) || seenHas(device.seenFilter, commandId.toUpperCase()))
       ? { commandId, status: "history_unavailable", compacted: true, noReplay: true, reason: "terminal_history_compacted_or_filter_match" }
-      : null;
+      : this.filePush.reservationStatus(device.config.name, commandId.toLowerCase());
     if (command.result) return command.result;
+    if (command.fileResult) return { commandId, status: command.status as TerminalStatus, ok: command.status === "completed", result: command.fileResult };
     return { commandId: command.commandId, status: command.status, fingerprint: command.fingerprint, ...(command.deliveryId ? { deliveryId: command.deliveryId } : {}), ...(command.sessionId ? { sessionId: command.sessionId } : {}) };
   }
 
@@ -956,8 +983,10 @@ export class AndroidController {
     }
     if (command.deliveryId !== result.deliveryId || command.sessionId !== result.sessionId) throw new AndroidControllerError("delivery_conflict", "Result is not bound to the dispatched session and delivery", 409);
     if (command.status === "queued" || command.status === "cancelled" || command.status === "expired") throw new AndroidControllerError("not_dispatched", "A command that was not dispatched cannot submit a result", 409);
-    const resultValue = result.result;
     const operation = command.request?.operation ?? command.operation;
+    const fileReceipt = operation === "receive_file" && result.result ? fileReceiptSchema.safeParse(result.result) : undefined;
+    if (result.ok && operation === "receive_file" && !fileReceipt?.success) throw new AndroidControllerError("invalid_file_receipt", "File receipt is invalid", 400);
+    const resultValue: Record<string, unknown> | undefined = operation === "receive_file" ? (fileReceipt?.success ? fileReceipt.data : undefined) : result.result;
     // Pre-operation journals are migrated at load time when their canonical
     // fingerprint identifies an observe request. Unknown legacy non-observe
     // actions remain compatible; any payload that presents a snapshot is still
@@ -990,6 +1019,13 @@ export class AndroidController {
       ...(resultValue ? { result: resultValue } : {}),
       ...(result.error ? { error: result.error } : {}),
     };
+    if (result.ok && operation === "receive_file") {
+      const expected = command.fileRequest;
+      if (!expected || resultValue?.transferId !== expected.transferId || resultValue?.sha256 !== expected.sha256
+          || resultValue?.bytes !== expected.bytes || resultValue?.published !== true) {
+        throw new AndroidControllerError("invalid_file_receipt", "File receipt does not verify the expected transfer hash and length", 400);
+      }
+    }
     const resultDigest = digest(outcome);
     if (command.resultDigest && command.resultDigest !== resultDigest) throw new AndroidControllerError("result_conflict", "A different result was already recorded for this delivery", 409);
     if (command.resultDigest) return;
@@ -999,9 +1035,10 @@ export class AndroidController {
 
   private async handleHttp(req: IncomingMessage, res: ServerResponse): Promise<void> {
     try {
-      if (req.method !== "POST") { json(res, 405, { error: "method_not_allowed" }); return; }
       const route = new URL(req.url ?? "/", "http://android-controller").pathname;
-      if (route !== "/android/v1/poll" && route !== "/android/v1/result") { json(res, 404, { error: "not_found" }); return; }
+      const fileRoute = /^\/android\/v1\/files\/([a-f0-9-]{36})$/.exec(route);
+      if (req.method !== "POST" && !(req.method === "GET" && fileRoute)) { json(res, 405, { error: "method_not_allowed" }); return; }
+      if (route !== "/android/v1/poll" && route !== "/android/v1/result" && !fileRoute) { json(res, 404, { error: "not_found" }); return; }
       if (this.closed) throw new AndroidControllerError("closed", "Android controller is closing", 503);
       const presented = parseAuth(req.headers.authorization);
       if (!presented) throw new AndroidControllerError("unauthorized", "Android credential rejected", 401);
@@ -1009,6 +1046,10 @@ export class AndroidController {
       let device: Device | undefined;
       for (const candidate of this.devicesByName.values()) if (timingSafeEqual(candidate.tokenDigest, actual)) device = candidate;
       if (!device) throw new AndroidControllerError("forbidden", "Android credential rejected", 403);
+      if (fileRoute && req.method === "GET") {
+        await this.filePush.serve(device.config.name, fileRoute[1]!, req, res); return;
+      }
+      if (req.method !== "POST" || fileRoute) { json(res, 405, { error: "method_not_allowed" }); return; }
       const raw = await readJson(req, this.config.maxBodyBytes === null ? null : this.config.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES);
       if (typeof raw !== "object" || raw === null || (raw as {device?:unknown}).device !== device.config.name) {
         throw new AndroidControllerError("device_mismatch", "Request is not bound to the authenticated device", 403);

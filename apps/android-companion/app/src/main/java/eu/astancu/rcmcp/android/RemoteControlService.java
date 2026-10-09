@@ -228,7 +228,19 @@ public final class RemoteControlService extends Service {
 
                 ledger.markStarted(commandId, deliveryId);
                 JSONObject result;
-                if ("shell".equals(request.optString("operation"))) {
+                if ("receive_file".equals(request.optString("operation"))) {
+                    ExecutionLease lease = new ExecutionLease(deadline.localDeadlineElapsedMs(), SystemClock::elapsedRealtime, () -> isActive(epoch));
+                    try {
+                        JSONObject receipt = receiveFile(request, lease);
+                        ledger.finish(commandId, deliveryId, CommandLedger.COMPLETED);
+                        result = Protocol.successResult(config.deviceId(), sessionId, commandId, deliveryId, receipt);
+                    } catch (Exception failure) {
+                        // Publishing or cleanup may have failed; never replay this UUID.
+                        ledger.finish(commandId, deliveryId, CommandLedger.OUTCOME_UNKNOWN);
+                        result = Protocol.errorResult(config.deviceId(), sessionId, commandId, deliveryId,
+                                "outcome_unknown", "file_receive_failed", "file_transfer_failed_inspect_without_replay");
+                    }
+                } else if ("shell".equals(request.optString("operation"))) {
                     ExecutionLease lease = new ExecutionLease(
                             deadline.localDeadlineElapsedMs(), SystemClock::elapsedRealtime, () -> isActive(epoch));
                     if (!lease.beginEffect()) {
@@ -420,6 +432,52 @@ public final class RemoteControlService extends Service {
             backoff = Math.min(30_000L, backoff * 2L);
         }
         return false;
+    }
+
+    private JSONObject receiveFile(JSONObject request, ExecutionLease lease) throws Exception {
+        FileTransfer.validate(request);
+        String endpoint = EndpointValidator.validateAndNormalize(config.endpoint());
+        EndpointValidator.requireSafeTransport(endpoint, hasActiveVpnRoute(this, endpoint));
+        if (!lease.beginEffect()) throw new IOException("file_transfer_cancelled");
+        HttpURLConnection connection = (HttpURLConnection) new URL(endpoint + "/android/v1/files/" + request.getString("transferId")).openConnection();
+        activeConnection = connection;
+        android.net.Uri pending = null;
+        boolean published = false;
+        try {
+            connection.setInstanceFollowRedirects(false);
+            connection.setConnectTimeout((int) CONNECT_TIMEOUT_MS);
+            connection.setReadTimeout(30_000);
+            connection.setRequestMethod("GET");
+            connection.setRequestProperty("Authorization", "Bearer " + config.token());
+            if (connection.getResponseCode() != 200) throw new IOException("file_http_failed");
+            if (connection.getContentLengthLong() != request.getLong("bytes")) throw new IOException("file_length_header_mismatch");
+            android.content.ContentValues values = new android.content.ContentValues();
+            values.put(android.provider.MediaStore.Downloads.DISPLAY_NAME, request.getString("filename"));
+            values.put(android.provider.MediaStore.Downloads.MIME_TYPE, "application/octet-stream");
+            values.put(android.provider.MediaStore.Downloads.RELATIVE_PATH, android.os.Environment.DIRECTORY_DOWNLOADS);
+            values.put(android.provider.MediaStore.Downloads.IS_PENDING, 1);
+            // MediaStore also expires abandoned pending rows after process death.
+            values.put(android.provider.MediaStore.Downloads.DATE_EXPIRES, System.currentTimeMillis() / 1000 + 3600);
+            if (!lease.mayRun()) throw new IOException("file_transfer_cancelled");
+            pending = getContentResolver().insert(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
+            if (pending == null) throw new IOException("file_insert_failed");
+            String hash;
+            try (InputStream input = connection.getInputStream(); OutputStream output = getContentResolver().openOutputStream(pending, "w")) {
+                if (output == null) throw new IOException("file_open_failed");
+                hash = FileTransfer.copyVerified(input, output, request.getLong("bytes"), request.getString("sha256"), lease::mayRun);
+            }
+            if (!lease.mayRun()) throw new IOException("file_transfer_cancelled");
+            values.clear(); values.put(android.provider.MediaStore.Downloads.IS_PENDING, 0);
+            values.putNull(android.provider.MediaStore.Downloads.DATE_EXPIRES);
+            if (getContentResolver().update(pending, values, null, null) != 1) throw new IOException("file_publish_failed");
+            published = true;
+            return new JSONObject().put("transferId", request.getString("transferId")).put("sha256", hash)
+                    .put("bytes", request.getLong("bytes")).put("published", true).put("uri", pending.toString());
+        } finally {
+            connection.disconnect();
+            if (activeConnection == connection) activeConnection = null;
+            if (pending != null && !published) getContentResolver().delete(pending, null, null);
+        }
     }
 
     private HttpResponse post(String path, String body) throws IOException {

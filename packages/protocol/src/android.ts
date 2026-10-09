@@ -59,6 +59,12 @@ export const androidShellRequestSchema = z.object({
   maxOutputBytes: z.number().int().min(1).max(8 * 1024 * 1024).optional().default(1024 * 1024),
 }).strict();
 
+export const androidReceiveFileRequestSchema = z.object({
+  operation: z.literal("receive_file"), transferId: uuid,
+  filename: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$/).refine(value => value !== "." && value !== ".."),
+  sha256: z.string().regex(/^[a-f0-9]{64}$/), bytes: z.number().int().min(0).max(512 * 1024 * 1024),
+}).strict();
+
 export const androidCommandRequestSchema = z.discriminatedUnion("operation", [
   androidObserveRequestSchema,
   androidTapRequestSchema,
@@ -68,6 +74,7 @@ export const androidCommandRequestSchema = z.discriminatedUnion("operation", [
   androidGlobalActionRequestSchema,
   androidOpenAppRequestSchema,
   androidShellRequestSchema,
+  androidReceiveFileRequestSchema,
 ]);
 export type AndroidCommandRequest = z.infer<typeof androidCommandRequestSchema>;
 
