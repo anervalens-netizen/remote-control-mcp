@@ -23,3 +23,21 @@ With Java 21 and the configured Android SDK, run from this directory:
 ```
 
 From the repository root, run the companion static regression tests. Physical qualification must separately exercise API 29 consent grant/deny/revoke, STOP during capture, rotation, lock/secure windows, reboot without renewed consent, and API 30+ Accessibility screenshots. Compilation and unit/static checks do not establish installed-device behavior.
+
+## Secure Downloads receive
+
+`android_file_push` transfers files from a configured source agent while the
+paired foreground control loop is online. It uses the existing authenticated
+controller and VPN route policy, with no storage permission or optional shell
+requirement. Names are reduced to a safe leaf; files larger than 512 MiB are
+rejected. Downloads remain pending until streamed length and SHA-256 match the
+controller command. On failure the new pending entry is deleted when possible;
+abandoned pending entries also expire. MediaStore may choose a distinct display
+name when a Downloads file already exists.
+
+Keep the command UUID unchanged across retries and inspect
+`android_command_status` after an uncertain result. A different UUID requests a
+new download. Reboot, disconnection, and lost result acknowledgement must never
+be handled by automatically repeating the receive operation. Physical storage,
+STOP during transfer, pending-entry cleanup and result recovery require separate
+installed-device qualification.

@@ -281,8 +281,16 @@ describe("Android reverse controller protocol and durable ledger", () => {
 
   it("keeps the command store private and detects token revocation", async () => {
     const first = await makeController();
-    const files = await (await import("node:fs/promises")).readdir(first.root);
-    expect(files).toHaveLength(0);
+    const fs = await import("node:fs/promises");
+    const files = await fs.readdir(first.root);
+    // File push keeps a private empty staging directory; command journals
+    // remain absent until a command is actually admitted.
+    expect(files).toEqual(["android-file-push-v1"]);
+    expect(await fs.readdir(path.join(first.root, "android-file-push-v1"))).toEqual([]);
+    if (process.platform !== "win32") {
+      const staging = await fs.stat(path.join(first.root, "android-file-push-v1"));
+      expect(staging.mode & 0o077).toBe(0);
+    }
     await first.controller.close();
     const revoked = new AndroidController({ host: "127.0.0.1", port: 0, stateDir: first.root, devices: [{ name: "phone-example", token: "new-android-token-012345678901234567890123" }] });
     controllers.push(revoked);
@@ -296,7 +304,9 @@ describe("Android reverse controller protocol and durable ledger", () => {
     validPollAbort.abort();
     await expect(validPoll).rejects.toMatchObject({ name: "AbortError" });
     const filesAfter = await (await import("node:fs/promises")).readdir(first.root);
-    expect(filesAfter.every((file) => file.endsWith(".json"))).toBe(true);
-    for (const file of filesAfter) expect((await readFile(path.join(first.root, file), "utf8"))).not.toContain(token);
+    expect(filesAfter.filter((file) => file !== "android-file-push-v1").every((file) => file.endsWith(".json"))).toBe(true);
+    for (const file of filesAfter.filter((file) => file.endsWith(".json"))) {
+      expect((await readFile(path.join(first.root, file), "utf8"))).not.toContain(token);
+    }
   });
 });

@@ -9,6 +9,7 @@ import { filterProcesses, summarizeDockerSnapshot, type DockerSnapshot } from ".
 import fs from "node:fs";
 import { observeAgent, operationsFor } from "./operation-observer.ts";
 import type { DeviceConfig, ExecRequest, ExecResult } from "../../../packages/protocol/src/index.ts";
+import type { AndroidFilePushInput } from "./android-file-push.ts";
 import type { AndroidController } from "./android-controller.ts";
 import {
   DEFAULT_HTTP_TIMEOUT_MS,
@@ -295,6 +296,9 @@ export class AgentClient {
     return this.androidController;
   }
 
+  androidFilePush(input: AndroidFilePushInput, signal?: AbortSignal): Promise<unknown> {
+    return this.requireAndroid().filePush.push(this, input, signal);
+  }
   androidStatus(name: string): unknown { return this.requireAndroid().status(this.getDevice(name).name); }
   androidObserve(name: string, commandId: string, request: unknown, deadline: number, signal?: AbortSignal): Promise<unknown> {
     return this.requireAndroid().execute(name, commandId, request, deadline, signal);

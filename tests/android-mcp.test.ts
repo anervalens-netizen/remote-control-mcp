@@ -37,7 +37,7 @@ describe("Android MCP integration", () => {
     cleanups.push(async () => { await client.close(); await server.close(); });
 
     const listed = await client.listTools();
-    expect(listed.tools.map((tool) => tool.name)).toEqual(expect.arrayContaining(["android_status", "android_observe", "android_action", "android_shell", "android_command_status"]));
+    expect(listed.tools.map((tool) => tool.name)).toEqual(expect.arrayContaining(["android_status", "android_observe", "android_action", "android_shell", "android_command_status", "android_file_push"]));
     const devices = await client.callTool({ name: "devices_list", arguments: {} });
     expect(devices.structuredContent).toMatchObject({ devices: [{ name: "phone-example", url: "android-reverse://phone-example", contexts: { system: false, user: true, desktop: false } }] });
 
@@ -153,6 +153,7 @@ describe("Android MCP integration", () => {
     await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
     cleanups.push(async () => { await client.close(); await server.close(); });
     const names = (await client.listTools()).tools.map((tool) => tool.name);
-    expect(names).not.toEqual(expect.arrayContaining(["android_status", "android_observe", "android_action", "android_shell", "android_command_status"]));
+    expect(names).not.toContain("android_file_push");
+    expect(names).not.toEqual(expect.arrayContaining(["android_status", "android_observe", "android_action", "android_shell", "android_command_status", "android_file_push"]));
   });
 });
