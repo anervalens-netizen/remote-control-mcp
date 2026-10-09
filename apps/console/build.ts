@@ -5,9 +5,23 @@ import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
 
 const root = fileURLToPath(new URL("./", import.meta.url));
-const result = await build({ absWorkingDir: root, entryPoints: ["src/main.tsx"], bundle: true, write: false, minify: true,
-  format: "iife", platform: "browser", target: "es2022", outfile: "console.js", legalComments: "inline", define: { __GLITCHTIP_DSN__: JSON.stringify(process.env.GLITCHTIP_DSN || ""), __GLITCHTIP_RELEASE__: JSON.stringify(process.env.RCMCP_RUNTIME_SHA || execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim()), "process.env.NODE_ENV": '"production"' } });
-const script = result.outputFiles.find(file => file.path.endsWith(".js"))!.text.replaceAll("</script", "<\\/script");
+const release = process.env.RCMCP_RUNTIME_SHA || execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim();
+if (!/^[0-9a-f]{40}$/.test(release)) throw new Error("An exact release SHA is required");
+const result = await build({ absWorkingDir: root, entryPoints: ["src/main.tsx"], bundle: true, write: false, minify: true, sourcemap: "external", sourcesContent: true,
+  format: "iife", platform: "browser", target: "es2022", outfile: "console.js", legalComments: "inline", define: { __GLITCHTIP_DSN__: JSON.stringify(process.env.GLITCHTIP_DSN || ""), __GLITCHTIP_RELEASE__: JSON.stringify(release), "process.env.NODE_ENV": '"production"' } });
+const rawScript = result.outputFiles.find(file => file.path.endsWith(".js"))!.text;
+// esbuild escapes closing script tags. Refuse any additional text transform that
+// would invalidate the generated coordinates in the private source map.
+if (rawScript.includes("</script") || rawScript.includes("sourceMappingURL=")) throw new Error("Unsafe inline script boundary");
+const script = rawScript + "\n//# sourceURL=app:///mcp/console.js\n";
+const sourceMap = result.outputFiles.find(file => file.path.endsWith(".js.map"))!.text;
+const privateRoot = new URL("../../artifacts/private-source-maps/console/", import.meta.url);
+await mkdir(privateRoot, { recursive: true, mode: 0o700 });
+await writeFile(new URL("console.js", privateRoot), script, { mode: 0o600 });
+await writeFile(new URL("console.js.map", privateRoot), sourceMap, { mode: 0o600 });
+await writeFile(new URL("manifest.json", privateRoot), JSON.stringify({release, files:{"console.js":{
+  js:createHash("sha256").update(script).digest("hex"), map:createHash("sha256").update(sourceMap).digest("hex")
+}}}) + "\n", { mode: 0o600 });
 const css = result.outputFiles.find(file => file.path.endsWith(".css"))?.text ?? "";
 const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Remote Control Console</title><style>${css}</style></head><body><div id="root"></div><script>${script}</script></body></html>`;
 await mkdir(new URL("dist/", import.meta.url), { recursive: true });

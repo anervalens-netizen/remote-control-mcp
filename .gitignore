@@ -30,3 +30,5 @@ private/
 !.env.example
 
 apps/console/dist/
+
+/artifacts/private-source-maps/

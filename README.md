@@ -244,3 +244,11 @@ Transport changes must pass the official modern client, legacy session/cancellat
 Error reporting is optional and uses the existing GlitchTip service. Configure `GLITCHTIP_DSN` only in private runtime configuration. Browser builds use `VITE_GLITCHTIP_DSN` (Next.js uses `NEXT_PUBLIC_GLITCHTIP_DSN`); the Remote Control console uses the controller DSN at build time. Rebuild frontend assets when the destination changes. Preserve the exact release identifier with the deployment metadata.
 
 Events retain stack locations, SDK version, component and release. The new integrations omit request payloads, user data, breadcrumbs and private exception messages. Synthetic acceptance events must carry `glitchtip.synthetic=true` and a unique `validation.run`; verify receipt at the destination, not only the SDK return value. They are excluded by the operational alert collector. Do not send business data or trigger an application crash to validate reporting.
+
+Console builds retain hidden source maps under `artifacts/private-source-maps/console/`,
+outside the served MCP HTML. Keep these private artifacts with the exact release.
+The console uses `app:///mcp/console.js` for error stack locations. Before promotion,
+verify the private manifest hashes against the script embedded in `console.html`,
+upload once to the configured receiver and confirm a mapped SDK frame. Never ship
+map contents inside an MCP resource or public static directory. The controller runs
+TypeScript directly and does not need a compiler source map for its own source files.
