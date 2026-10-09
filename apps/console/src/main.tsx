@@ -1,3 +1,4 @@
+import { captureError } from "./error-reporting.js";
 import { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { App, applyDocumentTheme, applyHostStyleVariables } from "@modelcontextprotocol/ext-apps";
@@ -177,7 +178,7 @@ function Console() {
     <footer>Handler response, job exit, verified effect and client acceptance are separate facts.</footer>
   </main>;
 }
-createRoot(document.getElementById("root")!).render(<Console/>);
+createRoot(document.getElementById("root")!, { onUncaughtError: (error) => { captureError(error); }, onCaughtError: (error) => { captureError(error); } }).render(<Console/>);
 void app.connect().then(async () => {
   connected = true; theme(); changed();
   const host = app.getHostContext();

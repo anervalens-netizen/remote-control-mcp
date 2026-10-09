@@ -1,3 +1,4 @@
+import { captureError } from "./error-reporting.ts";
 import { isLegacyRequest } from "@modelcontextprotocol/server";
 import { toNodeHandler, toWebRequest } from "@modelcontextprotocol/node";
 import { createModernMcpHandler } from "./modern-http.ts";
@@ -266,6 +267,7 @@ export function createMcpHttpServer(client: AgentClient, options: {
         if (!res.writableEnded) res.end(JSON.stringify({ error: error.code, message: error.message, requestId }));
         return;
       }
+      captureError(error, requestId);
       console.error(error);
       if (!res.headersSent) res.writeHead(500, { "content-type": "application/json" });
       if (!res.writableEnded) res.end(JSON.stringify({ error: "internal_error", requestId }));

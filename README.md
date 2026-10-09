@@ -238,3 +238,9 @@ The HTTP endpoint serves MCP 2026-07-28 through the official v2 handler and keep
 Both paths reuse the same registered tool handlers, output contracts and controller-memory recovery store. The modern adapter maps request cancellation, progress notifications, request IDs and caller recovery metadata into the existing handlers. Modern requests do not create legacy sessions. Authenticated health diagnostics expose the modern protocol revision and request count alongside the legacy SDK diagnostics.
 
 Transport changes must pass the official modern client, legacy session/cancellation, tool catalog parity and cross-request result-recovery regressions. Native device capabilities remain independent of the HTTP protocol.
+
+## Error reporting
+
+Error reporting is optional and uses the existing GlitchTip service. Configure `GLITCHTIP_DSN` only in private runtime configuration. Browser builds use `VITE_GLITCHTIP_DSN` (Next.js uses `NEXT_PUBLIC_GLITCHTIP_DSN`); the Remote Control console uses the controller DSN at build time. Rebuild frontend assets when the destination changes. Preserve the exact release identifier with the deployment metadata.
+
+Events retain stack locations, SDK version, component and release. The new integrations omit request payloads, user data, breadcrumbs and private exception messages. Synthetic acceptance events must carry `glitchtip.synthetic=true` and a unique `validation.run`; verify receipt at the destination, not only the SDK return value. They are excluded by the operational alert collector. Do not send business data or trigger an application crash to validate reporting.

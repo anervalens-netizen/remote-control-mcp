@@ -24,6 +24,8 @@
     "@modelcontextprotocol/sdk": "1.31.0",
     "@modelcontextprotocol/server": "2.3.1",
     "@openai/mcp-extensions": "0.1.0",
+    "@sentry/node": "10.66.0",
+    "@sentry/react": "10.66.0",
     "cross-spawn": "7.0.6",
     "fastify": "5.12.5",
     "node-pty": "1.1.0",
