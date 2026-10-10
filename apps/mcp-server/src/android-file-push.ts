@@ -79,7 +79,7 @@ export class AndroidFilePushStore {
       error: { code: "file_push_reserved", message: "Transfer was previously reserved; inspect status without replay" } };
   }
   acceptsReservedCommand(device: string, commandId: string, request: { operation: string; transferId?: string }): boolean {
-    const key = createHash("sha256").update(`${device}\0${commandId}`).digest("hex");
+    const key = createHash("sha256").update(`${device}\0${commandId.toLowerCase()}`).digest("hex");
     let record: Reservation;
     try { record = reservationSchema.parse(JSON.parse(readFileSync(path.join(this.dir, `${key}.json`), "utf8"))); }
     catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return true; throw error; }

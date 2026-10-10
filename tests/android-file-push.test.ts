@@ -101,6 +101,7 @@ describe("Android secure file push", () => {
     await x.controller.close(); await pending;
     const restarted = new AndroidController(x.config); controllers.push(restarted);
     expect(() => restarted.execute(x.input.device, x.input.commandId, { operation: "observe", image: false, tree: false }, Date.now()+1000)).toThrow(/reserved for a different file transfer/);
+    expect(() => restarted.execute(x.input.device, x.input.commandId.toUpperCase(), { operation: "observe", image: false, tree: false }, Date.now()+1000)).toThrow(/reserved for a different file transfer/);
   });
   it("streams device-bound authenticated bytes, verifies receipts, deduplicates and cleans private staging", async () => {
     const x = await setup(); const { pending } = await x.online();
