@@ -925,6 +925,9 @@ export class AndroidController {
     const parsed = androidPollRequestSchema.safeParse(body);
     if (!parsed.success) throw protocolError(parsed.error);
     const poll = parsed.data;
+    // Capability headers are ignored by older v1 controllers. Authenticate first
+    // and keep the strict body schema compatible during an APK-first rollout.
+    if (req.headers["x-rcmcp-receive-file"] === "1") poll.state.receiveFile = true;
     if (poll.device !== device.config.name) throw new AndroidControllerError("device_mismatch", "Poll device does not match the authenticated device", 403);
     if (device.poll) throw new AndroidControllerError("poll_in_progress", "Only one poll may be active per Android device", 409);
     const controlGenerationChanged = device.controlGeneration !== null

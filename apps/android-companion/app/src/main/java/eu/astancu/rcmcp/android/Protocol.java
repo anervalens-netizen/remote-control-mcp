@@ -19,8 +19,12 @@ public final class Protocol {
     }
 
     public static JSONObject pollBody(String device, String sessionId, JSONObject state) throws JSONException {
+        // Keep the v1 body accepted by controllers with a strict legacy schema.
+        // The authenticated HTTP header advertises the additive file capability.
+        JSONObject wireState = new JSONObject(state.toString());
+        wireState.remove("receiveFile");
         return new JSONObject().put("version", VERSION).put("device", device)
-                .put("sessionId", sessionId).put("state", state);
+                .put("sessionId", sessionId).put("state", wireState);
     }
 
     public static JSONObject commandResponse(JSONObject body) throws JSONException {

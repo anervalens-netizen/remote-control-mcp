@@ -39,6 +39,13 @@ public final class ProtocolTest {
         JSONObject invalid = new JSONObject().put("version", 1).put("serverTime", 10000L).put("serverWaitMs", 0L).put("command", command().put("commandId", "invalid"));
         assertThrows(IllegalArgumentException.class, () -> Protocol.commandResponse(invalid));
     }
+    @Test public void keepsLegacyPollShapeWithoutMutatingInternalState() throws Exception {
+        JSONObject state = new JSONObject().put("screenOn", false).put("receiveFile", true);
+        JSONObject body = Protocol.pollBody("phone-example", UUID.randomUUID().toString(), state);
+        assertFalse(body.getJSONObject("state").has("receiveFile"));
+        assertTrue(state.getBoolean("receiveFile"));
+        assertFalse(body.getJSONObject("state").getBoolean("screenOn"));
+    }
     @Test public void resultPreservesDeliveryBindingAndStatus() throws Exception {
         String commandId = UUID.randomUUID().toString(), deliveryId = UUID.randomUUID().toString(), sessionId = UUID.randomUUID().toString();
         JSONObject result = Protocol.successResult("phone-example", sessionId, commandId, deliveryId, new JSONObject().put("observed", true));

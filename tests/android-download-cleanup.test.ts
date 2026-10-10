@@ -12,5 +12,9 @@ test("pending download cleanup uses supported pending visibility and retains pub
  expect(cleanup).toContain("rows.getLong(0)), selection, arguments");
  expect(cleanup).toContain("setPersisted(true)");
  expect(service).not.toContain("DATE_EXPIRES");
- expect(service).toContain("PendingDownloadCleanup.run(this)");
+ expect(service).toContain("PendingDownloadCleanup.scheduleStartup(this)");
+ expect(service).not.toContain("PendingDownloadCleanup.run(this)");
+ expect(cleanup).toContain("query, cancellation");
+ expect(cleanup).toContain("cancellation.isCanceled()");
+ expect(cleanup).toContain("Thread.currentThread().isInterrupted()");
 });

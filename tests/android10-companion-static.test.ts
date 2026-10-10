@@ -75,8 +75,8 @@ describe("Android 10 companion platform wiring", () => {
     const gradle = readFileSync(path.join(root, "app/build.gradle"), "utf8");
     expect(gradle).toContain("applicationId 'eu.astancu.rcmcp.android'");
     expect(gradle).toContain("minSdk 29");
-    expect(gradle).toContain("versionCode 12");
-    expect(gradle).toContain("versionName '0.1.11-file-capability'");
+    expect(gradle).toContain("versionCode 13");
+    expect(gradle).toContain("versionName '0.1.12-compatible-cleanup'");
     expect(source("Protocol")).toContain("VERSION = 1");
     const manifest = readFileSync(path.join(main, "AndroidManifest.xml"), "utf8");
     expect(manifest).toContain('android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION');

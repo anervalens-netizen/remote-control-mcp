@@ -61,7 +61,7 @@ public final class RemoteControlService extends Service {
         ledger = new CommandLedger(new SharedPrefsLedgerStore(getSharedPreferences("command_ledger", MODE_PRIVATE)));
         ledger.markInterruptedAsUnknown();
         PendingDownloadCleanup.schedule(this);
-        PendingDownloadCleanup.run(this);
+        PendingDownloadCleanup.scheduleStartup(this);
         createNotificationChannel();
     }
 
@@ -501,6 +501,8 @@ public final class RemoteControlService extends Service {
         connection.setRequestProperty("Authorization", "Bearer " + config.token());
         connection.setRequestProperty("Content-Type", "application/json");
         connection.setRequestProperty("Accept", "application/json");
+        if ("/android/v1/poll".equals(path))
+            connection.setRequestProperty("X-RCMCP-Receive-File", "1");
         byte[] payload = body.getBytes(StandardCharsets.UTF_8);
         connection.setFixedLengthStreamingMode(payload.length);
         try (OutputStream output = connection.getOutputStream()) {

@@ -16,7 +16,14 @@ final class PendingDownloadCleanup {
                 new ComponentName(context, PendingDownloadCleanupJob.class))
                 .setPeriodic(15 * 60_000L).setPersisted(true).build());
     }
-    static void run(Context context) {
+    static void scheduleStartup(Context context) {
+        JobScheduler scheduler = context.getSystemService(JobScheduler.class);
+        if (scheduler != null) scheduler.schedule(new JobInfo.Builder(JOB_ID + 1,
+                new ComponentName(context, PendingDownloadCleanupJob.class))
+                .setMinimumLatency(0).build());
+    }
+    static void run(Context context, android.os.CancellationSignal cancellation) {
+        if (cancellation.isCanceled() || Thread.currentThread().isInterrupted()) return;
         long cutoff = System.currentTimeMillis() / 1000 - 3600;
         Uri collection = MediaStore.Downloads.EXTERNAL_CONTENT_URI;
         android.os.Bundle query = new android.os.Bundle();
@@ -30,10 +37,13 @@ final class PendingDownloadCleanup {
         // files or another application's downloads, including after process death.
         try (Cursor rows = context.getContentResolver().query(collection,
                 new String[] { MediaStore.Downloads._ID },
-                query, null)) {
+                query, cancellation)) {
             if (rows == null) return;
-            while (rows.moveToNext()) context.getContentResolver().delete(
-                    android.content.ContentUris.withAppendedId(collection, rows.getLong(0)), selection, arguments);
+            while (!cancellation.isCanceled() && !Thread.currentThread().isInterrupted() && rows.moveToNext()) {
+                if (cancellation.isCanceled() || Thread.currentThread().isInterrupted()) return;
+                context.getContentResolver().delete(
+                        android.content.ContentUris.withAppendedId(collection, rows.getLong(0)), selection, arguments);
+            }
         } catch (RuntimeException unavailable) {
             // Media provider availability is transient; the persisted job retries.
         }

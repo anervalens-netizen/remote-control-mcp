@@ -2,6 +2,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { androidStateSchema } from "../packages/protocol/src/android.ts";
 import { AgentClient } from "../apps/mcp-server/src/agent-client.ts";
 import { AndroidController, AndroidControllerError, type AndroidControllerConfig } from "../apps/mcp-server/src/android-controller.ts";
 import { resolveExecutionContext } from "../apps/mcp-server/src/execution-identity.ts";
@@ -20,7 +21,7 @@ const state = {
   shellAvailable: false, network: "cellular", batteryPercent: 80,
 };
 
-async function makeController(devices = [{ name: "phone-example", token }], options?: { offlineAfterMs?: number; maxDetailedCommands?: number }) {
+async function makeController(devices = [{ name: "phone-example", token }], options?: { pollWaitMs?: number; offlineAfterMs?: number; maxDetailedCommands?: number }) {
   const root = await mkdtemp(path.join(os.tmpdir(), "rcmcp-android-controller-"));
   roots.push(root);
   const config: AndroidControllerConfig = { host: "127.0.0.1", port: 0, stateDir: root, devices };
@@ -50,6 +51,30 @@ async function waitOnline(controller: AndroidController, device = "phone-example
 const observe = { operation: "observe" as const, image: true, tree: true, maxNodes: 200 };
 
 describe("Android reverse controller protocol and durable ledger", () => {
+  it("accepts the legacy v1 body and records the authenticated file-capability header", async () => {
+    const { controller, base } = await makeController(undefined, { pollWaitMs: 5 });
+    const body = pollBody();
+    // This is the old controller's strict state shape: no receiveFile member.
+    expect(androidStateSchema.omit({ receiveFile: true }).strict().safeParse(body.state).success).toBe(true);
+    const response = await fetch(base + "/android/v1/poll", {
+      method: "POST",
+      headers: { authorization: "Bearer " + token, "content-type": "application/json", "x-rcmcp-receive-file": "1" },
+      body: JSON.stringify(body),
+    });
+    expect(response.status).toBe(200);
+    expect((await response.json()).command).toBeNull();
+    expect(controller.status("phone-example")).toMatchObject({ state: { receiveFile: true } });
+    const legacy = await post(base, "/android/v1/poll", body);
+    expect(legacy.status).toBe(200);
+    expect(controller.status("phone-example")).toMatchObject({ state: { receiveFile: false } });
+    const unauthenticated = await fetch(base + "/android/v1/poll", {
+      method: "POST", headers: { "content-type": "application/json", "x-rcmcp-receive-file": "1" },
+      body: JSON.stringify(body),
+    });
+    expect(unauthenticated.status).toBe(401);
+    expect(controller.status("phone-example")).toMatchObject({ state: { receiveFile: false } });
+  });
+
   it("authenticates before command handling and exposes truthful readiness state", async () => {
     const { controller, base } = await makeController();
     expect((await post(base, "/android/v1/poll", pollBody(), "wrong-token"))).toMatchObject({ status: 403 });
