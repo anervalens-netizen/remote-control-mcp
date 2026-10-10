@@ -88,7 +88,7 @@ public final class Protocol {
                     .put("userUnlocked", user == null || user.isUserUnlocked())
                     .put("accessibility", accessibility).put("paused", paused)
                     .put("controlGeneration", new ConfigRepository(context).controlGeneration())
-                    .put("shellAvailable", ShellBridgeManager.isReady()).put("network", network)
+                    .put("receiveFile", true).put("shellAvailable", ShellBridgeManager.isReady()).put("network", network)
                     .put("batteryPercent", batteryPercent >= 0 && batteryPercent <= 100 ? batteryPercent : JSONObject.NULL);
         } catch (JSONException impossible) {
             throw new AssertionError(impossible);

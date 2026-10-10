@@ -92,28 +92,4 @@ cd apps/android-companion
 ./gradlew testDebugUnitTest lintDebug assembleDebug
 ```
 
-Local synthetic validation: typecheck passed; the focused command passed 52
-tests, including 17 new HTTP-handler/streaming and actual MCP SDK transport
-checks. The four new core filename/hash JVM tests passed directly with Java 21
-and cached JUnit. TCP integration and the full Node suite were attempted but
-sandbox socket binding and child-process execution failed with `EPERM`; the
-full run was stopped after those failures and stalled completion. Android
-Gradle stopped before project configuration because no usable wildcard IP was
-available, so its protocol JVM test, lint, and APK assembly remain unverified.
-The public-data guard fixture tests passed; the history guard fixture runner was
-blocked by child-process `EPERM`. No installed-device validation or owner-signed
-APK is claimed. Re-run the normal full suites in a development environment that
-allows local sockets and subprocesses before release qualification.
-
-### 2026-10-09 independent non-sandbox verification for Android Downloads push
-
-The earlier sandbox-only test limitations above have now been rechecked on the owner development host using normal native tools. Verified outcomes on the candidate source:
-
-- `pnpm typecheck`: PASS.
-- `pnpm build:console`: PASS; generated UI used by console integration tests.
-- `CI=true pnpm exec vitest run --maxWorkers=4 --testTimeout=15000 --reporter=dot`: **147 test files passed, 7 skipped; 1,074 tests passed, 52 skipped, 0 failures**. An earlier test attempt lacked the native `node-pty` binding and compiled console; both were built and the affected tests passed before the final suite. No skip/test weakening was introduced.
-- Android SDK 36, Java 21: `./gradlew --no-daemon testDebugUnitTest assembleDebug lintDebug`: **PASS** (49 tasks); `./gradlew --no-daemon assembleRelease`: **PASS** (40 tasks). Nonfatal dependency annotation / SDK warnings remain.
-- Production-compatible owner-signed APK candidate was built from this code and `apksigner verify --verbose --print-certs` reports APK signature scheme v3 accepted, with certificate SHA-256 matching the already installed owner app; the private signer and rollout receipts remain outside this public repository.
-- Physical Android installation and real file persistence remain **unverified until on-device update and transfer check**. Controller runtime also remains unchanged until a separately verified activation.
-
-The intended deploy requires publishing exact tested source, coordinating the existing controller service, updating the APK over the installed app without app-data reset, and testing a synthetic file with SHA-256 before calling the feature complete.
+Pending Downloads are cleaned by an application-owned persisted scheduled job and on service startup. Cleanup selects only this application's unpublished rows older than one hour. Android may delay scheduled jobs (including Doze or force-stop); this is not an exact one-hour deletion guarantee. MediaStore manages its own expiry columns. Companion capability `receiveFile` must be present before a new transfer reserves an ID or reads source bytes.

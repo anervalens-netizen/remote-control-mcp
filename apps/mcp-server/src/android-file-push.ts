@@ -78,6 +78,13 @@ export class AndroidFilePushStore {
     return { commandId, status: "outcome_unknown" as const, ok: false, noReplay: true as const,
       error: { code: "file_push_reserved", message: "Transfer was previously reserved; inspect status without replay" } };
   }
+  acceptsReservedCommand(device: string, commandId: string, request: { operation: string; transferId?: string }): boolean {
+    const key = createHash("sha256").update(`${device}\0${commandId}`).digest("hex");
+    let record: Reservation;
+    try { record = reservationSchema.parse(JSON.parse(readFileSync(path.join(this.dir, `${key}.json`), "utf8"))); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return true; throw error; }
+    return request.operation === "receive_file" && request.transferId === record.transferId;
+  }
   push(client: Pick<AgentClient, "getDevice" | "info" | "fsRead">, raw: AndroidFilePushInput, signal?: AbortSignal): Promise<unknown> {
     const input = inputSchema.parse(raw);
     input.commandId = input.commandId.toLowerCase();
@@ -99,6 +106,8 @@ export class AndroidFilePushStore {
     }
     if (this.closed) throw new Error("Android file push is closed");
     if (!(this.controller.status(input.device) as { online: boolean }).online) throw new Error("offline: Android device has no recent authenticated poll");
+    const state = (this.controller.status(input.device) as { state?: { receiveFile?: boolean } }).state;
+    if (state?.receiveFile !== true) throw new Error("unsupported_capability: Android companion does not advertise receiveFile");
     if (this.controller.lookup(input.device, input.commandId)) throw new Error("command_conflict: commandId was already used");
     if (this.active.size >= 4) throw new Error("Android file push staging capacity reached");
     signal?.throwIfAborted();

@@ -17,7 +17,7 @@ const token = "synthetic-file-test-token-12345678901234567890";
 const otherToken = "synthetic-second-token-1234567890123456789012";
 const state = { androidSdk: 29, manufacturer: "example", model: "example", build: "test", appVersion: "test", uid: 10000,
   screenOn: false, keyguardLocked: true, userUnlocked: true, accessibility: false, paused: false,
-  shellAvailable: false, network: "wifi", batteryPercent: 50 };
+  receiveFile: true, shellAvailable: false, network: "wifi", batteryPercent: 50 };
 const roots: string[] = [];
 const controllers: AndroidController[] = [];
 afterEach(async () => {
@@ -79,6 +79,28 @@ describe("Android secure file push", () => {
     expect(() => x.client.androidFilePush({ ...x.input, device: "unpaired" })).toThrow(/Unknown Android/);
     expect(x.info).not.toHaveBeenCalled(); expect(x.read).not.toHaveBeenCalled();
     expect(await readdir(path.join(x.root, "android-file-push-v1"))).toEqual([]);
+  });
+  it("rejects a legacy companion before reservation or source reads", async () => {
+    const x = await setup();
+    const legacy = { ...state }; delete (legacy as { receiveFile?: boolean }).receiveFile;
+    const pending = http(x.controller, "/android/v1/poll", { method: "POST", headers: { authorization: `Bearer ${token}` }, body: JSON.stringify({ version: 1, device: x.input.device, sessionId: randomUUID(), state: legacy }) });
+    await expect.poll(() => (x.controller.status(x.input.device) as { online: boolean }).online).toBe(true);
+    expect(() => x.client.androidFilePush(x.input)).toThrow(/unsupported_capability/);
+    expect(x.info).not.toHaveBeenCalled(); expect(x.read).not.toHaveBeenCalled();
+    expect(await readdir(path.join(x.root, "android-file-push-v1"))).toEqual([]);
+    await x.controller.close(); await pending;
+  });
+  it("file reservations reject other commands after staging failure and restart", async () => {
+    const x = await setup(); const { pending } = await x.online();
+    x.info.mockRejectedValue(new Error("synthetic staging failure"));
+    await expect(x.client.androidFilePush(x.input)).rejects.toThrow(/staging failure/);
+    for (const request of [{ operation: "observe", image: false, tree: false }, { operation: "shell", command: "echo synthetic" }]) {
+      expect(() => x.controller.execute(x.input.device, x.input.commandId, request, Date.now()+1000)).toThrow(/reserved for a different file transfer/);
+    }
+    expect(await x.client.androidFilePush(x.input)).toMatchObject({ status: "outcome_unknown", noReplay: true });
+    await x.controller.close(); await pending;
+    const restarted = new AndroidController(x.config); controllers.push(restarted);
+    expect(() => restarted.execute(x.input.device, x.input.commandId, { operation: "observe", image: false, tree: false }, Date.now()+1000)).toThrow(/reserved for a different file transfer/);
   });
   it("streams device-bound authenticated bytes, verifies receipts, deduplicates and cleans private staging", async () => {
     const x = await setup(); const { pending } = await x.online();
