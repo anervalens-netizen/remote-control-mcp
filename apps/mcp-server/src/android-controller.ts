@@ -834,6 +834,9 @@ export class AndroidController {
         > DEFAULT_MAX_PHONE_POLL_RESPONSE_BYTES - PHONE_POLL_RESPONSE_MARGIN_BYTES) {
       throw new AndroidControllerError("request_too_large", "Android command cannot fit in the companion poll-response budget", 413);
     }
+    if (!this.filePush.acceptsReservedCommand(device.config.name, commandId, request.data)) {
+      throw new AndroidControllerError("command_conflict", "commandId is reserved for a different file transfer", 409);
+    }
     const fingerprint = digest(request.data);
     const existing = device.commands.get(commandId);
     if (existing) {

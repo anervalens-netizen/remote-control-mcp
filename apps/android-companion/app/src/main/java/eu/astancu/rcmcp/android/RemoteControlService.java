@@ -60,6 +60,8 @@ public final class RemoteControlService extends Service {
         ShellBridgeManager.init(this);
         ledger = new CommandLedger(new SharedPrefsLedgerStore(getSharedPreferences("command_ledger", MODE_PRIVATE)));
         ledger.markInterruptedAsUnknown();
+        PendingDownloadCleanup.schedule(this);
+        PendingDownloadCleanup.run(this);
         createNotificationChannel();
     }
 
@@ -456,8 +458,6 @@ public final class RemoteControlService extends Service {
             values.put(android.provider.MediaStore.Downloads.MIME_TYPE, "application/octet-stream");
             values.put(android.provider.MediaStore.Downloads.RELATIVE_PATH, android.os.Environment.DIRECTORY_DOWNLOADS);
             values.put(android.provider.MediaStore.Downloads.IS_PENDING, 1);
-            // MediaStore also expires abandoned pending rows after process death.
-            values.put(android.provider.MediaStore.Downloads.DATE_EXPIRES, System.currentTimeMillis() / 1000 + 3600);
             if (!lease.mayRun()) throw new IOException("file_transfer_cancelled");
             pending = getContentResolver().insert(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
             if (pending == null) throw new IOException("file_insert_failed");
@@ -468,7 +468,6 @@ public final class RemoteControlService extends Service {
             }
             if (!lease.mayRun()) throw new IOException("file_transfer_cancelled");
             values.clear(); values.put(android.provider.MediaStore.Downloads.IS_PENDING, 0);
-            values.putNull(android.provider.MediaStore.Downloads.DATE_EXPIRES);
             if (getContentResolver().update(pending, values, null, null) != 1) throw new IOException("file_publish_failed");
             published = true;
             return new JSONObject().put("transferId", request.getString("transferId")).put("sha256", hash)

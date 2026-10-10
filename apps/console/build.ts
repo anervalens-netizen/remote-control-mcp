@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { build } from "esbuild";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, writeFile, chmod, lstat } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
 
@@ -16,12 +16,23 @@ if (rawScript.includes("</script") || rawScript.includes("sourceMappingURL=")) t
 const script = rawScript + "\n//# sourceURL=app:///mcp/console.js\n";
 const sourceMap = result.outputFiles.find(file => file.path.endsWith(".js.map"))!.text;
 const privateRoot = new URL("../../artifacts/private-source-maps/console/", import.meta.url);
-await mkdir(privateRoot, { recursive: true, mode: 0o700 });
+for (const relative of ["../../artifacts/", "../../artifacts/private-source-maps/", "../../artifacts/private-source-maps/console/"]) {
+  const directory = new URL(relative, import.meta.url);
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  if ((await lstat(directory)).isSymbolicLink()) throw new Error("Private artifact directory must not be a symlink");
+  await chmod(directory, 0o700);
+}
+for (const name of ["console.js", "console.js.map", "manifest.json"]) {
+  const file = new URL(name, privateRoot);
+  try { if (!(await lstat(file)).isFile()) throw new Error("Private artifact must be a regular file"); await chmod(file, 0o600); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+}
 await writeFile(new URL("console.js", privateRoot), script, { mode: 0o600 });
 await writeFile(new URL("console.js.map", privateRoot), sourceMap, { mode: 0o600 });
 await writeFile(new URL("manifest.json", privateRoot), JSON.stringify({release, files:{"console.js":{
   js:createHash("sha256").update(script).digest("hex"), map:createHash("sha256").update(sourceMap).digest("hex")
 }}}) + "\n", { mode: 0o600 });
+for (const name of ["console.js", "console.js.map", "manifest.json"]) await chmod(new URL(name, privateRoot), 0o600);
 const css = result.outputFiles.find(file => file.path.endsWith(".css"))?.text ?? "";
 const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Remote Control Console</title><style>${css}</style></head><body><div id="root"></div><script>${script}</script></body></html>`;
 await mkdir(new URL("dist/", import.meta.url), { recursive: true });

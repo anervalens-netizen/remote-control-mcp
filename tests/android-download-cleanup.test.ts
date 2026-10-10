@@ -1,0 +1,16 @@
+import { test, expect } from "vitest";
+import { readFileSync } from "node:fs";
+const root = new URL("../apps/android-companion/app/src/main/",import.meta.url);
+test("pending download cleanup uses supported pending visibility and retains published/foreign rows", () => {
+ const cleanup=readFileSync(new URL("java/eu/astancu/rcmcp/android/PendingDownloadCleanup.java",root),"utf8");
+ const service=readFileSync(new URL("java/eu/astancu/rcmcp/android/RemoteControlService.java",root),"utf8");
+ expect(cleanup).toContain("MediaStore.QUERY_ARG_MATCH_PENDING, MediaStore.MATCH_ONLY");
+ expect(cleanup).toContain("MediaStore.setIncludePending(collection)");
+ expect(cleanup).toContain('IS_PENDING + " = 1 AND "');
+ expect(cleanup).toContain('OWNER_PACKAGE_NAME + " = ? AND "');
+ expect(cleanup).toContain("context.getPackageName()");
+ expect(cleanup).toContain("rows.getLong(0)), selection, arguments");
+ expect(cleanup).toContain("setPersisted(true)");
+ expect(service).not.toContain("DATE_EXPIRES");
+ expect(service).toContain("PendingDownloadCleanup.run(this)");
+});

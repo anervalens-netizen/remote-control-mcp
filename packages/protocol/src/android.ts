@@ -13,6 +13,7 @@ export const androidStateSchema = z.object({
   accessibility: z.boolean(),
   paused: z.boolean(),
   controlGeneration: z.number().int().nonnegative().max(2_147_483_647).optional().default(0),
+  receiveFile: z.boolean().optional().default(false),
   shellAvailable: z.boolean(),
   network: z.string().min(1),
   batteryPercent: z.number().int().min(0).max(100).nullable(),
