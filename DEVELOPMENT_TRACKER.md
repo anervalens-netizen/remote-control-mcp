@@ -114,3 +114,5 @@ Pending Downloads are cleaned by an application-owned persisted scheduled job an
   retaining UI/error payloads, altering result digests or weakening no-replay.
 - Bound restored coverage metadata, verify writing resumes after publication
   failure, and protect search output and nested JSON serialization budgets.
+- Keep aggregate boundary fixtures aligned with nested JSON escaping; verify
+  the complete suite after changing the preflight estimate.
