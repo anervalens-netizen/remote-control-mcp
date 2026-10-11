@@ -46,7 +46,7 @@ export class OperationObserver {
     const returned = record.state === "returned" || record.events.some(e => e.stage === "handler_returned") &&
       ["job_wait", "job_status", "job_output", "job_output_since"].includes(record.tool);
     const needsLocator = ["job_start", "job_start_many", "project_run", "deploy_run", "batch_exec", "process_start", "pty_start"].includes(record.tool);
-    return returned && (!needsLocator || record.jobs.length > 0 || !record.events.some(e => e.stage === "agent_dispatch")) && !record.jobsPartial && record.jobs.every(job => record.terminalJobs?.some(t => sameJob(job, t))) &&
+    return record.persistence !== "unconfirmed" && returned && (!needsLocator || record.jobs.length > 0 || !record.events.some(e => e.stage === "agent_dispatch")) && !record.jobsPartial && record.jobs.every(job => record.terminalJobs?.some(t => sameJob(job, t))) &&
       (record.jobs.length > 0 || record.requestSucceeded === true || !record.events.some(e => e.stage === "agent_dispatch"));
   }
   private async remove(id: string) {

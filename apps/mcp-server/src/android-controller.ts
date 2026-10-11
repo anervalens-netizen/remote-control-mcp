@@ -51,6 +51,14 @@ const configSchema = z.object({
 type InternalStatus = "queued" | "dispatched" | "completed" | "error" | "outcome_unknown" | "cancelled" | "expired";
 type TerminalStatus = Exclude<InternalStatus, "queued" | "dispatched">;
 
+const commandDiagnosticsSchema = z.object({
+  device: z.string().regex(/^[A-Za-z0-9._-]{1,64}$/),
+  stage: z.literal("terminal_recorded"), observedAt: z.number().int().nonnegative(),
+  deviceObservedAt: z.number().int().nonnegative().nullable(),
+  errorCode: z.string().regex(/^[A-Za-z0-9_.:-]{1,128}$/).optional(),
+}).strict();
+type CommandDiagnostics = z.infer<typeof commandDiagnosticsSchema>;
+
 type PersistedCommand = {
   commandId: string;
   fingerprint: string;
@@ -61,6 +69,7 @@ type PersistedCommand = {
   expiresAt?: number;
   dispatchedAt?: number;
   resultDigest?: string;
+  diagnostics?: CommandDiagnostics;
   fileRequest?: Extract<AndroidCommandRequest, { operation: "receive_file" }>;
   fileResult?: Record<string, unknown>;
 };
@@ -68,6 +77,7 @@ type PersistedCommand = {
 type PersistedStore = { version: 1; commands: PersistedCommand[] };
 
 type CommandResult = {
+  diagnostics?: CommandDiagnostics;
   commandId: string;
   status: TerminalStatus;
   ok: boolean;
@@ -82,6 +92,8 @@ type CommandLookup = { commandId: string; status: "staging"; noReplay: true } | 
   deliveryId?: string;
   sessionId?: string;
   compacted?: boolean;
+  diagnostics?: CommandDiagnostics;
+  resultDigest?: string;
 } | {
   commandId: string;
   status: "history_unavailable";
@@ -312,7 +324,7 @@ function protocolError(error: z.ZodError): AndroidControllerError {
 function commandResult(command: RuntimeCommand): CommandResult {
   if (command.result) return command.result;
   if (command.fileResult) return { commandId: command.commandId, status: command.status as TerminalStatus, ok: command.status === "completed", result: command.fileResult };
-  if (command.status === "completed" || command.status === "error") return { commandId: command.commandId, status: command.status, ok: command.status === "completed", result: { payloadRetained: false } };
+  if (command.status === "completed" || command.status === "error") return { commandId: command.commandId, status: command.status, ok: command.status === "completed", result: { payloadRetained: false, ...(command.diagnostics ? { diagnostics: command.diagnostics } : {}) }, ...(command.status === "error" && command.diagnostics?.errorCode ? { error: { code: command.diagnostics.errorCode, message: "Detailed error payload was not retained; inspect the command diagnostics." } } : {}) };
   if (command.status === "cancelled") return { commandId: command.commandId, status: "cancelled", ok: false, error: { code: "cancelled", message: "Command was cancelled before dispatch" } };
   if (command.status === "expired") return { commandId: command.commandId, status: "expired", ok: false, error: { code: "expired", message: "Command expired before dispatch" } };
   return { commandId: command.commandId, status: "outcome_unknown", ok: false, error: { code: "outcome_unknown", message: "The command may have affected the device; it will not be replayed" } };
@@ -398,6 +410,7 @@ export class AndroidController {
           || item.resultDigest !== digest({ commandId: item.commandId, status: "completed", ok: true, result: receipt.data })) throw new Error("Invalid Android file receipt in journal");
       }
       if (item.operation === "receive_file" && item.status === "completed" && !item.fileResult) throw new Error("Completed Android file journal lacks verified receipt");
+      if (item.diagnostics !== undefined && (!commandDiagnosticsSchema.safeParse(item.diagnostics).success || item.diagnostics.device !== device.config.name)) throw new Error("Invalid Android command diagnostics in journal");
       if (item.resultDigest !== undefined && !/^[a-f0-9]{64}$/.test(item.resultDigest)) throw new Error("Invalid Android result digest in journal");
       if (item.operation !== undefined && !isAndroidOperation(item.operation)) throw new Error("Invalid Android operation in journal");
       if (item.deliveryId !== undefined && (!z.string().uuid().safeParse(item.deliveryId).success || !z.string().uuid().safeParse(item.sessionId).success)) {
@@ -443,9 +456,9 @@ export class AndroidController {
   private persist(device: Device): void {
     const store: PersistedStore = {
       version: 1,
-      commands: [...device.commands.values()].map(({ commandId, fingerprint, operation, status, deliveryId, sessionId, expiresAt, dispatchedAt, resultDigest, fileRequest, fileResult }) => ({
+      commands: [...device.commands.values()].map(({ commandId, fingerprint, operation, status, deliveryId, sessionId, expiresAt, dispatchedAt, resultDigest, fileRequest, fileResult, diagnostics }) => ({
         commandId, fingerprint, ...(operation ? { operation } : {}), status, ...(deliveryId ? { deliveryId } : {}), ...(sessionId ? { sessionId } : {}),
-        ...(expiresAt ? { expiresAt } : {}), ...(dispatchedAt ? { dispatchedAt } : {}), ...(resultDigest ? { resultDigest } : {}), ...(fileRequest ? { fileRequest } : {}), ...(fileResult ? { fileResult } : {}),
+        ...(expiresAt ? { expiresAt } : {}), ...(dispatchedAt ? { dispatchedAt } : {}), ...(resultDigest ? { resultDigest } : {}), ...(fileRequest ? { fileRequest } : {}), ...(fileResult ? { fileResult } : {}), ...(diagnostics ? { diagnostics } : {}),
       })),
     };
     atomicWrite(device.filePath, store);
@@ -695,6 +708,7 @@ export class AndroidController {
       result: command.result,
       fileResult: command.fileResult,
       resultDigest: command.resultDigest,
+      diagnostics: command.diagnostics,
       queue: device.queue,
       active: device.active,
     };
@@ -703,6 +717,8 @@ export class AndroidController {
     command.status = status;
     command.result = completedResult;
     if (command.operation === "receive_file" && ok && result) command.fileResult = result;
+    command.diagnostics = { device: device.config.name, stage: "terminal_recorded", observedAt: Date.now(), deviceObservedAt: device.observedAt,
+      ...(error ? { errorCode: /^[A-Za-z0-9_.:-]{1,128}$/.test(error.code) ? error.code : "unclassified" } : {}) };
     command.resultDigest = command.unknownSynthetic ? undefined : digest(completedResult);
     // Keep only controller-synthesized uncertainty active until a late
     // authoritative result or a new execution session. A phone-submitted
@@ -718,6 +734,7 @@ export class AndroidController {
       command.result = previous.result;
       command.fileResult = previous.fileResult;
       command.resultDigest = previous.resultDigest;
+      command.diagnostics = previous.diagnostics;
       device.queue = previous.queue;
       device.active = previous.active;
       throw persistError;
@@ -915,9 +932,9 @@ export class AndroidController {
     if (!command) return (seenHas(device.seenFilter, commandId) || seenHas(device.seenFilter, commandId.toLowerCase()) || seenHas(device.seenFilter, commandId.toUpperCase()))
       ? { commandId, status: "history_unavailable", compacted: true, noReplay: true, reason: "terminal_history_compacted_or_filter_match" }
       : this.filePush.reservationStatus(device.config.name, commandId.toLowerCase());
-    if (command.result) return command.result;
+    if (command.result) return { ...command.result, ...(command.diagnostics ? { diagnostics: command.diagnostics } : {}) };
     if (command.fileResult) return { commandId, status: command.status as TerminalStatus, ok: command.status === "completed", result: command.fileResult };
-    return { commandId: command.commandId, status: command.status, fingerprint: command.fingerprint, ...(command.deliveryId ? { deliveryId: command.deliveryId } : {}), ...(command.sessionId ? { sessionId: command.sessionId } : {}) };
+    return { commandId: command.commandId, status: command.status, ...(command.diagnostics ? { diagnostics: command.diagnostics } : {}), ...(command.resultDigest ? { resultDigest: command.resultDigest } : {}), fingerprint: command.fingerprint, ...(command.deliveryId ? { deliveryId: command.deliveryId } : {}), ...(command.sessionId ? { sessionId: command.sessionId } : {}) };
   }
 
   private async handlePoll(device: Device, body: unknown, req: IncomingMessage, res: ServerResponse): Promise<void> {

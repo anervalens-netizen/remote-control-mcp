@@ -200,6 +200,15 @@ describe("Android reverse controller protocol and durable ledger", () => {
     const late = { version: 1, device: "phone-example", sessionId, commandId, deliveryId: envelope.deliveryId, ok: false, status: "error", error: { code: "accessibility_unavailable", message: "not available" } };
     expect((await post(`http://127.0.0.1:${second.address()!.port}`, "/android/v1/result", late)).status).toBe(200);
     expect(second.lookup(commandId)).toMatchObject({ status: "error" });
+    await second.close();
+    const third = new AndroidController({ host: "127.0.0.1", port: 0, stateDir: first.root, devices: [{ name: "phone-example", token }] });
+    controllers.push(third);
+    expect(third.lookup(commandId)).toMatchObject({ status: "error", resultDigest: expect.any(String), diagnostics: {
+      device: "phone-example", stage: "terminal_recorded", errorCode: "accessibility_unavailable", observedAt: expect.any(Number),
+    } });
+    expect(JSON.stringify(third.lookup(commandId))).not.toContain("not available");
+    await expect(third.execute(commandId, observe, Date.now()+1000)).resolves.toMatchObject({ status: "error", error: {code:"accessibility_unavailable"},result:{payloadRetained:false} });
+
     expect(() => second.execute(commandId, { operation: "global_action", action: "home" }, Date.now() + 1000)).toThrowError(AndroidControllerError);
   });
 

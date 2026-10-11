@@ -276,3 +276,18 @@ it("persists a caller disconnect arriving during observer finalization", async (
   expect(record?.callerDisconnected).toBe(true);
   expect(record?.events.filter(e=>e.stage==='handler_returned')).toHaveLength(1);
 });
+
+
+it("pins unconfirmed completion rather than evicting its recovery evidence", async () => {
+  const root=await directory();const observer=new OperationObserver(root,1);
+  const id=(await observer.begin("device_info",undefined))!;
+  const rename=fs.rename;
+  const spy=vi.spyOn(fs,"rename").mockImplementation(async(from,to)=>{
+    if(String(to).endsWith(`${id}.json`))throw new Error("synthetic publication failure");
+    return rename(from,to);
+  });
+  await observer.finish(id,{},true,false);
+  expect(await observer.begin("device_info",undefined)).toBeUndefined();
+  expect(await observer.inspect(id)).toMatchObject({persistence:"unconfirmed"});
+  spy.mockRestore();
+});

@@ -597,3 +597,10 @@ still explicitly rejects synchronous timeout/output options.
 Job `timing` distinguishes the observed shell-exit marker, the recorded
 `finishedAt` and the time this status was observed. Marker time is not proof
 that descendants stopped; historical exact whole-job exit times remain unknown.
+
+Android terminal history retains a bounded diagnostic code, controller recording
+stage/time, device identity and last device-state observation time alongside the
+existing result digest. Reload validates this metadata and preserves the code
+without retaining error-message text, screenshots or UI payloads. A historical
+device timestamp does not certify present readiness. Older entries without
+these fields remain unknown; no synthetic historical diagnostics are invented.

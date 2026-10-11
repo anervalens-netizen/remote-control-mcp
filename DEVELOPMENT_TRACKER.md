@@ -110,3 +110,5 @@ Pending Downloads are cleaned by an application-owned persisted scheduled job an
   operational records; source and CI results do not establish live acceptance.
 - Cover PTY termination under saturated normal admission, disconnects during
   finalization, and invalid-file byte accounting without evicting valid evidence.
+- Retain bounded Android error diagnostics across controller restart without
+  retaining UI/error payloads, altering result digests or weakening no-replay.
