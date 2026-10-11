@@ -29,6 +29,10 @@ export type ObservedOperation = z.infer<typeof operationSchema>;
 type CurrentOperation = { observer: OperationObserver; traceId: string };
 export const operationContext = new AsyncLocalStorage<CurrentOperation>();
 export const consoleReadTools = new Set(["open_remote_control_console", "dashboard_snapshot", "operation_inspect"]);
+const coverageFileSchema = z.object({
+  faults: z.array(z.enum(["coverage_persistence_failed", "coverage_unavailable", "unrecognized_journal_entry", "journal_capacity_or_invalid_entry", "journal_corrupt", "temporary_reconciliation_required", "journal_unavailable", "journal_write_failed", "journal_capacity", "journal_update_over_budget"])).max(10),
+  counters: z.object({ admissionRefused: z.number().int().nonnegative().safe(), persistenceFailures: z.number().int().nonnegative().safe(), compacted: z.number().int().nonnegative().safe(), evicted: z.number().int().nonnegative().safe(), recoveredTemporaries: z.number().int().nonnegative().safe() }).strict(),
+}).strict();
 
 /** An additive metadata index, not an executor or a replacement for job journals.
  * Every write is bounded and failure is reported as partial coverage, never as
@@ -94,10 +98,19 @@ export class OperationObserver {
       await fs.mkdir(this.directory, { recursive: true, mode: 0o700 });
       const files = await fs.readdir(this.directory);
       try {
-        const saved = JSON.parse(await fs.readFile(path.join(this.directory, "coverage.json"), "utf8"));
-        for (const fault of saved.faults ?? []) if (typeof fault === "string") this.faults.add(fault);
-        for (const key of Object.keys(this.counters) as Array<keyof typeof this.counters>)
-          if (Number.isSafeInteger(saved.counters?.[key]) && saved.counters[key] >= 0) this.counters[key] = saved.counters[key];
+        const file = path.join(this.directory, "coverage.json");
+        const stat = await fs.lstat(file);
+        if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 16384) throw new Error("invalid coverage file");
+        const handle = await fs.open(file, "r");
+        let saved;
+        try {
+          const buffer = Buffer.alloc(16385);
+          const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+          if (bytesRead > 16384) throw new Error("coverage file too large");
+          saved = coverageFileSchema.parse(JSON.parse(buffer.subarray(0, bytesRead).toString("utf8")));
+        } finally { await handle.close(); }
+        for (const fault of saved.faults) this.faults.add(fault);
+        this.counters = saved.counters;
       } catch (error: any) { if (error.code !== "ENOENT") this.faults.add("coverage_unavailable"); }
       const temporaries: string[] = [];
       for (const file of files) {
@@ -180,7 +193,7 @@ export class OperationObserver {
     if (this.directory) {
       if (!path.isAbsolute(this.directory)) throw new Error("absolute directory required");
       const file = path.join(this.directory, `${record.traceId}.json`);
-      const temporary = `${file}.${this.controllerInstanceId}.tmp`;
+      const temporary = `${file}.${randomUUID()}.tmp`;
       let handle;
       let synchronized = false, published = false;
       try {

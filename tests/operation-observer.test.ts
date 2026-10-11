@@ -291,3 +291,35 @@ it("pins unconfirmed completion rather than evicting its recovery evidence", asy
   expect(await observer.inspect(id)).toMatchObject({persistence:"unconfirmed"});
   spy.mockRestore();
 });
+
+
+it('bounds and validates restored coverage metadata without amplifying corrupted data', async () => {
+  for (const content of [JSON.stringify({faults:['x'.repeat(20000)],counters:{}}), JSON.stringify({faults:['unknown_fault'],counters:{}})]) {
+    const root=await directory(); await writeFile(path.join(root,'coverage.json'),content);
+    const observer=new OperationObserver(root);
+    const id=await observer.begin('device_info',undefined); expect(id).toBeTruthy();
+    await observer.finish(id!,{ok:true},true,false);
+    expect(observer.coverage()).toMatchObject({partial:true,faults:['coverage_unavailable']});
+    expect(Buffer.byteLength(JSON.stringify(observer.coverage()))).toBeLessThan(2048);
+  }
+});
+
+it('resumes durable finalization after rename failure without losing the earlier temporary', async () => {
+  const root=await directory(), observer=new OperationObserver(root);
+  const id=(await observer.begin('job_start',undefined))!;
+  const rename=fs.rename;
+  const spy=vi.spyOn(fs,'rename').mockImplementation(async(from,to)=>{
+    if(String(to).endsWith(`${id}.json`)) throw Object.assign(new Error('synthetic failure'),{code:'EIO'});
+    return rename(from,to);
+  });
+  const job={device:'lab',identity:'root' as const,jobId:'persistent-locator'};
+  await observer.event(id,{stage:'agent_response'},job);
+  const retained=(await readdir(root)).filter(f=>f.startsWith(id)&&f.endsWith('.tmp'));
+  expect(retained).toHaveLength(1); spy.mockRestore();
+  await observer.finish(id,{id:job.jobId,state:'completed',requestSucceeded:true},true,false);
+  expect(await observer.inspect(id)).toMatchObject({state:'returned',persistence:'confirmed',jobs:[job]});
+  const disk=JSON.parse(await readFile(path.join(root,`${id}.json`),'utf8'));
+  expect(disk).toMatchObject({state:'returned',jobs:[job],requestSucceeded:true});
+  expect(await readdir(root)).toContain(retained[0]);
+  expect(await new OperationObserver(root).inspect(id)).toMatchObject({jobs:[job],persistence:'confirmed'});
+});

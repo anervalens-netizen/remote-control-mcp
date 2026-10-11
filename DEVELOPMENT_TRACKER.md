@@ -112,3 +112,5 @@ Pending Downloads are cleaned by an application-owned persisted scheduled job an
   finalization, and invalid-file byte accounting without evicting valid evidence.
 - Retain bounded Android error diagnostics across controller restart without
   retaining UI/error payloads, altering result digests or weakening no-replay.
+- Bound restored coverage metadata, verify writing resumes after publication
+  failure, and protect search output and nested JSON serialization budgets.

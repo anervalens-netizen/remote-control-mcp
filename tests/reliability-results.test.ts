@@ -365,7 +365,7 @@ it('keeps SDK control dispatch available when all normal recovery slots are runn
   const server = new McpServer({name:'control-fixture',version:'1'});
   installDefaultToolOutputContracts(server,undefined,agent);
   let controlled=0, started=0;
-  for (const name of ['job_status','pty_terminate']) server.registerTool(name,{inputSchema:{},outputSchema:z.object({ok:z.boolean()})},async()=>{
+  for (const name of ['job_status','pty_terminate','search_results']) server.registerTool(name,{inputSchema:{},outputSchema:z.object({ok:z.boolean()})},async()=>{
     controlled++;return {content:[],structuredContent:{ok:true}};
   });
   server.registerTool('job_start',{inputSchema:{},outputSchema:z.object({ok:z.boolean()})},async()=>{
@@ -377,6 +377,19 @@ it('keeps SDK control dispatch available when all normal recovery slots are runn
     expect((await client.callTool({name:'job_start',arguments:{}})).isError).toBe(true);
     expect((await client.callTool({name:'job_status',arguments:{}})).isError).not.toBe(true);
     expect((await client.callTool({name:'pty_terminate',arguments:{}})).isError).not.toBe(true);
-    expect(started).toBe(0);expect(controlled).toBe(2);
+    expect((await client.callTool({name:'search_results',arguments:{}})).isError).not.toBe(true);
+    expect(started).toBe(0);expect(controlled).toBe(3);
   } finally {await client.close();await server.close();}
+});
+
+
+it('budgets both nested JSON text and structured escaping before dispatch', async () => {
+  const { assertAggregateBudget } = await import('../apps/mcp-server/src/result-budget.ts');
+  const data = '\u0000'.repeat(20000);
+  const receipt = { data };
+  const serialized = Buffer.byteLength(JSON.stringify({ content: [{type:'text',text:JSON.stringify(receipt)}], structuredContent:receipt }));
+  const oldUnderestimate = 12 * Buffer.byteLength(data) + 16384;
+  expect(serialized).toBeGreaterThan(oldUnderestimate);
+  expect(() => assertAggregateBudget([Buffer.byteLength(data)], oldUnderestimate)).toThrow(/aggregate_result_budget_exceeded/);
+  expect(() => assertAggregateBudget([Buffer.byteLength(data)], 14 * Buffer.byteLength(data) + 16384)).not.toThrow();
 });
