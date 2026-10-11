@@ -80,7 +80,7 @@ describe("Issue #35 audit remediation", () => {
         name: "batch_exec",
         arguments: { mode: "legacy",
           concurrency: 1,
-          items: [1, 2, 3].map((item) => ({ device: "pc", command: `fixture-${item}` })),
+          items: [1, 2, 3].map((item) => ({ device: "pc", command: `fixture-${item}`, maxOutputBytes: 1024 })),
         },
       }, undefined, { signal: controller.signal });
       void pending.catch(() => undefined);

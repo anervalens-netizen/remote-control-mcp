@@ -9,6 +9,7 @@ export const recoveryReferenceSchema = z.object({
 const invocationSchema = z.object({ tool: z.string(), requestId: z.union([z.string(), z.number()]).optional(), requestIdHash: z.string().optional(), sessionIdHash: z.string().optional() });
 type Invocation = z.infer<typeof invocationSchema>;
 export const resultMetadataFields = {
+  observationCoverage: z.record(z.string(), z.unknown()).optional(),
   operationTrace: z.object({ traceId: z.string().uuid(), controllerInstanceId: z.string().uuid() }).optional(),
   resultRecovery: recoveryReferenceSchema.optional(),
   contentTruncated: z.boolean().optional(),
@@ -25,26 +26,30 @@ export const resultMetadataFields = {
  * an earlier controller/expired reservation fail closed, including on reuse. */
 export class ResultRecoveryStore {
   readonly retentionMs = 15 * 60 * 1000;
-  readonly maxEntries = 64;
-  private entries = new Map<string, { expires: number; state: "reserved" | "running" | "complete"; data?: Buffer; invocation?: Invocation }>();
+  readonly maxEntries: number;
+  readonly controlEntries: number;
+  constructor(maxEntries = 64, controlEntries = 8) { this.maxEntries = maxEntries; this.controlEntries = controlEntries; }
+  private entries = new Map<string, { expires: number; state: "reserved" | "running" | "complete"; data?: Buffer; invocation?: Invocation; control: boolean }>();
   private sweep() {
     for (const [id, entry] of this.entries) if (entry.state !== "running" && entry.expires <= Date.now()) this.entries.delete(id);
   }
-  prepare() {
+  prepare(control = false) {
     this.sweep();
-    if (this.entries.size >= this.maxEntries) {
+    const count = () => [...this.entries.values()].filter(e => e.control === control).length;
+    const limit = control ? this.controlEntries : this.maxEntries;
+    if (count() >= limit) {
       // Evict only completed receipts, oldest first. Reserved/active slots are
       // pinned, so admission failure always happens before effects.
-      const oldest = [...this.entries].filter(([, entry]) => entry.state === "complete").sort((a, b) => a[1].expires - b[1].expires)[0];
+      const oldest = [...this.entries].filter(([, entry]) => entry.state === "complete" && entry.control === control).sort((a, b) => a[1].expires - b[1].expires)[0];
       if (oldest) this.entries.delete(oldest[0]);
     }
-    if (this.entries.size >= this.maxEntries) throw new Error("Result recovery slots are full; read/release completed results or use durable jobs. No dispatch occurred.");
+    if (count() >= limit) throw new Error("Result recovery admission full; No dispatch occurred. result_recover and result_recovery_release remain available; inspect existing work before retrying.");
     const id = randomUUID();
-    this.entries.set(id, { expires: Date.now() + this.retentionMs, state: "reserved" });
+    this.entries.set(id, { expires: Date.now() + this.retentionMs, state: "reserved", control });
     return this.reference(id);
   }
-  begin(id?: string, invocation?: { tool: string; requestId?: string | number; sessionId?: string }) {
-    const reference = id === undefined ? this.prepare() : this.reference(id);
+  begin(id?: string, invocation?: { tool: string; requestId?: string | number; sessionId?: string }, control = false) {
+    const reference = id === undefined ? this.prepare(control) : this.reference(id);
     const entry = this.entries.get(reference.id)!;
     if (entry.state !== "reserved") throw new Error("Recovery reservation already used; inspect result_recover. Never replay an uncertain effect.");
     entry.state = "running";
@@ -77,6 +82,19 @@ export class ResultRecoveryStore {
     entry.state = "complete";
     entry.expires = Date.now() + this.retentionMs;
     return this.reference(id);
+  }
+  stats() {
+    this.sweep();
+    const rows = [...this.entries.values()];
+    return { slots: rows.length, normalLimit: this.maxEntries, controlLimit: this.controlEntries,
+      controlSlots: rows.filter(e => e.control).length, running: rows.filter(e => e.state === "running").length,
+      retainedBytes: rows.reduce((sum,e) => sum + (e.data?.length ?? 0), 0),
+      largestReceiptBytes: Math.max(0, ...rows.map(e => e.data?.length ?? 0)),
+      scope: "controller_memory", memoryAccounting: "Serialized buffers only; excludes objects and temporary serialization copies." };
+  }
+  failIfRunning(id: string) {
+    if (this.entries.get(id)?.state === "running") this.finish(id, { resultPreparationFailed: true, noReplay: true,
+      notice: "The handler may have executed; no valid callback receipt could be serialized. Inspect agent effects." });
   }
   list() {
     this.sweep();
@@ -112,7 +130,7 @@ export function registerResultRecovery(server: McpServer, store: ResultRecoveryS
     inputSchema: {}, outputSchema: recoveryReferenceSchema,
   }, async () => text(store.prepare()));
   server.registerTool("result_recover", {
-    description: "Omit id to list up to 64 retained receipt IDs and request correlation (no arguments/output). Specify id to read the original pre-compaction JSON without execution. Base64 pages, byte offsets. Same authenticated controller; up to 15 minutes or 64 newer results. Missing/expired never authorizes replay.",
+    description: "Omit id to list up to 72 retained receipt IDs and request correlation (no arguments/output). Specify id to read the original pre-compaction JSON without execution. Base64 pages, byte offsets. Same authenticated controller; up to 15 minutes with bounded normal/control capacity. Missing/expired never authorizes replay.",
     annotations: { readOnlyHint: true },
     inputSchema: { id: z.string().uuid().optional(), offset: z.number().int().nonnegative().optional(), length: z.number().int().min(1).max(12 * 1024).optional() }, outputSchema: output,
   }, async ({ id, offset, length }) => text(id === undefined ? store.list() : store.read(id, offset, length)));
@@ -135,4 +153,11 @@ function inspectNonJson(value: unknown, seen = new WeakSet<object>(), depth = 0)
       "value" in descriptor ? inspectNonJson(descriptor.value, seen, depth + 1) : { nonJsonType: "accessor" }]));
   seen.delete(value);
   return result;
+}
+
+const stores = new WeakMap<object, ResultRecoveryStore>();
+export function recoveryFor(owner: object) {
+  let store = stores.get(owner);
+  if (!store) { store = new ResultRecoveryStore(); stores.set(owner, store); }
+  return store;
 }

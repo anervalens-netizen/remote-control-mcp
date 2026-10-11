@@ -93,3 +93,18 @@ cd apps/android-companion
 ```
 
 Pending Downloads are cleaned by an application-owned persisted scheduled job and on service startup. Cleanup selects only this application's unpublished rows older than one hour. Android may delay scheduled jobs (including Doze or force-stop); this is not an exact one-hour deletion guarantee. MediaStore manages its own expiry columns. Companion capability `receiveFile` must be present before a new transfer reserves an ID or reads source bytes.
+
+## Observer and recovery pressure contracts
+
+- Preserve job locators and finalization across admission saturation, publication
+  interruption and restart; reconcile terminal evidence monotonically.
+- Expose per-call/authenticated-health coverage, current saturation and historical
+  counters, with explicit RAM versus durable observation status.
+- Keep bounded recovery control capacity available independently of normal
+  admission, and refuse reservation reuse without overwriting prior evidence.
+- Reject unsafe aggregate output budgets before dispatch; retain byte paging and
+  durable-job alternatives without silently changing requested output limits.
+- Validate these behaviors in `operation-observer`, `reliability-results` and
+  `result-budget` regressions, including actual SDK routing/recovery checks.
+- Keep deployment SHA, actual connector checks and rollback receipts in private
+  operational records; source and CI results do not establish live acceptance.

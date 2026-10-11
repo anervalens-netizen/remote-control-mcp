@@ -55,7 +55,7 @@ export const fsReadFields = {
   expectedVersion: sourceVersionSchema.optional().describe("Require this sourceVersion; implies versioned. A mismatch fails without returning data."),
   path: z.string().min(1),
   offset: z.number().int().nonnegative().optional(),
-  length: z.number().int().nonnegative().optional(),
+  length: z.number().int().nonnegative().max(64 * 1024 * 1024).optional(),
   encoding: z.enum(["utf8", "base64"]).optional(),
   tailBytes: z.number().int().nonnegative().max(64 * 1024 * 1024).optional(),
   startLine: z.number().int().positive().optional(),

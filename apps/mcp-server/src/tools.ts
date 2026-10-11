@@ -1,3 +1,4 @@
+import { assertAggregateBudget } from "./result-budget.ts";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { executionFacts } from "../../../packages/protocol/src/execution-outcome.ts";
@@ -45,6 +46,7 @@ export function registerTools(server: McpServer, client: AgentClient): void {
     outputSchema: z.object({ ...execResultSchema.shape, ...executionRouteFields }),
   }, async ({ device, context, identity, elevation, ...request }, extra) => {
     const target = resolveExecutionContext(client, device, { context, identity, elevation }, "system");
+    assertAggregateBudget([2 * (request.maxOutputBytes ?? 4 * 1024 * 1024)]);
     const result = await client.exec(device, request, target, { signal: extra.signal }) as Record<string, unknown>;
     const receipt = { ...result, ...executionFacts(result) };
     return structured({ ...receipt, identity: executionLabel(target), context: target }, receipt);
@@ -57,6 +59,7 @@ export function registerTools(server: McpServer, client: AgentClient): void {
     },
   }, async ({ device, context, identity, elevation, ...input }) => {
     const target = resolveExecutionContext(client, device, { context, identity, elevation }, "system");
+    assertAggregateBudget([input.length ?? input.tailBytes ?? input.maxBytes ?? 1024 * 1024]);
     return text(await client.fsRead(device, input, target));
   });
 

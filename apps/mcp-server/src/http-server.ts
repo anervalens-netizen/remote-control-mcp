@@ -1,3 +1,5 @@
+import { operationsFor } from "./operation-observer.ts";
+import { recoveryFor } from "./result-recovery.ts";
 import { captureError } from "./error-reporting.ts";
 import { isLegacyRequest } from "@modelcontextprotocol/server";
 import { toNodeHandler, toWebRequest } from "@modelcontextprotocol/node";
@@ -185,6 +187,8 @@ export function createMcpHttpServer(client: AgentClient, options: {
             averageDurationMs: requestsTotal > 1 ? Math.round(requestDurationMsTotal / Math.max(1, requestsTotal - requestsInFlight)) : 0,
           },
           compatibility: { ...compatibility.snapshot(), modern: { protocolVersion: "2026-07-28", requests: modernRequests } },
+          operationObserver: await operationsFor(client).health(),
+          resultRecovery: recoveryFor(client).stats(),
           toolDiagnostics: diagnosticsFor(client).snapshot(),
           eventLoop: { unit: "milliseconds", resolutionMs: 20, meanMs: Number.isFinite(eventLoop.mean) ? eventLoop.mean / 1e6 : null, p95Ms: eventLoop.percentile(95) / 1e6, p99Ms: eventLoop.percentile(99) / 1e6, maxMs: eventLoop.max / 1e6 },
           memory: { rssBytes: memory.rss, heapUsedBytes: memory.heapUsed, heapTotalBytes: memory.heapTotal, externalBytes: memory.external },

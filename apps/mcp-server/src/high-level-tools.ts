@@ -1,3 +1,4 @@
+import { assertAggregateBudget } from "./result-budget.ts";
 import { coordinationFields } from "../../../packages/protocol/src/coordination.ts";
 import { resultMetadataFields } from "./result-recovery.ts";
 import { withErrorOutputContract } from "./error-output-contract.ts";
@@ -63,6 +64,7 @@ export function registerHighLevelTools(server: McpServer, client: AgentClient): 
       return structured(result);
     }
     if (operationKey) throw new Error("operationKey requires durable mode");
+    assertAggregateBudget(planned.map(item => 2 * (item.request.maxOutputBytes ?? 4 * 1024 * 1024)));
     const operationId = randomUUID();
     const legacy = await settledExecution(
       planned,
@@ -107,6 +109,7 @@ export function registerHighLevelTools(server: McpServer, client: AgentClient): 
       const target = resolveExecutionContext(client, device, { context, identity, elevation }, "system");
       return { index, device, target, identity: executionLabel(target), input };
     });
+    assertAggregateBudget(planned.map(item => item.input.length ?? item.input.tailBytes ?? item.input.maxBytes ?? 1024 * 1024));
     const legacy = await settled(
       planned,
       (item) => client.fsRead(item.device, item.input, item.target, { signal: extra.signal }),

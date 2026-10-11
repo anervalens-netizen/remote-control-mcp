@@ -176,6 +176,9 @@ async function readLineRange(file: OpenFile, input: FsReadInput, totalBytes: num
 }
 
 export async function fsRead(input: FsReadInput) {
+  for (const value of [input.length, input.tailBytes, input.maxBytes])
+    if (value !== undefined && (!Number.isSafeInteger(value) || value < 0 || value > 64 * 1024 * 1024))
+      throw new Error("File read exceeds 64 MiB page budget; use nextOffset paging");
   if (input.tailBytes !== undefined && input.tailBytes < 0) throw new Error("tailBytes must be non-negative");
   if (input.startLine !== undefined && input.startLine < 1) throw new Error("startLine must be >= 1");
   if (input.lineCount !== undefined && input.lineCount < 1) throw new Error("lineCount must be >= 1");

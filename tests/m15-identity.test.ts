@@ -50,9 +50,9 @@ describe("M15 W1 identity and structured batch contract", () => {
   it("routes a mixed batch by per-item identity and preserves literal env", async () => {
     const { client, calls } = await harness();
     const result = await client.callTool({ name: "batch_exec", arguments: { mode: "legacy", items: [
-      { device: "pc", command: "echo fixture", identity: "owner", elevation: "never", env: { identity: "not-a-routing-option", VALUE: "ș ț 😀" } },
-      { device: "pc", command: "echo fixture", identity: "root" },
-      { device: "pc", command: "echo fixture", identity: "interactive" },
+      { device: "pc", command: "echo fixture", maxOutputBytes: 1024, identity: "owner", elevation: "never", env: { identity: "not-a-routing-option", VALUE: "ș ț 😀" } },
+      { device: "pc", command: "echo fixture", maxOutputBytes: 1024, identity: "root" },
+      { device: "pc", command: "echo fixture", maxOutputBytes: 1024, identity: "interactive" },
     ], concurrency: 2 } });
     expect(result.isError).not.toBe(true);
     expect(calls.map(c => c.route).sort()).toEqual(["/desktop/v1/exec", "/system/v1/exec", "/user/v1/exec"]);
@@ -117,7 +117,7 @@ describe("M15 W1 identity and structured batch contract", () => {
     const invalid = await client.callTool({ name: "exec", arguments: { device: "pc", command: "echo fixture", identitty: "owner" } });
     expect(invalid.isError).toBe(true);
     expect(calls).toHaveLength(0);
-    const valid = await client.callTool({ name: "exec", arguments: { device: "pc", command: "echo fixture", identity: "owner" } });
+    const valid = await client.callTool({ name: "exec", arguments: { device: "pc", command: "echo fixture", maxOutputBytes: 1024, identity: "owner" } });
     expect(valid.isError).not.toBe(true);
     expect(valid.structuredContent).toMatchObject({ code: 0, identity: "owner", context: "user" });
     expect(textJson(valid).stdout).toBe("fixture");

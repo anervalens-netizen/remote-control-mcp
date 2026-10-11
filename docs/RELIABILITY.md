@@ -547,3 +547,53 @@ identity), configure the shared coordination directory where needed, then
 upgrade the controller and refresh client catalogs. Preserve job/key and
 coordination state on rollback. This source matrix does not authorize an
 operational rollout or certify physical Windows/Android behavior.
+
+### Observation pressure and recovery admission
+
+The metadata observer recycles safely returned observations under entry/byte
+pressure before their normal seven-day expiry. Unresolved job locators and
+uncertain effects remain pinned. A later nonterminal job response cannot erase
+terminal evidence. Failed read/wait observations can be reconciled by an
+authoritative terminal job response; this does not change the original request
+success or claim client acceptance. `returned` and an empty job list alone are
+not proof of completion for asynchronous starts.
+
+The 16 MiB journal budget governs admission. Updates to already admitted records
+may exceed it to preserve job locators and completion; event detail is compacted
+first. Each record is bounded at 512 KiB and the entry count remains bounded.
+Coverage exposes actual bytes, saturation, admission refusals, compaction,
+eviction and persistence failures. Historical faults/counters are retained
+separately from current saturation in `coverage.json`; this is restart continuity,
+not a power-loss guarantee. `observationPersistence` distinguishes RAM-only
+updates from confirmed writes. Valid synchronized temporaries are reconciled
+before removal, retaining unique locators and uncertainty. Journal writes are
+serialized; waiting does not cancel an already-started filesystem operation.
+
+Authenticated health includes observer coverage and recovery buffer statistics.
+Each observed tool response carries `observationCoverage`. Recovery statistics
+count serialized buffers, not peak heap or temporary serialization copies.
+Normal recovery admission has 64 slots; eight separate bounded slots protect
+existing-job inspection/output/cancellation while normal invocations are pinned.
+`result_recover` and release require neither lane. All lanes remain finite.
+Recovery is shared by controller sessions and remains memory-only across restart.
+
+A prepared recovery ID may be supplied as the optional `resultRecoveryId` tool
+argument as well as SDK `_meta.resultRecoveryId`. The controller consumes it;
+conflicting IDs or reused reservations fail before dispatch. Reuse does not
+complete or overwrite the earlier invocation's receipt. A malformed callback
+completes its own reservation with explicit preparation uncertainty.
+
+### Aggregate output budgets and job times
+
+Synchronous exec/batch/file reads preflight a 256 MiB serialization budget,
+accounting conservatively for JSON escaping, duplicated content and envelopes.
+Large legacy batches must specify smaller per-stream `maxOutputBytes` or use
+keyed durable batches and paginated `job_output_since`. Refusal occurs before
+any item executes; no output cap is silently reduced. File pages also have a
+64 MiB agent/protocol limit; the controller's aggregate serialization budget
+may require a smaller page. Byte paging retains full-file access. Durable batch
+still explicitly rejects synchronous timeout/output options.
+
+Job `timing` distinguishes the observed shell-exit marker, the recorded
+`finishedAt` and the time this status was observed. Marker time is not proof
+that descendants stopped; historical exact whole-job exit times remain unknown.

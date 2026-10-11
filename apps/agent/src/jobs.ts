@@ -695,6 +695,15 @@ function summary(meta: JobMeta, reconciled = false, observeLineage = true) {
   const { trackedProcesses, systemdIdentityMismatch: _systemdIdentityMismatch, systemdStopConfirmedInvocation: _systemdStopConfirmedInvocation, ...publicMeta } = fresh;
   return {
     ...publicMeta,
+    timing: {
+      observedAt: new Date().toISOString(),
+      shellExitMarkerAt: existsSync(fresh.exitPath) ? statSync(fresh.exitPath).mtime.toISOString() : null,
+      shellExitMarkerMeaning: "Filesystem marker time for shell exit; not proof all descendants stopped.",
+      finishedAt: fresh.finishedAt ?? null,
+      finishedAtMeaning: "Recorded terminal time; may be marker time or later reconciliation. Historical exact whole-job exit time is not inferred.",
+      wholeJobExitAt: null,
+      wholeJobExitPrecision: "unknown",
+    },
     trackedProcessCount: trackedProcesses?.length ?? 0,
     ...readProgress(fresh),
     stdoutBytes: existsSync(fresh.stdoutPath) ? statSync(fresh.stdoutPath).size : 0,

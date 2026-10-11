@@ -65,7 +65,7 @@ describe("bounded scheduling", () => {
       },
     } as unknown as AgentClient;
     const client = await harness(fake);
-    const items = Array.from({ length: 12 }, (_, i) => ({ device: "pc", command: `item-${i}` }));
+    const items = Array.from({ length: 12 }, (_, i) => ({ device: "pc", command: `item-${i}`, maxOutputBytes: 1024 }));
     const response = await client.callTool({ name: "batch_exec", arguments: { mode: "legacy", items, concurrency: 3 } });
     expect(response.isError).not.toBe(true);
     expect(peak).toBe(3);

@@ -1,3 +1,4 @@
+import { z } from 'zod';
 import { afterEach, expect, it } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
@@ -77,7 +78,7 @@ async function recover(client: Client, id: string) {
 
 it.each([false, true])('real SDK accepts large/small batches, complete summaries and exact recovery (HTTP=%s)', async http => {
   const h = await harness(http);
-  const items = Array.from({ length: 64 }, (_, i) => ({ device: 'fixture', identity: 'owner', command: i === 63 ? 'fail' : 'big' }));
+  const items = Array.from({ length: 64 }, (_, i) => ({ device: 'fixture', identity: 'owner', command: i === 63 ? 'fail' : 'big', maxOutputBytes: 65536 }));
   const r: any = await h.client.callTool({ name: 'batch_exec', arguments: { mode: "legacy", items, concurrency: 4 } });
   expect(r.isError).not.toBe(true); expect(h.calls()).toBe(64);
   expect(r.structuredContent.summary).toMatchObject({ total: 64, exit_zero: 63, exit_nonzero: 1, requestErrors: 0, effectVerification: 'unverified', clientAcceptance: 'unknown' });
@@ -95,7 +96,7 @@ it.each([false, true])('real SDK accepts large/small batches, complete summaries
 it('distinguishes execution, request failures and unverified effects over the SDK', async () => {
   const h = await harness();
   const commands = ['small', 'fail', 'signal', 'timeout', 'unknown', 'cancel', 'exception'];
-  const r: any = await h.client.callTool({ name: 'batch_exec', arguments: { mode: "legacy", items: commands.map(command => ({ device: 'fixture', command })) } });
+  const r: any = await h.client.callTool({ name: 'batch_exec', arguments: { mode: "legacy", items: commands.map(command => ({ device: 'fixture', command, maxOutputBytes: 65536 })) } });
   expect(r.isError).not.toBe(true);
   expect(r.structuredContent.summary).toEqual({ total: 7, requestSucceeded: 6, requestErrors: 1, exit_zero: 1, exit_nonzero: 1, signal: 1, timeout: 1, cancelled: 0, uncertain: 3, not_started: 0, effectVerification: 'unverified', clientAcceptance: 'unknown' });
   expect(r.structuredContent.errors[0]).toMatchObject({ index: 6, kind: 'http', status: 403, agentCode: 'EACCES', executionOutcome: 'uncertain' });
@@ -291,4 +292,90 @@ it('bounds the recovery index even when JSON escaping expands request IDs', asyn
   expect(Buffer.byteLength(JSON.stringify(index))).toBeLessThan(65536);
   expect(index.items[0]!.invocation!.requestId).toBeUndefined();
   expect(index.items[0]!.invocation!.requestIdHash).toMatch(/^[a-f0-9]{64}$/);
+});
+
+it('reserves a bounded control lane while normal invocations are pinned', async () => {
+  const { ResultRecoveryStore } = await import('../apps/mcp-server/src/result-recovery.ts');
+  const store = new ResultRecoveryStore(1, 1);
+  const normal = store.begin();
+  expect(() => store.begin()).toThrow(/No dispatch|no dispatch/);
+  const control = store.begin(undefined, { tool: 'job_cancel' }, true);
+  expect(() => store.begin(undefined, { tool: 'job_status' }, true)).toThrow(/No dispatch/);
+  store.finish(control.id, { cancelled: true });
+  expect(store.read(normal.id)).toMatchObject({ state: 'running' });
+  expect(store.stats()).toMatchObject({ running: 1, controlSlots: 1 });
+  expect(store.stats().retainedBytes).toBeGreaterThan(0);
+});
+
+it('refuses reservation reuse before dispatch and completes malformed callback receipts', async () => {
+  const server = new McpServer({ name: 'reservation-fixture', version: '1' });
+  installDefaultToolOutputContracts(server);
+  let calls = 0;
+  server.registerTool('fixture', { inputSchema: {}, outputSchema: z.object({ ok: z.boolean() }) }, async () => {
+    calls++;
+    return { content: [{ type: 'text' as const, text: '{"ok":true}' }], structuredContent: { ok: true } };
+  });
+  const client = new Client({ name: 'fixture', version: '1' });
+  const [a,b] = InMemoryTransport.createLinkedPair();
+  await Promise.all([server.connect(a), client.connect(b)]);
+  try {
+    const prepared = (await client.callTool({ name: 'result_recovery_prepare', arguments: {} })).structuredContent as any;
+    const first = await client.callTool({ name: 'fixture', arguments: { resultRecoveryId: prepared.id } });
+    expect(first.isError).not.toBe(true);
+    const second = await client.callTool({ name: 'fixture', arguments: { resultRecoveryId: prepared.id } });
+    expect(second.isError).toBe(true);
+    expect(second.structuredContent).not.toMatchObject({ code: 'result_delivery_failed' });
+    expect(calls).toBe(1);
+    const retained = await client.callTool({ name: 'result_recover', arguments: { id: prepared.id } });
+    expect(retained.structuredContent).toMatchObject({ state: 'complete' });
+  } finally { await client.close(); await server.close(); }
+});
+
+it('refuses oversized legacy batches through SDK before any effects', async () => {
+  const h = await harness();
+  const result = await h.client.callTool({ name: 'batch_exec', arguments: { mode: 'legacy', items: Array.from({length:64}, () => ({device:'fixture',command:'small'})) } });
+  expect(result.isError).toBe(true); expect(h.calls()).toBe(0);
+  expect(result.structuredContent).toMatchObject({ok:false});
+  expect(JSON.stringify(result)).toContain('aggregate_result_budget_exceeded');
+});
+
+it('does not strand a running recovery slot when structuredContent throws', async () => {
+  const server = new McpServer({ name: 'accessor-fixture', version: '1' });
+  installDefaultToolOutputContracts(server);
+  server.registerTool('fixture', { inputSchema: {}, outputSchema: z.object({ ok: z.boolean() }) }, async () => ({
+    content: [], get structuredContent(): any { throw new Error('synthetic accessor'); },
+  }));
+  const client = new Client({ name: 'fixture', version: '1' });
+  const [a,b] = InMemoryTransport.createLinkedPair(); await Promise.all([server.connect(a),client.connect(b)]);
+  try {
+    const failed = await client.callTool({name:'fixture',arguments:{}});
+    expect(failed.isError).toBe(true);
+    const reference = (failed.structuredContent as any).resultRecovery;
+    const retained = await client.callTool({name:'result_recover',arguments:{id:reference.id}});
+    expect(retained.structuredContent).toMatchObject({state:'complete'});
+    expect(Buffer.from((retained.structuredContent as any).data,'base64').toString()).toContain('resultPreparationFailed');
+  } finally { await client.close(); await server.close(); }
+});
+
+it('keeps SDK control dispatch available when all normal recovery slots are running', async () => {
+  const { recoveryFor } = await import('../apps/mcp-server/src/result-recovery.ts');
+  const agent = new AgentClient([]);
+  const store = recoveryFor(agent);
+  for (let i=0;i<store.maxEntries;i++) store.begin();
+  const server = new McpServer({name:'control-fixture',version:'1'});
+  installDefaultToolOutputContracts(server,undefined,agent);
+  let controlled=0, started=0;
+  server.registerTool('job_status',{inputSchema:{},outputSchema:z.object({ok:z.boolean()})},async()=>{
+    controlled++;return {content:[],structuredContent:{ok:true}};
+  });
+  server.registerTool('job_start',{inputSchema:{},outputSchema:z.object({ok:z.boolean()})},async()=>{
+    started++;return {content:[],structuredContent:{ok:true}};
+  });
+  const client=new Client({name:'fixture',version:'1'});
+  const [a,b]=InMemoryTransport.createLinkedPair();await Promise.all([server.connect(a),client.connect(b)]);
+  try {
+    expect((await client.callTool({name:'job_start',arguments:{}})).isError).toBe(true);
+    expect((await client.callTool({name:'job_status',arguments:{}})).isError).not.toBe(true);
+    expect(started).toBe(0);expect(controlled).toBe(1);
+  } finally {await client.close();await server.close();}
 });

@@ -1,7 +1,7 @@
 import { createTrace, diagnosticContext, measureAsync, measureSync, recordStage, correlationHash } from "../../../packages/protocol/src/diagnostic-context.ts";
 import { executionOutcome } from "../../../packages/protocol/src/execution-outcome.ts";
 import { OperationReceiptError } from "./operation-receipt-error.ts";
-import { ResultRecoveryStore, registerResultRecovery } from "./result-recovery.ts";
+import { ResultRecoveryStore, registerResultRecovery, recoveryFor } from "./result-recovery.ts";
 import { utf8Preview } from "./result-text.ts";
 export { utf8Preview } from "./result-text.ts";
 import { startToolProgress, toolOutcome, type ToolDiagnostics, type ResultDiagnostic } from "./tool-diagnostics.ts";
@@ -15,6 +15,7 @@ import { z } from "zod";
 import { consoleReadTools, operationContext, operationsFor } from "./operation-observer.ts";
 
 const installedServers = new WeakSet<object>();
+const controlTools = new Set(["job_status", "job_output", "job_output_since", "job_wait", "job_cancel", "job_list", "job_history", "job_lineage", "job_find", "batch_recover", "pty_output", "pty_close", "search_stop", "search_status", "android_command_status", "android_cancel"]);
 const scopedTools = new Set(["exec", "batch_exec", "job_start", "job_start_many", "project_run", "deploy_run", "repo_apply_patch", "fs_edit", "service_action"]);
 
 // Hints describe effects; they never authorize or restrict the owner. Do not
@@ -81,7 +82,7 @@ export function compactStructuredContent(value: Record<string, unknown>, maxByte
       stdoutReturnedBytes: Buffer.byteLength(stdout), stderrReturnedBytes: Buffer.byteLength(stderr) }, originalBytes, maxBytes);
   }
   if (candidate && jsonBytes(candidate) <= maxBytes && (!schema || schema.safeParse(candidate).success)) return candidate;
-  return truncatedEnvelope({ resultOmitted: true, resultRecovery: value.resultRecovery, ...(value.operationTrace ? { operationTrace: value.operationTrace } : {}), ...(value.summary ? { summary: value.summary } : {}) }, originalBytes, maxBytes);
+  return truncatedEnvelope({ resultOmitted: true, resultRecovery: value.resultRecovery, ...(value.operationTrace ? { operationTrace: value.operationTrace } : {}), ...(value.observationCoverage ? { observationCoverage: value.observationCoverage } : {}), ...(value.summary ? { summary: value.summary } : {}) }, originalBytes, maxBytes);
 }
 
 /** History payload fields may be previewed, but never identifiers or cursors.
@@ -133,10 +134,15 @@ export function structuredFromContent(content: unknown): Record<string, unknown>
 /** Install semantic output contracts and bound duplicated structured payloads once per MCP server. */
 export function installDefaultToolOutputContracts(server: McpServer, diagnostics?: ToolDiagnostics, client?: AgentClient): void {
   if (installedServers.has(server)) return;
-  const recovery = new ResultRecoveryStore();
+  const recovery = recoveryFor(client ?? server);
   const target = server as any;
   const original = target.registerTool.bind(server);
   target.registerTool = (name: string, config: any, callback: (...args: any[]) => any) => {
+    if (!name.startsWith("result_recover") && !consoleReadTools.has(name) && config?.inputSchema) {
+      const field = { resultRecoveryId: z.string().uuid().optional().describe("Single-use ID from result_recovery_prepare; controller consumes it before dispatch. Reuse refuses dispatch; inspect the original receipt.") };
+      const input = config.inputSchema;
+      config = { ...config, inputSchema: typeof input.safeExtend === "function" ? input.safeExtend(field) : { ...input, ...field } };
+    }
     if (scopedTools.has(name) && config?.inputSchema) {
       const scope = { diagnosticScopeId: z.string().uuid().optional().describe("Client-declared console association; not an authorization or durable effect key.") };
       const input = config.inputSchema;
@@ -156,6 +162,13 @@ export function installDefaultToolOutputContracts(server: McpServer, diagnostics
       if (scopedTools.has(name) && args[0] && Object.hasOwn(args[0], "diagnosticScopeId")) {
         const { diagnosticScopeId: _, ...input } = args[0]; args[0] = input;
       }
+      const explicitRecovery = args[0]?.resultRecoveryId;
+      const metadataRecovery = extra?._meta?.resultRecoveryId;
+      const requestedRecovery = explicitRecovery ?? metadataRecovery;
+      if (args[0] && Object.hasOwn(args[0], "resultRecoveryId")) {
+        const { resultRecoveryId: _, ...input } = args[0]; args[0] = input;
+      }
+      let operationFinished = false;
       let operationId: string | undefined;
       let observedResult: Record<string, unknown> | undefined;
       let requestSucceeded = false;
@@ -165,15 +178,15 @@ export function installDefaultToolOutputContracts(server: McpServer, diagnostics
       let outcome: ReturnType<typeof toolOutcome> = "error";
       let reference: ReturnType<ResultRecoveryStore["begin"]> | undefined;
       try {
+        if (explicitRecovery !== undefined && metadataRecovery !== undefined && explicitRecovery !== metadataRecovery) throw new Error("Conflicting resultRecoveryId arguments; no dispatch occurred");
         if (scope !== undefined) z.string().uuid().parse(scope);
         operationId = await observer?.begin(name, scope, extra?.requestId, extra?.sessionId, args[0]?.contextKeep);
         if (!name.startsWith("result_recover") && !consoleReadTools.has(name)) {
           // A caller can reserve the ID before effects. Unknown/reused IDs fail
           // closed; recovery is never an execution retry mechanism.
-          const requested = extra?._meta?.resultRecoveryId;
+          const requested = requestedRecovery;
           if (requested !== undefined && typeof requested !== "string") throw new Error("Invalid resultRecoveryId");
-          if (requested !== undefined) reference = recovery.reference(requested);
-          reference = recovery.begin(requested, { tool: name, requestId: extra?.requestId, sessionId: extra?.sessionId });
+          reference = recovery.begin(requested, { tool: name, requestId: extra?.requestId, sessionId: extra?.sessionId }, controlTools.has(name));
         }
         const invoke = () => measureAsync("handler", () => withToolErrors(() => callback(...args)));
         const result = await (observer && operationId ? operationContext.run({ observer, traceId: operationId }, invoke) : invoke());
@@ -191,8 +204,12 @@ export function installDefaultToolOutputContracts(server: McpServer, diagnostics
         if (name.startsWith("job_") && typeof structured.id === "string") trace.correlation.job = correlationHash(structured.id);
         if ((name === "batch_exec" || name === "batch_recover") && typeof structured.operationId === "string") trace.correlation.operation = /^[a-f0-9]{64}$/.test(structured.operationId) ? structured.operationId : correlationHash(structured.operationId);
         if ((name === "job_wait" || name === "job_output_since") && typeof structured.waitedMs === "number") recordStage("executionWait", structured.waitedMs);
+        if (observer && operationId) {
+          await observer.finish(operationId, observedResult, requestSucceeded, Boolean(extra?.signal?.aborted), reference?.id);
+          operationFinished = true;
+        }
         // Retain the trace in the immutable receipt, before delivery compaction.
-        const traced = { ...structured, ...(observer && operationId
+        const traced = { ...structured, ...(observer ? { observationCoverage: { ...observer.coverage(operationId), admitted: Boolean(operationId) } } : {}), ...(observer && operationId
           ? { operationTrace: { traceId: operationId, controllerInstanceId: observer.controllerInstanceId } } : {}) };
         if (reference) reference = recovery.finish(reference.id, { ...result, structuredContent: traced });
         if (name === "exec") {
@@ -232,9 +249,17 @@ export function installDefaultToolOutputContracts(server: McpServer, diagnostics
         return output;
       } catch (error) {
         detail.resultPreparationFailed = true;
+        if (reference) recovery.failIfRunning(reference.id);
         const failure = await withToolErrors<never>(() => { throw reference
           ? new OperationReceiptError("Result delivery failed; recover the retained receipt without replay.", { code: "result_delivery_failed", resultRecovery: reference })
           : error; });
+        if (observer) {
+          if (operationId && !operationFinished) {
+            await observer.finish(operationId, observedResult, requestSucceeded, Boolean(extra?.signal?.aborted), reference?.id);
+            operationFinished = true;
+          }
+          Object.assign(failure.structuredContent, { observationCoverage: { ...observer.coverage(operationId), admitted: Boolean(operationId) } });
+        }
         if (!advertisedSchema.safeParse(failure.structuredContent).success || jsonBytes(failure) > TOTAL_RESULT_MAX_BYTES) throw new Error("Invalid final error receipt");
         trace.totalBytes = jsonBytes(failure);
         return failure;
@@ -242,7 +267,7 @@ export function installDefaultToolOutputContracts(server: McpServer, diagnostics
         if (preparingAt !== undefined) recordStage("resultPreparation", performance.now() - preparingAt);
         trace.callerDisconnected = Boolean(extra?.signal?.aborted);
         stopProgress();
-        if (observer && operationId) await observer.finish(operationId, observedResult, requestSucceeded, trace.callerDisconnected, reference?.id);
+        if (observer && operationId && !operationFinished) await observer.finish(operationId, observedResult, requestSucceeded, trace.callerDisconnected, reference?.id);
         if (!consoleReadTools.has(name)) diagnostics?.record(name, args[0], performance.now() - started, outcome, detail);
       }
       });

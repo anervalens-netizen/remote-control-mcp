@@ -23,6 +23,7 @@ const operationSchema = z.object({
   requestSucceeded: z.boolean().optional(), executionOutcome: z.string().max(32).optional(), exitCode: z.number().int().nullable().optional(),
   callerDisconnected: z.boolean().optional(), clientAcceptance: z.literal("unknown"), effectVerification: z.literal("unverified"),
   recoveryId: z.string().uuid().optional(),
+  persistence: z.enum(["confirmed", "unconfirmed"]).optional(),
 }).strict();
 export type ObservedOperation = z.infer<typeof operationSchema>;
 type CurrentOperation = { observer: OperationObserver; traceId: string };
@@ -39,6 +40,42 @@ export class OperationObserver {
   private readonly sizes = new Map<string, number>();
   private readonly faults = new Set<string>();
   private totalBytes = 0;
+  private counters = { admissionRefused: 0, persistenceFailures: 0, compacted: 0, evicted: 0, recoveredTemporaries: 0 };
+  private canRetire(record: ObservedOperation) {
+    const returned = record.state === "returned" || record.events.some(e => e.stage === "handler_returned") &&
+      ["job_wait", "job_status", "job_output", "job_output_since"].includes(record.tool);
+    const needsLocator = ["job_start", "job_start_many", "project_run", "deploy_run", "batch_exec", "process_start", "pty_start"].includes(record.tool);
+    return returned && (!needsLocator || record.jobs.length > 0 || !record.events.some(e => e.stage === "agent_dispatch")) && !record.jobsPartial && record.jobs.every(job => record.terminalJobs?.some(t => sameJob(job, t))) &&
+      (record.jobs.length > 0 || record.requestSucceeded === true || !record.events.some(e => e.stage === "agent_dispatch"));
+  }
+  private async remove(id: string) {
+    if (this.directory) await fs.unlink(path.join(this.directory, `${id}.json`)).catch(error => { if (error.code !== "ENOENT") throw error; });
+    this.entries.delete(id); this.totalBytes -= this.sizes.get(id) ?? 0; this.sizes.delete(id);
+  }
+  private async capacity(bytes: number, exclude?: string) {
+    for (const [id, record] of [...this.entries].sort((a,b) => a[1].updatedAt.localeCompare(b[1].updatedAt))) {
+      if (this.entries.size < this.maxEntries && this.totalBytes + bytes <= this.maxBytes) break;
+      if (id === exclude || !this.canRetire(record)) continue;
+      await this.remove(id); this.counters.evicted++;
+    }
+  }
+  private async saveHealth() {
+    if (!this.directory) return;
+    const file = path.join(this.directory, "coverage.json");
+    const temporary = `${file}.tmp`;
+    try {
+      await fs.writeFile(temporary, JSON.stringify({ faults: [...this.faults], counters: this.counters }), { mode: 0o600 });
+      await fs.rename(temporary, file);
+    } catch { this.faults.add("coverage_persistence_failed"); }
+  }
+  coverage(id?: string) {
+    return { partial: this.faults.size > 0 || id !== undefined && this.entries.get(id)?.persistence === "unconfirmed",
+      faults: [...this.faults], counters: { ...this.counters }, totalKnown: this.entries.size, retainedBytes: this.totalBytes,
+      maxEntries: this.maxEntries, maxBytes: this.maxBytes, saturated: this.entries.size >= this.maxEntries || this.totalBytes >= this.maxBytes,
+      persistence: this.directory ? "metadata_journal" : "controller_memory",
+      ...(id ? { observationPersistence: this.entries.get(id)?.persistence ?? "unconfirmed" } : {}),
+      scope: "Observed handler calls only; association is client-declared; job state must be read from its agent." };
+  }
   private queue: Promise<void> = Promise.resolve();
   private readonly ready: Promise<void>;
   readonly directory: string | undefined;
@@ -55,61 +92,114 @@ export class OperationObserver {
       if (!path.isAbsolute(this.directory)) throw new Error("absolute directory required");
       await fs.mkdir(this.directory, { recursive: true, mode: 0o700 });
       const files = await fs.readdir(this.directory);
+      try {
+        const saved = JSON.parse(await fs.readFile(path.join(this.directory, "coverage.json"), "utf8"));
+        for (const fault of saved.faults ?? []) if (typeof fault === "string") this.faults.add(fault);
+        for (const key of Object.keys(this.counters) as Array<keyof typeof this.counters>)
+          if (Number.isSafeInteger(saved.counters?.[key]) && saved.counters[key] >= 0) this.counters[key] = saved.counters[key];
+      } catch (error: any) { if (error.code !== "ENOENT") this.faults.add("coverage_unavailable"); }
+      const temporaries: string[] = [];
       for (const file of files) {
+        if (file === "coverage.json" || file === "coverage.json.tmp") continue;
+        if (/^[a-f0-9-]{36}\.json\.[a-f0-9-]{36}\.tmp$/.test(file)) { temporaries.push(file); continue; }
         if (!/^[a-f0-9-]{36}\.json$/.test(file)) { this.faults.add("unrecognized_journal_entry"); continue; }
         const stat = await fs.lstat(path.join(this.directory, file));
         this.totalBytes += stat.size;
-        if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 64 * 1024 || this.entries.size >= this.maxEntries || this.totalBytes > this.maxBytes) { this.faults.add("journal_capacity_or_invalid_entry"); continue; }
+        if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 512 * 1024 || this.entries.size >= this.maxEntries) { this.faults.add("journal_capacity_or_invalid_entry"); continue; }
         try {
           const record = operationSchema.parse(JSON.parse(await fs.readFile(path.join(this.directory, file), "utf8")));
           if (`${record.traceId}.json` !== file) throw new Error("reference mismatch");
           if (record.state === "running") record.state = "unknown";
+          record.persistence = "confirmed";
           this.entries.set(record.traceId, record);
           this.sizes.set(record.traceId, stat.size);
         } catch { this.faults.add("journal_corrupt"); }
       }
+      // A fsynced temporary may contain the only job locator. Merge references
+      // conservatively before replacing/removing anything, never infer execution.
+      for (const file of temporaries) {
+        try {
+          const location = path.join(this.directory, file);
+          const stat = await fs.lstat(location);
+          if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 512 * 1024) throw new Error("invalid temporary");
+          const candidate = operationSchema.parse(JSON.parse(await fs.readFile(location, "utf8")));
+          if (!file.startsWith(`${candidate.traceId}.json.`)) throw new Error("reference mismatch");
+          const original = this.entries.get(candidate.traceId);
+          const merged = structuredClone(original ?? candidate);
+          let overflow = false;
+          for (const job of candidate.jobs) if (!merged.jobs.some(j => sameJob(j, job))) {
+            if (merged.jobs.length < 64) merged.jobs.push(job); else { merged.jobsPartial = true; overflow = true; }
+          }
+          for (const terminal of candidate.terminalJobs ?? []) {
+            merged.terminalJobs ??= [];
+            if (merged.jobs.some(j => sameJob(j, terminal)) && !merged.terminalJobs.some(j => sameJob(j, terminal))) merged.terminalJobs.push(terminal);
+          }
+          merged.jobsPartial ||= candidate.jobsPartial;
+          merged.recoveryId ??= candidate.recoveryId;
+          merged.state = "unknown";
+          merged.persistence = "unconfirmed";
+          if (!original && this.entries.size >= this.maxEntries) throw new Error("capacity");
+          if (await this.save(merged) === false || overflow) throw new Error("temporary requires retained capacity");
+          await fs.unlink(location); this.counters.recoveredTemporaries++;
+        } catch { this.faults.add("temporary_reconciliation_required"); }
+      }
     } catch { this.faults.add("journal_unavailable"); }
   }
   private serialize(action: () => Promise<void>): Promise<void> {
-    this.queue = this.queue.then(action).catch(() => { this.faults.add("journal_write_failed"); });
+    this.queue = this.queue.then(action).catch(() => { this.faults.add("journal_write_failed"); this.counters.persistenceFailures++; }).then(() => this.saveHealth());
     return this.queue;
   }
   private async prune() {
     for (const [id, record] of this.entries) {
-      // Handler completion does not establish completion of a durable job.
-      // Keep references unless their terminal state has authoritative evidence.
-      if (record.state !== "returned" || record.jobs.some(job => !record.terminalJobs?.some(terminal => sameJob(job, terminal))) || record.jobsPartial || Date.now() - Date.parse(record.updatedAt) < this.retentionMs) continue;
-      if (this.directory) await fs.unlink(path.join(this.directory, `${id}.json`));
-      this.entries.delete(id);
-      this.totalBytes -= this.sizes.get(id) ?? 0;
-      this.sizes.delete(id);
+      if (!this.canRetire(record) || Date.now() - Date.parse(record.updatedAt) < this.retentionMs) continue;
+      await this.remove(id);
     }
   }
   private async save(record: ObservedOperation) {
-    const json = JSON.stringify(operationSchema.parse(record));
-    const bytes = Buffer.byteLength(json);
+    record.persistence = this.directory ? "unconfirmed" : "confirmed";
+    let json = JSON.stringify(operationSchema.parse({ ...record, persistence: "confirmed" }));
+    let bytes = Buffer.byteLength(json);
     const previous = this.sizes.get(record.traceId) ?? 0;
-    if (bytes > 64 * 1024 || this.totalBytes - previous + bytes > this.maxBytes) { this.faults.add("journal_capacity"); return false; }
+    if (bytes > 512 * 1024 || this.totalBytes - previous + bytes > this.maxBytes) {
+      // Events are diagnostic detail; locators and completion are essential.
+      record.events = record.events.filter((e, i, all) => i === 0 || e.stage === "handler_returned" || i === all.length - 1);
+      record.eventsPartial = true; this.counters.compacted++;
+      json = JSON.stringify(operationSchema.parse({ ...record, persistence: "confirmed" })); bytes = Buffer.byteLength(json);
+      await this.capacity(Math.max(0, bytes - previous), record.traceId);
+    }
+    if (bytes > 512 * 1024 || !this.entries.has(record.traceId) && this.totalBytes + bytes > this.maxBytes) {
+      this.faults.add("journal_capacity"); return false;
+    }
+    // maxBytes is an admission budget. Updates to admitted bounded records must
+    // not discard effects already observed. Hard bound remains maxEntries*512KiB.
+    if (this.totalBytes - previous + bytes > this.maxBytes) this.faults.add("journal_update_over_budget");
     this.totalBytes += bytes - previous;
     this.sizes.set(record.traceId, bytes);
     this.entries.set(record.traceId, record);
     if (this.directory) {
       if (!path.isAbsolute(this.directory)) throw new Error("absolute directory required");
       const file = path.join(this.directory, `${record.traceId}.json`);
-      const temporary = `${file}.${randomUUID()}.tmp`;
+      const temporary = `${file}.${this.controllerInstanceId}.tmp`;
       let handle;
+      let synchronized = false, published = false;
       try {
         handle = await fs.open(temporary, "wx", 0o600);
         await handle.writeFile(json);
-        await handle.sync();
+        await handle.sync(); synchronized = true;
         await handle.close(); handle = undefined;
-        await fs.rename(temporary, file);
+        await fs.rename(temporary, file); published = true;
         if (process.platform !== "win32") {
           const directory = await fs.open(this.directory, "r");
           try { await directory.sync(); } finally { await directory.close(); }
         }
-      } finally { await handle?.close(); await fs.unlink(temporary).catch(() => {}); }
+      } finally {
+        await handle?.close();
+        // A synchronized temporary may be the only durable locator. Preserve it
+        // on publication failure for validated reconciliation at reload.
+        if (published || !synchronized && handle) await fs.unlink(temporary).catch(() => {});
+      }
     }
+    record.persistence = "confirmed";
     return true;
   }
   async begin(tool: string, scope: unknown, requestId?: unknown, sessionId?: unknown, workflow?: unknown): Promise<string | undefined> {
@@ -117,7 +207,8 @@ export class OperationObserver {
     let id: string | undefined;
     await this.serialize(async () => {
       await this.prune();
-      if (this.entries.size >= this.maxEntries || this.totalBytes >= this.maxBytes) { this.faults.add("journal_capacity"); return; }
+      await this.capacity(1024);
+      if (this.entries.size >= this.maxEntries || this.totalBytes >= this.maxBytes) { this.faults.add("journal_capacity"); this.counters.admissionRefused++; return; }
       const scopeResult = z.string().uuid().safeParse(scope);
       const workflowResult = contextKeepReference.safeParse(workflow);
       const at = new Date().toISOString();
@@ -129,7 +220,7 @@ export class OperationObserver {
         startedAt: at, updatedAt: at, state: "running", events: [{ stage: "handler_started", at }], eventsPartial: false, jobs: [], jobsPartial: false,
         clientAcceptance: "unknown", effectVerification: "unverified" };
       id = record.traceId;
-      if (await this.save(record) === false) id = undefined;
+      if (await this.save(record) === false) { id = undefined; this.counters.admissionRefused++; }
     });
     return id;
   }
@@ -176,8 +267,14 @@ export class OperationObserver {
       for (const original of this.entries.values()) {
         if (!original.jobs.some(candidate => sameJob(candidate, job))) continue;
         const record = structuredClone(original);
-        record.terminalJobs = (record.terminalJobs ?? []).filter(candidate => !sameJob(candidate, job));
-        if (state === "completed" || state === "cancelled") record.terminalJobs.push(jobReferenceSchema.parse(job));
+        // Terminal evidence for an immutable job identity is monotonic: a stale
+        // response arriving later cannot make a completed job active again.
+        if (state !== "completed" && state !== "cancelled") continue;
+        record.terminalJobs ??= [];
+        if (!record.terminalJobs.some(candidate => sameJob(candidate, job))) record.terminalJobs.push(jobReferenceSchema.parse(job));
+        if (record.state === "unknown" && ["job_wait", "job_status", "job_output", "job_output_since"].includes(record.tool) &&
+            record.events.some(event => event.stage === "handler_returned") && !record.jobsPartial &&
+            record.jobs.every(j => record.terminalJobs!.some(t => sameJob(j, t)))) record.state = "returned";
         await this.save(record);
       }
     });
@@ -208,8 +305,9 @@ export class OperationObserver {
     return { controllerInstanceId: this.controllerInstanceId, observedAt: new Date().toISOString(),
       items: previews,
       nextCursor: remaining.length > selected.length && last ? Buffer.from(JSON.stringify({ at: last.startedAt, id: last.traceId })).toString("base64url") : null,
-      coverage: { partial: this.faults.size > 0, faults: [...this.faults], persistence: this.directory ? "metadata_journal" : "controller_memory", scope: "Observed handler calls only; association is client-declared; job state must be read from its agent.", totalKnown: this.entries.size } };
+      coverage: this.coverage() };
   }
+  async health() { await this.ready; await this.queue; return this.coverage(); }
   async inspect(id: string) { await this.ready; await this.queue; return structuredClone(this.entries.get(id) ?? null); }
 }
 
