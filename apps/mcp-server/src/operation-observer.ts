@@ -40,6 +40,7 @@ export class OperationObserver {
   private readonly sizes = new Map<string, number>();
   private readonly faults = new Set<string>();
   private totalBytes = 0;
+  private untrackedBytes = 0;
   private counters = { admissionRefused: 0, persistenceFailures: 0, compacted: 0, evicted: 0, recoveredTemporaries: 0 };
   private canRetire(record: ObservedOperation) {
     const returned = record.state === "returned" || record.events.some(e => e.stage === "handler_returned") &&
@@ -70,7 +71,7 @@ export class OperationObserver {
   }
   coverage(id?: string) {
     return { partial: this.faults.size > 0 || id !== undefined && this.entries.get(id)?.persistence === "unconfirmed",
-      faults: [...this.faults], counters: { ...this.counters }, totalKnown: this.entries.size, retainedBytes: this.totalBytes,
+      faults: [...this.faults], counters: { ...this.counters }, totalKnown: this.entries.size, retainedBytes: this.totalBytes, untrackedBytes: this.untrackedBytes,
       maxEntries: this.maxEntries, maxBytes: this.maxBytes, saturated: this.entries.size >= this.maxEntries || this.totalBytes >= this.maxBytes,
       persistence: this.directory ? "metadata_journal" : "controller_memory",
       ...(id ? { observationPersistence: this.entries.get(id)?.persistence ?? "unconfirmed" } : {}),
@@ -104,8 +105,7 @@ export class OperationObserver {
         if (/^[a-f0-9-]{36}\.json\.[a-f0-9-]{36}\.tmp$/.test(file)) { temporaries.push(file); continue; }
         if (!/^[a-f0-9-]{36}\.json$/.test(file)) { this.faults.add("unrecognized_journal_entry"); continue; }
         const stat = await fs.lstat(path.join(this.directory, file));
-        this.totalBytes += stat.size;
-        if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 512 * 1024 || this.entries.size >= this.maxEntries) { this.faults.add("journal_capacity_or_invalid_entry"); continue; }
+        if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 512 * 1024 || this.entries.size >= this.maxEntries) { this.untrackedBytes += stat.size; this.faults.add("journal_capacity_or_invalid_entry"); continue; }
         try {
           const record = operationSchema.parse(JSON.parse(await fs.readFile(path.join(this.directory, file), "utf8")));
           if (`${record.traceId}.json` !== file) throw new Error("reference mismatch");
@@ -113,7 +113,8 @@ export class OperationObserver {
           record.persistence = "confirmed";
           this.entries.set(record.traceId, record);
           this.sizes.set(record.traceId, stat.size);
-        } catch { this.faults.add("journal_corrupt"); }
+          this.totalBytes += stat.size;
+        } catch { this.untrackedBytes += stat.size; this.faults.add("journal_corrupt"); }
       }
       // A fsynced temporary may contain the only job locator. Merge references
       // conservatively before replacing/removing anything, never infer execution.
@@ -255,7 +256,9 @@ export class OperationObserver {
       if (record.executionOutcome === "uncertain" || (result?.timedOut === true && result.terminationVerified !== true) ||
           ((!requestSucceeded || disconnected) && record.events.some(event => event.stage === "agent_dispatch"))) record.state = "unknown";
       if (recoveryId) record.recoveryId = recoveryId;
-      if (record.events.length < 128) record.events.push({ stage: "handler_returned", at: record.updatedAt }); else record.eventsPartial = true;
+      if (!record.events.some(event => event.stage === "handler_returned")) {
+        if (record.events.length < 128) record.events.push({ stage: "handler_returned", at: record.updatedAt }); else record.eventsPartial = true;
+      }
       await this.save(record);
     });
   }

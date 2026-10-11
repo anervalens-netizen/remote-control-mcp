@@ -15,7 +15,7 @@ import { z } from "zod";
 import { consoleReadTools, operationContext, operationsFor } from "./operation-observer.ts";
 
 const installedServers = new WeakSet<object>();
-const controlTools = new Set(["job_status", "job_output", "job_output_since", "job_wait", "job_cancel", "job_list", "job_history", "job_lineage", "job_find", "batch_recover", "pty_output", "pty_close", "search_stop", "search_status", "android_command_status", "android_cancel"]);
+const controlTools = new Set(["job_status", "job_output", "job_output_since", "job_wait", "job_cancel", "job_list", "job_history", "job_lineage", "job_find", "batch_recover", "pty_output", "pty_terminate", "search_stop", "search_status", "android_command_status", "android_cancel"]);
 const scopedTools = new Set(["exec", "batch_exec", "job_start", "job_start_many", "project_run", "deploy_run", "repo_apply_patch", "fs_edit", "service_action"]);
 
 // Hints describe effects; they never authorize or restrict the owner. Do not
@@ -267,7 +267,7 @@ export function installDefaultToolOutputContracts(server: McpServer, diagnostics
         if (preparingAt !== undefined) recordStage("resultPreparation", performance.now() - preparingAt);
         trace.callerDisconnected = Boolean(extra?.signal?.aborted);
         stopProgress();
-        if (observer && operationId && !operationFinished) await observer.finish(operationId, observedResult, requestSucceeded, trace.callerDisconnected, reference?.id);
+        if (observer && operationId && (!operationFinished || trace.callerDisconnected)) await observer.finish(operationId, observedResult, requestSucceeded, trace.callerDisconnected, reference?.id);
         if (!consoleReadTools.has(name)) diagnostics?.record(name, args[0], performance.now() - started, outcome, detail);
       }
       });

@@ -240,3 +240,39 @@ it("does not remove an orphan temporary when there is no room to publish its loc
   expect((await reloaded.snapshot()).coverage.faults).toContain("temporary_reconciliation_required");
   expect(await readdir(root)).toContain(temporary);
 });
+
+
+it("does not evict tracked evidence to compensate for oversized corrupt files", async () => {
+  const root=await directory(); const observer=new OperationObserver(root);
+  const id=(await observer.begin("device_info",undefined))!;await observer.finish(id,{},true,false);
+  const invalid=`${randomUUID()}.json`; await writeFile(path.join(root,invalid),"x".repeat(600000));
+  const reloaded=new OperationObserver(root,5,4096);
+  expect(await reloaded.begin("device_info",undefined)).toBeTypeOf("string");
+  expect(await reloaded.inspect(id)).not.toBeNull();
+  expect(reloaded.coverage()).toMatchObject({untrackedBytes:600000,counters:{evicted:0}});
+});
+
+it("persists a caller disconnect arriving during observer finalization", async () => {
+  const agent=new AgentClient([]); const observer=operationsFor(agent);
+  const server=new McpServer({name:"disconnect-fixture",version:"1"});
+  const {installDefaultToolOutputContracts}=await import("../apps/mcp-server/src/tool-contract-defaults.ts");
+  installDefaultToolOutputContracts(server,undefined,agent);
+  server.registerTool("fixture",{inputSchema:{},outputSchema:z.object({ok:z.boolean()})},async()=>({content:[],structuredContent:{ok:true}}));
+  const client=new Client({name:"fixture",version:"1"});const [a,b]=InMemoryTransport.createLinkedPair();
+  await Promise.all([server.connect(a),client.connect(b)]);
+  closers.push(async()=>{await client.close();await server.close()});
+  const finish=observer.finish.bind(observer);let entered!:()=>void,release!:()=>void,corrected!:()=>void;
+  const started=new Promise<void>(r=>entered=r),gate=new Promise<void>(r=>release=r),done=new Promise<void>(r=>corrected=r);
+  let calls=0;
+  vi.spyOn(observer,"finish").mockImplementation(async(...args)=>{
+    await finish(...args);
+    if(++calls===1){entered();await gate;}else corrected();
+  });
+  const abort=new AbortController();const result=client.callTool({name:"fixture",arguments:{}},undefined,{signal:abort.signal});
+  void result.catch(()=>{});await started;abort.abort();await expect(result).rejects.toThrow();
+  // Let the transport deliver notifications/cancelled before persistence resumes.
+  await new Promise(r=>setTimeout(r,10));release();await done;
+  const page=await observer.snapshot();const record=await observer.inspect(String(page.items[0]!.traceId));
+  expect(record?.callerDisconnected).toBe(true);
+  expect(record?.events.filter(e=>e.stage==='handler_returned')).toHaveLength(1);
+});

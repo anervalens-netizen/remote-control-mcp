@@ -365,7 +365,7 @@ it('keeps SDK control dispatch available when all normal recovery slots are runn
   const server = new McpServer({name:'control-fixture',version:'1'});
   installDefaultToolOutputContracts(server,undefined,agent);
   let controlled=0, started=0;
-  server.registerTool('job_status',{inputSchema:{},outputSchema:z.object({ok:z.boolean()})},async()=>{
+  for (const name of ['job_status','pty_terminate']) server.registerTool(name,{inputSchema:{},outputSchema:z.object({ok:z.boolean()})},async()=>{
     controlled++;return {content:[],structuredContent:{ok:true}};
   });
   server.registerTool('job_start',{inputSchema:{},outputSchema:z.object({ok:z.boolean()})},async()=>{
@@ -376,6 +376,7 @@ it('keeps SDK control dispatch available when all normal recovery slots are runn
   try {
     expect((await client.callTool({name:'job_start',arguments:{}})).isError).toBe(true);
     expect((await client.callTool({name:'job_status',arguments:{}})).isError).not.toBe(true);
-    expect(started).toBe(0);expect(controlled).toBe(1);
+    expect((await client.callTool({name:'pty_terminate',arguments:{}})).isError).not.toBe(true);
+    expect(started).toBe(0);expect(controlled).toBe(2);
   } finally {await client.close();await server.close();}
 });
