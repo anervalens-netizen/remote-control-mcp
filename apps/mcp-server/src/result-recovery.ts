@@ -70,7 +70,7 @@ export class ResultRecoveryStore {
     this.sweep();
     const entry = this.entries.get(id);
     if (!entry) throw new Error("Recovery unavailable or expired; absence is not permission to replay. Inspect durable job/output receipts.");
-    return { id, tool: "result_recover" as const, expiresAt: new Date(entry.expires).toISOString(), scope: "controller_memory" as const, noReplay: true as const, ...(entry.state === "complete" ? { payloadAvailable: entry.payloadUnavailable !== true } : {}) };
+    return { id, tool: "result_recover" as const, expiresAt: new Date(entry.expires).toISOString(), scope: "controller_memory" as const, noReplay: true as const, ...(entry.payloadUnavailable === true ? { payloadAvailable: false } : {}) };
   }
   finish(id: string, value: unknown) {
     const entry = this.entries.get(id)!;
