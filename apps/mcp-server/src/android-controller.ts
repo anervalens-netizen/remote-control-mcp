@@ -503,7 +503,7 @@ export class AndroidController {
       const baseline = readiness === "ready";
       const capabilities: AndroidDeviceStatus["capabilities"] = {
         tree: { readiness: baseline ? "available" : "unavailable", reason: baseline ? "accessibility_available" : readiness },
-        image: { readiness: baseline ? "unknown" : "unavailable", reason: baseline ? "capture_not_verified_by_poll" : readiness },
+        screenshot: { readiness: baseline ? "unknown" : "unavailable", reason: baseline ? "capture_not_verified_by_poll" : readiness },
         action: { readiness: baseline ? "unknown" : "unavailable", reason: baseline ? "local_consent_not_reported_by_poll" : readiness },
         shell: { readiness: this.online(device) && state?.shellAvailable ? "available" : "unavailable", reason: state?.shellAvailable ? "shell_reported" : "shell_unavailable" },
       };

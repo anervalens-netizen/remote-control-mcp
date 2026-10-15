@@ -64,6 +64,7 @@ describe("Android MCP integration", () => {
     const status = await client.callTool({ name: "android_status", arguments: { device: "phone-example" } });
     expect(status.isError).not.toBe(true);
     expect(status.structuredContent).toMatchObject({ online: false, readiness: "offline" });
+    expect(status.structuredContent).toMatchObject({ capabilities: { screenshot: { readiness: "unavailable", reason: "offline" } } });
     const unknownId = crypto.randomUUID();
     const unknown = await client.callTool({ name: "android_command_status", arguments: { device: "phone-example", commandId: unknownId } });
     expect(unknown.isError).not.toBe(true);
@@ -75,6 +76,8 @@ describe("Android MCP integration", () => {
       body: JSON.stringify({ version: 1, device: "phone-example", sessionId, state }),
     });
     await expect.poll(() => (controller.status("phone-example") as {online:boolean}).online).toBe(true);
+    const readyStatus = await client.callTool({ name: "android_status", arguments: { device: "phone-example" } });
+    expect(readyStatus.structuredContent).toMatchObject({ capabilities: { screenshot: { readiness: "unknown", reason: "capture_not_verified_by_poll" }, action: { readiness: "unknown" } } });
     const observe = client.callTool({ name: "android_observe", arguments: { device: "phone-example", image: true, tree: true, maxNodes: 200 } });
     const envelope = (await (await poll).json()).command;
     expect(envelope.request).toMatchObject({ operation: "observe", image: true, tree: true, maxNodes: 200 });

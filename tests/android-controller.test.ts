@@ -349,7 +349,7 @@ it("separates baseline UI readiness from unobserved screenshot/consent capabilit
  const {controller,base}=await makeController(undefined,{pollWaitMs:5});
  await post(base,"/android/v1/poll",pollBody());
  expect(controller.status("phone-example")).toMatchObject({readiness:"ready",capabilities:{
-   tree:{readiness:"available"},image:{readiness:"unknown",reason:"capture_not_verified_by_poll"},
+   tree:{readiness:"available"},screenshot:{readiness:"unknown",reason:"capture_not_verified_by_poll"},
    action:{readiness:"unknown",reason:"local_consent_not_reported_by_poll"},shell:{readiness:"unavailable"}
  }});
 });
