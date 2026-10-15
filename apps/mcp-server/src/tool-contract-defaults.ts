@@ -1,3 +1,4 @@
+import { deliverImages } from "./image-delivery.ts";
 import { createTrace, diagnosticContext, measureAsync, measureSync, recordStage, correlationHash } from "../../../packages/protocol/src/diagnostic-context.ts";
 import { executionOutcome } from "../../../packages/protocol/src/execution-outcome.ts";
 import { OperationReceiptError } from "./operation-receipt-error.ts";
@@ -236,6 +237,9 @@ export function installDefaultToolOutputContracts(server: McpServer, diagnostics
         }
         if (final.structuredContentTruncated || final.contentTruncated || failedValidation || jsonBytes(output) > TOTAL_RESULT_MAX_BYTES) {
           output = { isError: output.isError, ...(output._meta ? { _meta: output._meta } : {}), content: [{ type: "text", text: JSON.stringify(final) }], structuredContent: final };
+        }
+        if (!failedValidation && Array.isArray((result as any).content) && (result as any).content.some((item: any) => item.type === "image")) {
+          output = { ...output, ...await deliverImages((result as any).content, final, TOTAL_RESULT_MAX_BYTES - 4096) };
         }
         // Validate the actual object, after every wrapper. The contract uses the
         // exact advertised JSON Schema in addition to Zod's semantic refinements.

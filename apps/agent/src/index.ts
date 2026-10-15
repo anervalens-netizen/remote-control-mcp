@@ -1,3 +1,4 @@
+import { filesystemReadResponse } from "./filesystem-read-response.ts";
 import { fsReadFields } from "../../../packages/protocol/src/execution.ts";
 import { registerFilesystemManageRoute } from "./filesystem-routes.ts";
 import { timeoutMsField } from "../../../packages/protocol/src/deadline.ts";
@@ -140,7 +141,7 @@ app.post("/v1/exec", async (request, reply) => {
 app.post("/v1/fs/read", async (request, reply) => {
   const parsed = fsReadSchema.safeParse(request.body);
   if (!parsed.success) return reply.code(400).send({ error: "invalid_request", details: parsed.error.issues });
-  return fsRead(parsed.data);
+  return filesystemReadResponse(() => fsRead(parsed.data), reply);
 });
 async function rawFileResponse(request: any, reply: any, headOnly = false) {
   const parsed = fsRawReadSchema.safeParse(request.query);
@@ -195,7 +196,7 @@ app.post("/v1/fs/write", async (request, reply) => {
 app.post("/v1/fs/list", async (request, reply) => {
   const parsed = fsListSchema.safeParse(request.body);
   if (!parsed.success) return reply.code(400).send({ error: "invalid_request", details: parsed.error.issues });
-  return fsList(parsed.data);
+  return filesystemReadResponse(() => fsList(parsed.data), reply);
 });
 registerFilesystemManageRoute(app);
 

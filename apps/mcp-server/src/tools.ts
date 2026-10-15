@@ -41,7 +41,7 @@ export function registerTools(server: McpServer, client: AgentClient): void {
   });
 
   server.registerTool("exec", {
-    description: "Execute a shell command on the selected identity. Linux uses Bash; Windows uses PowerShell. identity is canonical; context is a compatible legacy alias.",
+    description: "Execute a bounded synchronous shell command (Linux Bash, Windows PowerShell). Prefer job_start with idempotencyKey for long, variable-duration or mutating work requiring restart recovery; follow job_wait cursors. exec is not restart-recoverable. A timeout/disconnect never authorizes replay; inspect recovery/effects. maxOutputBytes discards excess output at the agent; use jobs for retained logs. identity is canonical; context is a legacy alias.",
     inputSchema: executionInputSchema({ device: z.string().min(1), ...execRequestFields }),
     outputSchema: z.object({ ...execResultSchema.shape, ...executionRouteFields }),
   }, async ({ device, context, identity, elevation, ...request }, extra) => {

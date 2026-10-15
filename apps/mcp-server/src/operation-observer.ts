@@ -7,6 +7,8 @@ import { executionOutcome } from "../../../packages/protocol/src/execution-outco
 import { correlationHash } from "../../../packages/protocol/src/diagnostic-context.ts";
 import type { AgentClient, AgentEndpointContext } from "./agent-client.ts";
 
+// Explicit read-only contracts; never infer effect safety from an error code.
+const readOnlyOperations = new Set(["fs_read", "fs_list", "batch_read", "job_status", "job_output", "job_output_since", "job_wait", "job_list", "job_history", "job_lineage", "device_info", "device_contexts", "devices_list", "service_inspect", "service_logs", "network_snapshot", "android_status"]);
 const identity = z.enum(["owner", "root", "interactive"]);
 const contextKeepReference = z.object({ projectId: z.string().uuid(), taskId: z.string().uuid(), runId: z.string().uuid() });
 export const jobReferenceSchema = z.object({ device: z.string().max(256), identity, jobId: z.string().min(1).max(256) }).strict();
@@ -23,6 +25,9 @@ const operationSchema = z.object({
   requestSucceeded: z.boolean().optional(), executionOutcome: z.string().max(32).optional(), exitCode: z.number().int().nullable().optional(),
   callerDisconnected: z.boolean().optional(), clientAcceptance: z.literal("unknown"), effectVerification: z.literal("unverified"),
   recoveryId: z.string().uuid().optional(),
+  failure: z.object({ kind: z.string().max(64).optional(), agentCode: z.string().max(64).optional(), status: z.number().int().optional() }).strict().optional(),
+  terminationReason: z.string().max(128).optional(),
+  terminationVerified: z.boolean().optional(),
   persistence: z.enum(["confirmed", "unconfirmed"]).optional(),
 }).strict();
 export type ObservedOperation = z.infer<typeof operationSchema>;
@@ -51,7 +56,7 @@ export class OperationObserver {
       ["job_wait", "job_status", "job_output", "job_output_since"].includes(record.tool);
     const needsLocator = ["job_start", "job_start_many", "project_run", "deploy_run", "batch_exec", "process_start", "pty_start"].includes(record.tool);
     return record.persistence !== "unconfirmed" && returned && (!needsLocator || record.jobs.length > 0 || !record.events.some(e => e.stage === "agent_dispatch")) && !record.jobsPartial && record.jobs.every(job => record.terminalJobs?.some(t => sameJob(job, t))) &&
-      (record.jobs.length > 0 || record.requestSucceeded === true || !record.events.some(e => e.stage === "agent_dispatch"));
+      (record.jobs.length > 0 || record.requestSucceeded === true || readOnlyOperations.has(record.tool) || !record.events.some(e => e.stage === "agent_dispatch"));
   }
   private async remove(id: string) {
     if (this.directory) await fs.unlink(path.join(this.directory, `${id}.json`)).catch(error => { if (error.code !== "ENOENT") throw error; });
@@ -264,10 +269,19 @@ export class OperationObserver {
       record.updatedAt = new Date().toISOString(); record.state = "returned";
       record.requestSucceeded = requestSucceeded; record.callerDisconnected = disconnected;
       if (record.tool === "exec" && result) { record.executionOutcome = executionOutcome(result); if (typeof result.code === "number" || result.code === null) record.exitCode = result.code; }
+      if (result) {
+        const safeCode = (v: unknown, max: number) => typeof v === "string" && v.length <= max && /^[a-zA-Z0-9_]+$/.test(v) ? v : undefined;
+        const kind = safeCode(result.kind, 64), agentCode = safeCode(result.agentCode, 64);
+        const status = typeof result.status === "number" && Number.isInteger(result.status) ? result.status : undefined;
+        if (!requestSucceeded) record.failure = { ...(kind ? { kind } : {}), ...(agentCode ? { agentCode } : {}), ...(status === undefined ? {} : { status }) };
+        const reason = safeCode(result.terminationReason, 128);
+        if (reason) record.terminationReason = reason;
+        if (typeof result.terminationVerified === "boolean") record.terminationVerified = result.terminationVerified;
+      }
       // A failed/disconnected call can leave effects running after dispatch.
       // Preserve that uncertainty independently of the handler-return event.
       if (record.executionOutcome === "uncertain" || (result?.timedOut === true && result.terminationVerified !== true) ||
-          ((!requestSucceeded || disconnected) && record.events.some(event => event.stage === "agent_dispatch"))) record.state = "unknown";
+          ((!requestSucceeded || disconnected) && !readOnlyOperations.has(record.tool) && record.events.some(event => event.stage === "agent_dispatch"))) record.state = "unknown";
       if (recoveryId) record.recoveryId = recoveryId;
       if (!record.events.some(event => event.stage === "handler_returned")) {
         if (record.events.length < 128) record.events.push({ stage: "handler_returned", at: record.updatedAt }); else record.eventsPartial = true;

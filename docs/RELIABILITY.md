@@ -604,3 +604,36 @@ existing result digest. Reload validates this metadata and preserves the code
 without retaining error-message text, screenshots or UI payloads. A historical
 device timestamp does not certify present readiness. Older entries without
 these fields remain unknown; no synthetic historical diagnostics are invented.
+
+## Delivery and read-error semantics
+
+Image delivery shares the 256 KiB final MCP response budget. Large images are
+converted to a bounded JPEG preview; imageDelivery reports the delivered size,
+transformation and original-snapshot coordinate space. Original pixels remain in
+the pre-compaction resultRecovery receipt while retained. Never apply preview
+pixel coordinates directly to Android actions: map them to the original snapshot.
+If conversion fails, image availability is explicitly false; capture success is
+not delivery success. The transform bounds input size/pixels and attempts.
+
+Recovery buffers have a 64 MiB aggregate serialized-byte budget in addition to
+slot and time limits. Under pressure, completed payloads become explicit
+receiptUnavailable tombstones and references report payloadAvailable:false.
+Reservations remain consumed; missing bytes never authorize replay. This bounds
+retained buffers, not transient JSON serialization or native decoder allocations.
+Memory receipts still do not survive controller restart.
+
+Use exec for short bounded commands. Use keyed job_start for work whose duration
+is variable, whose logs must be retained, or whose effects need restart recovery.
+A job wait expiry is resumable; follow its cursor and retryAfterMs. An exec output
+cap discards bytes at the agent and result recovery cannot restore them. A 503,
+504, timeout or disconnected caller is not evidence that an effect never ran.
+Inspect the known key/job or reserved receipt before any retry. Keep transport
+availability separate from command exit status and effect verification.
+
+Read-only filesystem failures use domain HTTP statuses (404 missing, 403 denied,
+400 wrong path kind). Operation observations retain bounded error codes and
+termination evidence without raw messages or paths. Failed read-only requests
+are returned requests, not evidence of running effects. Failed mutations retain
+conservative uncertainty. Android readiness is baseline readiness; per-capability
+status explicitly marks capture and local-consent checks unknown when the poll
+cannot establish them. Consent enforcement and snapshot freshness remain intact.

@@ -4,11 +4,13 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 export const recoveryReferenceSchema = z.object({
   id: z.string(), tool: z.literal("result_recover"), expiresAt: z.string(),
-  scope: z.literal("controller_memory"), noReplay: z.literal(true),
+  scope: z.literal("controller_memory"), noReplay: z.literal(true), payloadAvailable: z.boolean().optional(),
 });
 const invocationSchema = z.object({ tool: z.string(), requestId: z.union([z.string(), z.number()]).optional(), requestIdHash: z.string().optional(), sessionIdHash: z.string().optional() });
 type Invocation = z.infer<typeof invocationSchema>;
 export const resultMetadataFields = {
+  imageDeliveryOmitted: z.number().int().nonnegative().optional(),
+  imageDelivery: z.array(z.record(z.string(), z.unknown())).max(4).optional(),
   observationCoverage: z.record(z.string(), z.unknown()).optional(),
   operationTrace: z.object({ traceId: z.string().uuid(), controllerInstanceId: z.string().uuid() }).optional(),
   resultRecovery: recoveryReferenceSchema.optional(),
@@ -28,8 +30,9 @@ export class ResultRecoveryStore {
   readonly retentionMs = 15 * 60 * 1000;
   readonly maxEntries: number;
   readonly controlEntries: number;
-  constructor(maxEntries = 64, controlEntries = 8) { this.maxEntries = maxEntries; this.controlEntries = controlEntries; }
-  private entries = new Map<string, { expires: number; state: "reserved" | "running" | "complete"; data?: Buffer; invocation?: Invocation; control: boolean }>();
+  readonly maxBytes: number;
+  constructor(maxEntries = 64, controlEntries = 8, maxBytes = 64 * 1024 * 1024) { this.maxEntries = maxEntries; this.controlEntries = controlEntries; if (!Number.isSafeInteger(maxBytes) || maxBytes < (maxEntries + controlEntries) * 512) throw new Error("Invalid recovery byte budget"); this.maxBytes = maxBytes; }
+  private entries = new Map<string, { expires: number; state: "reserved" | "running" | "complete"; data?: Buffer; invocation?: Invocation; control: boolean; payloadUnavailable?: boolean }>();
   private sweep() {
     for (const [id, entry] of this.entries) if (entry.state !== "running" && entry.expires <= Date.now()) this.entries.delete(id);
   }
@@ -67,7 +70,7 @@ export class ResultRecoveryStore {
     this.sweep();
     const entry = this.entries.get(id);
     if (!entry) throw new Error("Recovery unavailable or expired; absence is not permission to replay. Inspect durable job/output receipts.");
-    return { id, tool: "result_recover" as const, expiresAt: new Date(entry.expires).toISOString(), scope: "controller_memory" as const, noReplay: true as const };
+    return { id, tool: "result_recover" as const, expiresAt: new Date(entry.expires).toISOString(), scope: "controller_memory" as const, noReplay: true as const, ...(entry.state === "complete" ? { payloadAvailable: entry.payloadUnavailable !== true } : {}) };
   }
   finish(id: string, value: unknown) {
     const entry = this.entries.get(id)!;
@@ -79,6 +82,21 @@ export class ResultRecoveryStore {
       // explicitly labelled inspection representation; never claim exact JSON.
       entry.data = Buffer.from(JSON.stringify({ serializationFailed: true, inspection: inspectNonJson(value) }));
     }
+    // Retain the no-replay reservation even when payload bytes are shed.
+    // Small explicit tombstones replace bytes; never represent them as originals.
+    const shed = (target: typeof entry) => {
+      const originalBytes = target.data?.length ?? 0;
+      target.payloadUnavailable = true;
+      target.data = Buffer.from(JSON.stringify({ receiptUnavailable: true, reason: "recovery_byte_budget",
+        originalBytes, noReplay: true, notice: "Inspect durable job/output receipts; missing payload never authorizes replay." }));
+    };
+    if (entry.data.length > this.maxBytes - (this.maxEntries + this.controlEntries) * 512) shed(entry);
+    const total = () => [...this.entries.values()].reduce((sum, row) => sum + (row.data?.length ?? 0), 0);
+    for (const [, candidate] of [...this.entries].sort((a, b) => a[1].expires - b[1].expires)) {
+      if (total() <= this.maxBytes) break;
+      if (candidate !== entry && candidate.state === "complete" && (candidate.data?.length ?? 0) > 512) shed(candidate);
+    }
+    if (total() > this.maxBytes) shed(entry);
     entry.state = "complete";
     entry.expires = Date.now() + this.retentionMs;
     return this.reference(id);
@@ -88,6 +106,7 @@ export class ResultRecoveryStore {
     const rows = [...this.entries.values()];
     return { slots: rows.length, normalLimit: this.maxEntries, controlLimit: this.controlEntries,
       controlSlots: rows.filter(e => e.control).length, running: rows.filter(e => e.state === "running").length,
+      maxBytes: this.maxBytes,
       retainedBytes: rows.reduce((sum,e) => sum + (e.data?.length ?? 0), 0),
       largestReceiptBytes: Math.max(0, ...rows.map(e => e.data?.length ?? 0)),
       scope: "controller_memory", memoryAccounting: "Serialized buffers only; excludes objects and temporary serialization copies." };
@@ -126,7 +145,7 @@ export function registerResultRecovery(server: McpServer, store: ResultRecoveryS
   const output = z.union([waiting, page, index]);
   const text = (value: Record<string, unknown>) => ({ content: [{ type: "text" as const, text: JSON.stringify(value) }], structuredContent: value });
   server.registerTool("result_recovery_prepare", {
-    description: "Reserve a controller-memory result ID before dispatch. Pass its id as tools/call _meta.resultRecoveryId. One use only; survives session reconnect but not controller restart. Retained up to 15 minutes or 64 newer results; active/reserved slots are pinned. Use durable jobs for restart/crash recovery.",
+    description: "Reserve a controller-memory result ID before dispatch. Pass its id as the top-level resultRecoveryId tool argument (legacy tools/call _meta.resultRecoveryId is also accepted). One use only; survives session reconnect but not controller restart. Retained up to 15 minutes or 64 newer results; active/reserved slots are pinned. Use durable jobs for restart/crash recovery.",
     inputSchema: {}, outputSchema: recoveryReferenceSchema,
   }, async () => text(store.prepare()));
   server.registerTool("result_recover", {

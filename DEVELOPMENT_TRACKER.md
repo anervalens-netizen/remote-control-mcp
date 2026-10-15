@@ -116,3 +116,11 @@ Pending Downloads are cleaned by an application-owned persisted scheduled job an
   failure, and protect search output and nested JSON serialization budgets.
 - Keep aggregate boundary fixtures aligned with nested JSON escaping; verify
   the complete suite after changing the preflight estimate.
+
+## Delivery usability acceptance
+
+- Verify final SDK image blocks with multi-megabyte synthetic captures, their coordinate mapping, bounded payload and exact original recovery.
+- Keep no-replay reservations when byte-pressure sheds retained payloads.
+- Distinguish failed read-only requests from uncertain effects; retain safe cause and termination metadata.
+- Report Android capture/consent uncertainty separately from baseline UI readiness.
+- Qualify connector delivery and native image dependencies independently on each deployed platform.

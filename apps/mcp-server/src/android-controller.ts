@@ -134,6 +134,7 @@ export type AndroidDeviceStatus = {
   online: boolean;
   readiness: "ready" | "offline" | "screen_off" | "keyguard_locked" | "accessibility_unavailable" | "paused" | "user_locked";
   readinessReason: string;
+  capabilities: Record<string, { readiness: "available" | "unavailable" | "unknown"; reason: string }>;
   observedAt: number | null;
   lastPollAt: number | null;
   state: AndroidPollRequest["state"] | null;
@@ -497,9 +498,16 @@ export class AndroidController {
         else if (!state.accessibility) { readiness = "accessibility_unavailable"; readinessReason = "Accessibility service is unavailable"; }
         else if (state.keyguardLocked) { readiness = "keyguard_locked"; readinessReason = "Secure keyguard is locked"; }
         else if (!state.screenOn) { readiness = "screen_off"; readinessReason = "Screen is off; input availability is not claimed"; }
-        else { readiness = "ready"; readinessReason = "Authenticated poll and required UI capability are available"; }
+        else { readiness = "ready"; readinessReason = "Baseline UI prerequisites are available; capture and local consent must be checked separately"; }
       }
-      return { name: device.config.name, transport: "android-reverse", online: this.online(device), readiness, readinessReason, observedAt: device.observedAt, lastPollAt: device.lastPollAt, state, queuedCommands: device.queue.length, activeCommandId: device.active?.commandId ?? null };
+      const baseline = readiness === "ready";
+      const capabilities: AndroidDeviceStatus["capabilities"] = {
+        tree: { readiness: baseline ? "available" : "unavailable", reason: baseline ? "accessibility_available" : readiness },
+        image: { readiness: baseline ? "unknown" : "unavailable", reason: baseline ? "capture_not_verified_by_poll" : readiness },
+        action: { readiness: baseline ? "unknown" : "unavailable", reason: baseline ? "local_consent_not_reported_by_poll" : readiness },
+        shell: { readiness: this.online(device) && state?.shellAvailable ? "available" : "unavailable", reason: state?.shellAvailable ? "shell_reported" : "shell_unavailable" },
+      };
+      return { name: device.config.name, transport: "android-reverse", online: this.online(device), readiness, readinessReason, capabilities, observedAt: device.observedAt, lastPollAt: device.lastPollAt, state, queuedCommands: device.queue.length, activeCommandId: device.active?.commandId ?? null };
     });
     return name === undefined ? values : values.find((item) => item.name.toLowerCase() === name.toLowerCase()) ?? (() => { throw new AndroidControllerError("unknown_device", `Unknown Android device: ${name}`, 404); })();
   }
