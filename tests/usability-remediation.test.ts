@@ -101,7 +101,7 @@ it("reapplies the structured cap after image metadata and synchronizes the text"
   installDefaultToolOutputContracts(server);
   const value = { padding: "x".repeat(63 * 1024) };
   server.registerTool("synthetic_boundary", { inputSchema: {}, outputSchema: z.object({ padding: z.string() }) },
-    async () => ({ content: Array.from({ length: 4 }, () => ({ type: "image" as const, data: "eA==", mimeType: "image/png;comment=" + "x".repeat(1000) })), structuredContent: value }));
+    async () => ({ content: Array.from({ length: 4 }, (_, index) => ({ type: "image" as const, data: index === 0 ? "x".repeat(400000) : "eA==", mimeType: "image/png;comment=" + "x".repeat(1000) })), structuredContent: value }));
   const client = new Client({ name: "fixture", version: "1" });
   const [a, b] = InMemoryTransport.createLinkedPair(); await Promise.all([server.connect(a), client.connect(b)]);
   closers.push(async () => { await client.close(); await server.close(); });

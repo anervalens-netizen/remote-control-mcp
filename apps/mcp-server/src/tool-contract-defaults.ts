@@ -244,7 +244,7 @@ export function installDefaultToolOutputContracts(server: McpServer, diagnostics
         if (jsonBytes(output.structuredContent) > STRUCTURED_CONTENT_MAX_BYTES) {
           const bounded = compactStructuredContent(output.structuredContent, STRUCTURED_CONTENT_MAX_BYTES, advertisedSchema);
           const images = output.content.filter((item: any) => item.type === "image");
-          if (bounded.resultOmitted) bounded.imageDeliveryOmitted = images.length + Number(output.structuredContent.imageDeliveryOmitted ?? 0);
+          if (bounded.resultOmitted) bounded.imageDeliveryOmitted = output.structuredContent.imageDelivery.length + Number(output.structuredContent.imageDeliveryOmitted ?? 0);
           output = { ...output, structuredContent: bounded, content: [
             { type: "text", text: JSON.stringify(bounded) },
             ...(bounded.resultOmitted ? [] : images),
