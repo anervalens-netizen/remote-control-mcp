@@ -93,7 +93,13 @@ it("repo reservations fence deployments and keyed recovery preserves the origina
   const started = await a("deploy_run", { ...input, coordination: (first.structuredContent as any).token });
   expect(started.isError, JSON.stringify(started)).not.toBe(true);
   const id = (started.structuredContent as any).job.id;
-  const finished = await b("job_wait", { id, identity: "owner", waitMs: 3000 });
+  // A wait page may expire before native PowerShell starts; keep waiting on
+  // the same job, never start another deployment.
+  let finished = await b("job_wait", { id, identity: "owner", waitMs: 3000 });
+  const deadline = performance.now() + 10_000;
+  while (!(finished.structuredContent as any).terminal && !finished.isError && performance.now() < deadline) {
+    finished = await b("job_wait", { id, identity: "owner", waitMs: 1000 });
+  }
   expect(finished.structuredContent).toMatchObject({ terminal: true, exitCode: 0 });
   writeFileSync(path.join(root, "file.txt"), "changed after deployment\n");
   const recovered = await b("deploy_run", input);
@@ -122,7 +128,7 @@ it("durable jobs keep the resource across keys while reads, health and cancel re
   expect(performance.now() - before).toBeLessThan(2000);
   const recovered = await b("project_run", { path: root, command, idempotencyKey: "first-key" });
   expect(recovered.isError).not.toBe(true); expect(((recovered.structuredContent as any).result as any).id).toBe(id);
-}, 10000);
+}, process.platform === "win32" ? 30_000 : 10_000);
 
 it("unsupported raw dryRun does not bypass a reserved patch fence or change patch execution", async () => {
   const root = repo(), agent = Fastify(); registerExtraRoutes(agent); close.push(() => agent.close());
