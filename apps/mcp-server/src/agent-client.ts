@@ -22,7 +22,7 @@ import {
 type DeviceFile = { devices: DeviceConfig[] };
 export type AgentContext = "system" | "user";
 export type AgentEndpointContext = AgentContext | "desktop";
-export type AgentRequestOptions = { timeoutMs?: number; signal?: AbortSignal };
+export type AgentRequestOptions = { timeoutMs?: number; signal?: AbortSignal; observeOperation?: boolean };
 
 function configuredTimeout(): number {
   const parsed = Number(process.env.RCMCP_HTTP_TIMEOUT_MS ?? DEFAULT_HTTP_TIMEOUT_MS);
@@ -206,7 +206,7 @@ export class AgentClient {
     try {
       const knownJobId = ["/v1/jobs/status", "/v1/jobs/follow", "/v1/jobs/output", "/v1/jobs/cancel"].includes(route)
         && body && typeof body === "object" && "id" in body && typeof body.id === "string" ? body.id : undefined;
-      if (route !== "/v1/info") await observeAgent("agent_dispatch", this.getDevice(name).name, context, undefined, knownJobId);
+      if (options.observeOperation !== false) await observeAgent("agent_dispatch", this.getDevice(name).name, context, undefined, knownJobId);
       const response = await fetch(`${endpoint.base}${route}`, {
         method: body === undefined ? "GET" : "POST", headers, redirect: "error",
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
@@ -225,7 +225,7 @@ export class AgentClient {
           : route === "/v1/project/run" ? value?.result?.id : route === "/v1/deploy/run" ? value?.job?.id : undefined;
         const returnedJob = typeof candidate === "string" ? candidate : knownJobId;
         const deviceName = this.getDevice(name).name;
-        if (route !== "/v1/info") await observeAgent("agent_response", deviceName, context, true, returnedJob);
+        if (options.observeOperation !== false) await observeAgent("agent_response", deviceName, context, true, returnedJob);
         // Only authoritative job routes carry lifecycle evidence. Output EOF,
         // missing receipts and a cancellation request do not prove termination.
         if (["/v1/jobs/start", "/v1/jobs/status", "/v1/jobs/follow", "/v1/jobs/cancel"].includes(route)) {
@@ -243,7 +243,7 @@ export class AgentClient {
         throw new AgentRequestError(`${name} ${context} ${route} invalid JSON response: ${detail}`, name, context, route, "protocol");
       }
     } catch (error) {
-      if (route !== "/v1/info") await observeAgent("agent_response", this.getDevice(name).name, context, false);
+      if (options.observeOperation !== false) await observeAgent("agent_response", this.getDevice(name).name, context, false);
       const kind = error instanceof AgentRequestError ? error.kind : options.signal?.aborted && !deadline.timedOut() ? "cancelled" : deadline.timedOut() ? "timeout" : "network";
       const trace = diagnosticContext.getStore();
       if (trace) trace.agentErrors[kind] = (trace.agentErrors[kind] ?? 0) + 1;
@@ -281,7 +281,7 @@ export class AgentClient {
   }
 
   private async requireHighLevelIdempotency(name: string, context: AgentEndpointContext, options: AgentRequestOptions = {}): Promise<void> {
-    const info = await this.info(name, context, options) as { runtime?: { capabilities?: unknown } };
+    const info = await this.info(name, context, { ...options, observeOperation: false }) as { runtime?: { capabilities?: unknown } };
     const capabilities = info?.runtime?.capabilities;
     if (!Array.isArray(capabilities) || !capabilities.includes("high-level-idempotency-v1")) {
       throw new AgentRequestError(
@@ -311,7 +311,7 @@ export class AgentClient {
   execRecover(name: string, input: { id: string; offset?: number; length?: number }, context: AgentEndpointContext): Promise<unknown> { return this.request(name, "/v1/exec/recover", input, context); }
   async exec(name: string, request: ExecRequest, context: AgentEndpointContext = "system", options: AgentRequestOptions = {}): Promise<ExecResult> {
     if (request.execReceiptId !== undefined) {
-      const info = await this.info(name, context, options) as { runtime?: { capabilities?: unknown } };
+      const info = await this.info(name, context, { ...options, observeOperation: false }) as { runtime?: { capabilities?: unknown } };
       if (!Array.isArray(info?.runtime?.capabilities) || !info.runtime.capabilities.includes("exec-receipts-v1")) throw new Error("Agent does not advertise exec-receipts-v1; no exec dispatch occurred");
     }
     const commandTimeout = request.timeoutMs ?? 120_000;

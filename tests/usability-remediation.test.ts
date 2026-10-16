@@ -109,6 +109,8 @@ it("reapplies the structured cap after image metadata and synchronizes the text"
   expect(result.isError).not.toBe(true);
   expect(Buffer.byteLength(JSON.stringify(result.structuredContent))).toBeLessThanOrEqual(64 * 1024);
   expect(JSON.parse(result.content[0].text)).toEqual(result.structuredContent);
+  expect(result.structuredContent).toMatchObject({ resultOmitted: true, imageDeliveryOmitted: 4 });
+  expect(result.content.filter((item: any) => item.type === "image")).toHaveLength(0);
 });
 it("does not advertise shed originals as recoverable", async () => {
   const png = await sharp({ create: { width: 800, height: 800, channels: 3, background: "red" } }).png({ compressionLevel: 0 }).toBuffer();
@@ -132,4 +134,20 @@ it("does not record exec dispatch when capability probing fails", async () => {
   expect(record).toMatchObject({ state: "returned" });
   expect(record?.events.some(event => event.stage === "agent_dispatch")).toBe(false);
   expect(effects).toBe(0);
+});
+
+
+it("retains direct device info dispatch and response evidence", async () => {
+  const app = Fastify();
+  app.get("/v1/info", async () => ({ runtime: { capabilities: [] } }));
+  const url = await app.listen({ host: "127.0.0.1", port: 0 }); closers.push(() => app.close());
+  const observer = new OperationObserver(), id = await observer.begin("device_info", undefined);
+  const client = new AgentClient([{ name: "fixture", url }]);
+  await operationContext.run({ observer, traceId: id! }, () => client.info("fixture", "system"));
+  await observer.finish(id!, {}, true, false);
+  const record = await observer.inspect(id!);
+  expect(record?.events).toEqual(expect.arrayContaining([
+    expect.objectContaining({ stage: "agent_dispatch", device: "fixture", identity: "root" }),
+    expect.objectContaining({ stage: "agent_response", device: "fixture", identity: "root", successful: true }),
+  ]));
 });

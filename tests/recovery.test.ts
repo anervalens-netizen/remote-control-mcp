@@ -354,6 +354,7 @@ describe("restart recovery", () => {
     const first = await import("../apps/agent/src/search-sessions.ts");
     const started = await first.searchStart({ path: dataRoot, pattern: "needle", literal: true, maxResults: 10 });
     const done = await waitSearch(first, started.id);
+    expect(done, "Search must finish successfully before simulating restart").toMatchObject({ status: "done", available: 1 });
     expect(done.results).toHaveLength(1);
 
     const file = path.join(root, "search", `${started.id}.json`);
