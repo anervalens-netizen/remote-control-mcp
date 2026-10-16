@@ -59,6 +59,7 @@ export function registerHighLevelTools(server: McpServer, client: AgentClient): 
     });
     const effectiveMode = mode ?? (operationKey ? "durable" : "legacy");
     if (effectiveMode === "durable") {
+      if (items.some(item => item.execReceiptId !== undefined)) throw new Error("exec_receipt_not_supported: durable batches use job receipts; no dispatch occurred");
       if (!operationKey) throw new Error("batch_operation_key_required: durable batch requires operationKey before effects");
       const result = await configuredBatchStore(client).start(operationKey, planned, concurrency, extra.signal);
       return structured(result);

@@ -510,7 +510,7 @@ export class AndroidController {
         action: !baseline ? { readiness: "unavailable", reason: readiness }
           : state?.localInputAllowed === undefined ? { readiness: "unknown", reason: "local_consent_not_reported_by_poll" }
           : { readiness: state.localInputAllowed ? "available" : "unavailable", reason: state.localInputAllowed ? "local_input_allowed" : "local_setup_or_dialog_active" },
-        shell: { readiness: this.online(device) && state?.shellAvailable ? "available" : "unavailable", reason: state?.shellAvailable ? "shell_reported" : "shell_unavailable" },
+        shell: { readiness: this.online(device) && state?.shellAvailable ? "available" : "unavailable", reason: !this.online(device) ? "offline" : state?.shellAvailable ? "shell_reported" : "shell_unavailable" },
       };
       return { name: device.config.name, transport: "android-reverse", online: this.online(device), readiness, readinessReason, capabilities, observedAt: device.observedAt, lastPollAt: device.lastPollAt, state, queuedCommands: device.queue.length, activeCommandId: device.active?.commandId ?? null };
     });

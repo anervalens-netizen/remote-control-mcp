@@ -2,7 +2,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { ExecReceiptStore } from "../apps/agent/src/exec-receipts.ts";
 
 const roots: string[] = [];
@@ -79,4 +79,20 @@ it("never expires incomplete claimed receipts and never reauthorizes pruned IDs"
   store.prepare();
   expect(store.read(ref.id).state).toBe("unknown");
   await expect(store.execute(unused.id, async () => 1)).rejects.toThrow(/unavailable/);
+});
+
+
+it("expires completed output on read without requiring a new reservation", async () => {
+  const store = fixture(), ref = store.prepare();
+  await store.execute(ref.id, async () => ({ stdout: "synthetic" }));
+  const clock = vi.spyOn(Date, "now").mockReturnValue(Date.parse(ref.expiresAt) + 1);
+  try { expect(() => store.read(ref.id)).toThrow(/expired/); }
+  finally { clock.mockRestore(); }
+});
+it("preserves unresolved claims beyond retention", async () => {
+  const store = fixture(), ref = store.prepare();
+  await expect(store.execute(ref.id, async () => { throw new Error("uncertain"); })).rejects.toThrow();
+  const clock = vi.spyOn(Date, "now").mockReturnValue(Date.parse(ref.expiresAt) + 1);
+  try { expect(store.read(ref.id).state).toBe("unknown"); }
+  finally { clock.mockRestore(); }
 });

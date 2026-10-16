@@ -82,7 +82,10 @@ public final class ProjectionScreenshotService extends Service {
                 && keyguard != null && !keyguard.isKeyguardLocked() && power != null && power.isInteractive();
     }
 
-    static String status() { return instance != null && instance.isActive() ? "active" : reason; }
+    static String status() {
+        ProjectionScreenshotService service = instance;
+        return service != null && service.isActive() ? "active" : reason;
+    }
     private synchronized boolean isActive() { return active; }
 
     static void stop(Context context, String why) {

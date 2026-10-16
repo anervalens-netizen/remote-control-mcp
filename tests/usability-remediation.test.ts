@@ -6,7 +6,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { installDefaultToolOutputContracts, TOTAL_RESULT_MAX_BYTES } from "../apps/mcp-server/src/tool-contract-defaults.ts";
 import { ResultRecoveryStore } from "../apps/mcp-server/src/result-recovery.ts";
-import { OperationObserver } from "../apps/mcp-server/src/operation-observer.ts";
+import { operationContext, OperationObserver } from "../apps/mcp-server/src/operation-observer.ts";
 
 const closers: Array<() => Promise<void>> = [];
 afterEach(async () => { for (const close of closers.splice(0)) await close(); });
@@ -53,12 +53,12 @@ it("bounds retained payload bytes without making shed reservations replayable",(
   expect(()=>store.begin(ids[0])).toThrow(/already used/);
 });
 
-it.each(["fs_read","job_status","exec","fs_write"])("classifies failed %s without losing write uncertainty",async tool=>{
+it.each(["fs_read","job_status","android_observe","android_command_status","batch_recover","pty_output","search_results","exec","fs_write"])("classifies failed %s without losing write uncertainty",async tool=>{
   const observer=new OperationObserver();
   const id=await observer.begin(tool,undefined);
   await observer.event(id!,{stage:"agent_dispatch",device:"fixture",identity:"owner"});
   await observer.finish(id!,{ok:false,kind:"http",agentCode:"ENOENT",status:404},false,true);
-  expect(await observer.inspect(id!)).toMatchObject({state:["fs_read","job_status"].includes(tool)?"returned":"unknown",requestSucceeded:false,callerDisconnected:true,failure:{kind:"http",agentCode:"ENOENT",status:404}});
+  expect(await observer.inspect(id!)).toMatchObject({state:!["exec","fs_write"].includes(tool)?"returned":"unknown",requestSucceeded:false,callerDisconnected:true,failure:{kind:"http",agentCode:"ENOENT",status:404}});
 });
 
 import Fastify from "fastify";
@@ -79,4 +79,75 @@ it("marks a failed delivery explicitly and leaves the original metadata unchange
   expect(result.content.filter(c=>c.type==="image")).toHaveLength(0);
   expect(result.structuredContent).toMatchObject({image:{available:false,captured:true,delivered:false},imageDelivery:[{delivered:false,reason:"image_delivery_failed"}]});
   expect(original.image.available).toBe(true);
+});
+
+
+it("remaps delivered image indices after a failed earlier preview", async () => {
+  const result = await deliverImages([
+    { type: "image", data: "x".repeat(400000), mimeType: "image/png" },
+    { type: "image", data: "eA==", mimeType: "image/png" },
+  ], { results: [{ imageIndex: 0 }, { imageIndex: 1 }] }, 250000);
+  expect(result.structuredContent).toMatchObject({ results: [{ imageDelivered: false }, { imageIndex: 0, imageDelivered: true }] });
+  expect((result.structuredContent as any).results[0]).not.toHaveProperty("imageIndex");
+});
+it("honors cancellation before image conversion", async () => {
+  const controller = new AbortController(); controller.abort();
+  const result = await deliverImages([{ type: "image", data: "eA==", mimeType: "image/png" }], {}, 250000, controller.signal);
+  expect(result.content.filter(c => c.type === "image")).toHaveLength(0);
+});
+
+it("reapplies the structured cap after image metadata and synchronizes the text", async () => {
+  const server = new McpServer({ name: "fixture", version: "1" });
+  installDefaultToolOutputContracts(server);
+  const value = { padding: "x".repeat(63 * 1024) };
+  server.registerTool("synthetic_boundary", { inputSchema: {}, outputSchema: z.object({ padding: z.string() }) },
+    async () => ({ content: Array.from({ length: 4 }, () => ({ type: "image" as const, data: "eA==", mimeType: "image/png;comment=" + "x".repeat(1000) })), structuredContent: value }));
+  const client = new Client({ name: "fixture", version: "1" });
+  const [a, b] = InMemoryTransport.createLinkedPair(); await Promise.all([server.connect(a), client.connect(b)]);
+  closers.push(async () => { await client.close(); await server.close(); });
+  const result: any = await client.callTool({ name: "synthetic_boundary", arguments: {} });
+  expect(result.isError).not.toBe(true);
+  expect(Buffer.byteLength(JSON.stringify(result.structuredContent))).toBeLessThanOrEqual(64 * 1024);
+  expect(JSON.parse(result.content[0].text)).toEqual(result.structuredContent);
+  expect(result.structuredContent).toMatchObject({ resultOmitted: true, imageDeliveryOmitted: 4 });
+  expect(result.content.filter((item: any) => item.type === "image")).toHaveLength(0);
+});
+it("does not advertise shed originals as recoverable", async () => {
+  const png = await sharp({ create: { width: 800, height: 800, channels: 3, background: "red" } }).png({ compressionLevel: 0 }).toBuffer();
+  const result = await deliverImages([{ type: "image", data: png.toString("base64"), mimeType: "image/png" }], { resultRecovery: { payloadAvailable: false } }, 250000);
+  expect(result.structuredContent.imageDelivery[0]).toMatchObject({ transformed: true, original: "unavailable" });
+});
+
+
+import { AgentClient } from "../apps/mcp-server/src/agent-client.ts";
+it("does not record exec dispatch when capability probing fails", async () => {
+  const app = Fastify(); let effects = 0;
+  app.get("/v1/info", async () => ({ runtime: { capabilities: [] } }));
+  app.post("/v1/exec", async () => { effects++; return {}; });
+  const url = await app.listen({ host: "127.0.0.1", port: 0 }); closers.push(() => app.close());
+  const observer = new OperationObserver(), id = await observer.begin("exec", undefined);
+  const client = new AgentClient([{ name: "fixture", url }]);
+  await expect(operationContext.run({ observer, traceId: id! }, () =>
+    client.exec("fixture", { command: "must-not-run", execReceiptId: "00000000-0000-4000-8000-000000000001" }))).rejects.toThrow(/no exec dispatch/);
+  await observer.finish(id!, undefined, false, false);
+  const record = await observer.inspect(id!);
+  expect(record).toMatchObject({ state: "returned" });
+  expect(record?.events.some(event => event.stage === "agent_dispatch")).toBe(false);
+  expect(effects).toBe(0);
+});
+
+
+it("retains direct device info dispatch and response evidence", async () => {
+  const app = Fastify();
+  app.get("/v1/info", async () => ({ runtime: { capabilities: [] } }));
+  const url = await app.listen({ host: "127.0.0.1", port: 0 }); closers.push(() => app.close());
+  const observer = new OperationObserver(), id = await observer.begin("device_info", undefined);
+  const client = new AgentClient([{ name: "fixture", url }]);
+  await operationContext.run({ observer, traceId: id! }, () => client.info("fixture", "system"));
+  await observer.finish(id!, {}, true, false);
+  const record = await observer.inspect(id!);
+  expect(record?.events).toEqual(expect.arrayContaining([
+    expect.objectContaining({ stage: "agent_dispatch", device: "fixture", identity: "root" }),
+    expect.objectContaining({ stage: "agent_response", device: "fixture", identity: "root", successful: true }),
+  ]));
 });
