@@ -252,3 +252,32 @@ verify the private manifest hashes against the script embedded in `console.html`
 upload once to the configured receiver and confirm a mapped SDK frame. Never ship
 map contents inside an MCP resource or public static directory. The controller runs
 TypeScript directly and does not need a compiler source map for its own source files.
+
+## Recovering synchronous exec receipts
+
+Use keyed jobs when work must continue after a disconnect or agent restart.
+For a short foreground command whose result must survive controller restart:
+
+1. Call `exec_prepare` with the intended device and identity.
+2. Pass the returned `id` as `execReceiptId` to `exec`, on that same endpoint.
+3. After a lost response, call `exec_recover` with that device, identity and ID.
+   Read base64 JSON pages using the returned byte cursor. Never resubmit the
+   command to recover its result.
+
+This requires an agent advertising `exec-receipts-v1`; older agents are refused
+before dispatch. Commands without a reservation keep their existing semantics.
+A disconnect still cancels foreground execution. The durable receipt records
+the runner result, including cancellation/termination limits; it does not prove
+business effects or make the command restartable. A claimed reservation without
+a saved result is `unknown` after restart and must not be replayed.
+
+Each agent retains at most 64 reservations, for up to 24 hours, with up to
+1 MiB of result JSON per reservation. Larger results have an explicit
+`receiptUnavailable` tombstone; use jobs for retained large logs. Unfinished
+claimed reservations are pinned because expiration is not proof of termination.
+The oldest completed receipt may be evicted under capacity pressure. If all
+slots are reserved or unresolved, capacity exhaustion refuses reservations
+before dispatch. Unused and
+completed expired reservations are pruned on the next reservation. Receipt
+files contain output and remain in the private agent state directory. Lost,
+expired or consumed IDs never authorize a new dispatch.

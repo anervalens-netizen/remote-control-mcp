@@ -141,6 +141,7 @@ export function runtimeStatus() {
     ...(searchReady ? ["search"] : []),
     "fs-edit", "repo-checkpoint-selection", "repo-apply-patch", "project-multistack", "deploy-phases", "job-follow",
     "high-level-idempotency-v1",
+    "exec-receipts-v1",
     "job-key-recovery-v1", "utf8-byte-pages-v1", "high-level-coordination-v1",
     ...(jobIsolation.ready ? ["job-cgroup-isolation-v1"] : []),
     ...(desktopEnabled ? ["desktop", "desktop-session", "desktop-batch", "desktop-helper", "desktop-window-enumeration", "desktop-uia", "clipboard", "browser"] : []),

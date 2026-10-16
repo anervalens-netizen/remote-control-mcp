@@ -1,5 +1,5 @@
 export const agentInstructions = [
-  "Large tool results use explicit bounded previews and resultRecovery; text and structured content describe the same delivered page. Read result_recover to obtain the original JSON without replay. Reserve result_recovery_prepare and pass _meta.resultRecoveryId before an effect when the whole response may be lost. Memory recovery expires/evicts and does not survive controller restart; use keyed durable jobs for crash recovery.",
+  "Large tool results use explicit bounded previews and resultRecovery; text and structured content describe the same delivered page. Read result_recover to obtain the original JSON without replay. Reserve result_recovery_prepare and pass top-level resultRecoveryId before an effect when the whole response may be lost. Memory recovery expires/evicts and does not survive controller restart; use keyed durable jobs for execution continuity. For short exec needing a durable receipt, reserve exec_prepare, pass execReceiptId, then read exec_recover on the same device/identity. Unknown or missing receipts never authorize replay.",
 
   "Control the owner's Linux and Windows computers through the named device.",
   "Use devices_list/fleet_status/device_info to discover hosts, contexts, readiness and runtime capabilities.",

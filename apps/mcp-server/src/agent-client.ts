@@ -307,7 +307,13 @@ export class AgentClient {
     return this.requireAndroid().execute(name, commandId, request, deadline, signal);
   }
   androidCommandStatus(name: string, commandId: string): unknown { return this.requireAndroid().lookup(name, commandId); }
-  exec(name: string, request: ExecRequest, context: AgentEndpointContext = "system", options: AgentRequestOptions = {}): Promise<ExecResult> {
+  execPrepare(name: string, context: AgentEndpointContext): Promise<unknown> { return this.request(name, "/v1/exec/prepare", {}, context); }
+  execRecover(name: string, input: { id: string; offset?: number; length?: number }, context: AgentEndpointContext): Promise<unknown> { return this.request(name, "/v1/exec/recover", input, context); }
+  async exec(name: string, request: ExecRequest, context: AgentEndpointContext = "system", options: AgentRequestOptions = {}): Promise<ExecResult> {
+    if (request.execReceiptId !== undefined) {
+      const info = await this.info(name, context, options) as { runtime?: { capabilities?: unknown } };
+      if (!Array.isArray(info?.runtime?.capabilities) || !info.runtime.capabilities.includes("exec-receipts-v1")) throw new Error("Agent does not advertise exec-receipts-v1; no exec dispatch occurred");
+    }
     const commandTimeout = request.timeoutMs ?? 120_000;
     const transportTimeout = commandTimeout <= 0 ? 0 : Math.max(this.requestTimeoutMs, withTimeoutGrace(commandTimeout));
     return this.request(name, "/v1/exec", request, context, { ...options, timeoutMs: options.timeoutMs ?? transportTimeout });

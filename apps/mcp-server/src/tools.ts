@@ -12,6 +12,8 @@ function text(value: unknown) {
 function structured(value: Record<string, unknown>, textValue: unknown = value) {
   return { content: [{ type: "text" as const, text: JSON.stringify(textValue) }], structuredContent: value };
 }
+const execReceiptReference = z.object({ id: z.string().uuid(), scope: z.literal("agent_disk"), noReplay: z.literal(true), expiresAt: z.string().datetime() });
+const execReceiptPage = z.union([execReceiptReference.extend({ state: z.enum(["reserved", "running", "unknown"]) }), execReceiptReference.extend({ state: z.literal("complete"), encoding: z.literal("base64"), mediaType: z.literal("application/json"), offset: z.number().int().nonnegative(), bytesRead: z.number().int().nonnegative(), nextOffset: z.number().int().nonnegative(), totalBytes: z.number().int().nonnegative(), eof: z.boolean(), data: z.string() })]);
 const targetFields = { context: legacyContextSchema, identity: identitySchema, elevation: elevationSchema };
 
 export function registerTools(server: McpServer, client: AgentClient): void {
@@ -40,8 +42,26 @@ export function registerTools(server: McpServer, client: AgentClient): void {
     return text(await client.info(device, target));
   });
 
+  server.registerTool("exec_prepare", {
+    description: "Reserve a single-use durable exec receipt on the selected agent before exec. Pass id as execReceiptId; retain device and identity. Up to 64 slots and 24-hour retention; oldest completed receipts may be evicted; incomplete claimed receipts remain pinned. No command starts here. Use keyed jobs when work must continue after disconnect.",
+    outputSchema: execReceiptReference,
+    inputSchema: executionInputSchema({ device: z.string().min(1) }),
+  }, async ({ device, context, identity, elevation }) => {
+    const target = resolveExecutionContext(client, device, { context, identity, elevation }, "system");
+    return text(await client.execPrepare(device, target));
+  });
+  server.registerTool("exec_recover", {
+    description: "Read the agent-disk exec receipt without execution, using the original device/identity and reserved id. Survives controller and agent restart. Complete means a saved runner receipt, not verified business effects. Unknown means claimed without a persisted result; never replay. Base64 JSON pages, max 12 KiB. Payloads above 1 MiB are explicitly unavailable.",
+    annotations: { readOnlyHint: true },
+    outputSchema: execReceiptPage,
+    inputSchema: executionInputSchema({ device: z.string().min(1), id: z.string().uuid(), offset: z.number().int().nonnegative().optional(), length: z.number().int().min(1).max(12 * 1024).optional() }),
+  }, async ({ device, context, identity, elevation, ...input }) => {
+    const target = resolveExecutionContext(client, device, { context, identity, elevation }, "system");
+    return text(await client.execRecover(device, input, target));
+  });
+
   server.registerTool("exec", {
-    description: "Execute a bounded synchronous shell command (Linux Bash, Windows PowerShell). Prefer job_start with idempotencyKey for long, variable-duration or mutating work requiring restart recovery; follow job_wait cursors. exec is not restart-recoverable. A timeout/disconnect never authorizes replay; inspect recovery/effects. maxOutputBytes discards excess output at the agent; use jobs for retained logs. identity is canonical; context is a legacy alias.",
+    description: "Execute a bounded synchronous shell command (Linux Bash, Windows PowerShell). Prefer job_start with idempotencyKey for long, variable-duration or mutating work requiring restart recovery; follow job_wait cursors. For a restart-durable receipt, call exec_prepare first and pass execReceiptId; recover with exec_recover on the same device/identity. This preserves receipts, not execution continuity. Unreserved exec is not restart-recoverable. A timeout/disconnect never authorizes replay; inspect recovery/effects. maxOutputBytes discards excess output at the agent; use jobs for retained logs. identity is canonical; context is a legacy alias.",
     inputSchema: executionInputSchema({ device: z.string().min(1), ...execRequestFields }),
     outputSchema: z.object({ ...execResultSchema.shape, ...executionRouteFields }),
   }, async ({ device, context, identity, elevation, ...request }, extra) => {

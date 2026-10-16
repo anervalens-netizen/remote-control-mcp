@@ -4,6 +4,7 @@ import { timeoutMsField } from "./deadline.ts";
 
 /** Shared by single-command and batch tools: one wire contract, literal environment. */
 export const execRequestFields = {
+  execReceiptId: z.string().uuid().optional().describe("Single-use agent-disk reservation from exec_prepare. Retrieve it with exec_recover after disconnect/restart; never reuse to execute."),
   command: z.string().min(1),
   cwd: z.string().optional(),
   timeoutMs: timeoutMsField.optional(),

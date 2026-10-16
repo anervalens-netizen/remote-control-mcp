@@ -15,6 +15,7 @@ export type DeviceConfig = {
 };
 
 export type ExecRequest = {
+  execReceiptId?: string;
   command: string;
   cwd?: string;
   timeoutMs?: number;

@@ -8,7 +8,7 @@ import { correlationHash } from "../../../packages/protocol/src/diagnostic-conte
 import type { AgentClient, AgentEndpointContext } from "./agent-client.ts";
 
 // Explicit read-only contracts; never infer effect safety from an error code.
-const readOnlyOperations = new Set(["fs_read", "fs_list", "batch_read", "job_status", "job_output", "job_output_since", "job_wait", "job_list", "job_history", "job_lineage", "device_info", "device_contexts", "devices_list", "service_inspect", "service_logs", "network_snapshot", "android_status"]);
+const readOnlyOperations = new Set(["exec_recover", "fs_read", "fs_list", "batch_read", "job_status", "job_output", "job_output_since", "job_wait", "job_list", "job_history", "job_lineage", "device_info", "device_contexts", "devices_list", "service_inspect", "service_logs", "network_snapshot", "android_status"]);
 const identity = z.enum(["owner", "root", "interactive"]);
 const contextKeepReference = z.object({ projectId: z.string().uuid(), taskId: z.string().uuid(), runId: z.string().uuid() });
 export const jobReferenceSchema = z.object({ device: z.string().max(256), identity, jobId: z.string().min(1).max(256) }).strict();

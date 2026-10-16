@@ -1,3 +1,5 @@
+import { ExecReceiptStore } from "./exec-receipts.ts";
+import { ensureStateDir } from "./state.ts";
 import { filesystemReadResponse } from "./filesystem-read-response.ts";
 import { fsReadFields } from "../../../packages/protocol/src/execution.ts";
 import { registerFilesystemManageRoute } from "./filesystem-routes.ts";
@@ -12,7 +14,7 @@ import { receiveDirectTransfer, openRawFile } from "./direct-transfer.ts";
 import { registerExtraRoutes } from "./extra-routes.ts";
 import { killProcess, listProcesses, startProcess } from "./processes.ts";
 import { ptyInput, ptyList, ptyOutput, ptyRemove, ptyResize, ptyStart, ptyTerminate } from "./pty.ts";
-import { runCommand } from "./exec.ts";
+import { registerExecRoutes } from "./exec-routes.ts";
 import { registerDesktopRoutes } from "./desktop-routes.ts";
 import { runtimeStatus } from "./runtime.ts";
 import { recoverMoveCaptures } from "./filesystem-atomic.ts";
@@ -31,13 +33,7 @@ if (!token && !allowUnauthenticated) {
   throw new Error("RCMCP_AGENT_TOKEN is required unless RCMCP_ALLOW_UNAUTHENTICATED=1");
 }
 
-const execSchema = z.object({
-  command: z.string().min(1),
-  cwd: z.string().optional(),
-  timeoutMs: z.number().int().nonnegative().optional(),
-  env: z.record(z.string(), z.string()).optional(),
-  maxOutputBytes: z.number().int().positive().max(64 * 1024 * 1024).optional(),
-});
+const execReceipts = new ExecReceiptStore(ensureStateDir("exec-receipts-v1"));
 const fsReadSchema = z.object({
   ...fsReadFields,
 }).superRefine((value, ctx) => {
@@ -122,21 +118,7 @@ app.get("/v1/info", async () => ({
   runtime: runtimeWithHttpLimits(),
 }));
 
-app.post("/v1/exec", async (request, reply) => {
-  const parsed = execSchema.safeParse(request.body);
-  if (!parsed.success) return reply.code(400).send({ error: "invalid_request", details: parsed.error.issues });
-  const controller = new AbortController();
-  const abort = () => controller.abort(new Error("Exec caller disconnected; foreground command cancelled"));
-  const disconnected = () => { if (!reply.raw.writableFinished) abort(); };
-  request.raw.once("aborted", abort);
-  reply.raw.once("close", disconnected);
-  try {
-    return await runCommand(parsed.data, controller.signal);
-  } finally {
-    request.raw.off("aborted", abort);
-    reply.raw.off("close", disconnected);
-  }
-});
+registerExecRoutes(app, execReceipts);
 
 app.post("/v1/fs/read", async (request, reply) => {
   const parsed = fsReadSchema.safeParse(request.body);
