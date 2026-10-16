@@ -239,8 +239,16 @@ export function installDefaultToolOutputContracts(server: McpServer, diagnostics
           output = { isError: output.isError, ...(output._meta ? { _meta: output._meta } : {}), content: [{ type: "text", text: JSON.stringify(final) }], structuredContent: final };
         }
         if (!failedValidation && Array.isArray((result as any).content) && (result as any).content.some((item: any) => item.type === "image")) {
-          output = { ...output, ...await deliverImages((result as any).content, final, TOTAL_RESULT_MAX_BYTES - 4096) };
+          output = { ...output, ...await deliverImages((result as any).content, final, TOTAL_RESULT_MAX_BYTES - 4096, extra?.signal) };
         }
+        if (jsonBytes(output.structuredContent) > STRUCTURED_CONTENT_MAX_BYTES) {
+          const bounded = compactStructuredContent(output.structuredContent, STRUCTURED_CONTENT_MAX_BYTES, advertisedSchema);
+          output = { ...output, structuredContent: bounded, content: [
+            { type: "text", text: JSON.stringify(bounded) },
+            ...output.content.filter((item: any) => item.type === "image"),
+          ] };
+        }
+        if (jsonBytes(output.structuredContent) > STRUCTURED_CONTENT_MAX_BYTES) throw new Error("Final structured result exceeds its delivery contract");
         // Validate the actual object, after every wrapper. The contract uses the
         // exact advertised JSON Schema in addition to Zod's semantic refinements.
         if (!measureSync("finalValidation", () => advertisedSchema.safeParse(output.structuredContent)).success) {

@@ -49,6 +49,8 @@ it.each([false, true])("SDK advertises and accepts durable batch/recovery contra
   expect(missing.isError).toBe(true); expect(legacyEffects).toBe(1); expect(effects).toBe(0);
   const invalid = await first.callTool({ name: "batch_exec", arguments: { mode: "legacy", operationKey: "invalid", items: [{ device: "fixture", command: "must-not-run" }] } });
   expect(invalid.isError).toBe(true); expect(legacyEffects).toBe(1); expect(effects).toBe(0);
+  const incompatible = await first.callTool({ name: "batch_exec", arguments: { operationKey: randomUUID(), items: [{ device: "fixture", command: "must-not-run", execReceiptId: randomUUID() }] } });
+  expect(incompatible.isError).toBe(true); expect(effects).toBe(0); expect(legacyEffects).toBe(1);
   const result = await first.callTool({ name: "batch_exec", arguments: { operationKey: key, items: [{ device: "fixture", command: "synthetic" }] } });
   expect(result.isError).not.toBe(true);
   expect(result.structuredContent).toMatchObject({ items: [{ state: "failed", exitCode: 7, verification: "unknown" }], clientAcceptance: "unknown" });

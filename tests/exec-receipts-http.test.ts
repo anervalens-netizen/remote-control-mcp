@@ -50,7 +50,9 @@ it("recovers through a fresh MCP controller, validates schemas and refuses dupli
   const recovered = data(await second.callTool({ name: "exec_recover", arguments: { device: "fixture", identity: "owner", id: ref.id } }));
   expect(recovered.state).toBe("complete");
   expect(JSON.parse(Buffer.from(recovered.data, "base64").toString()).stdout).toContain("receipt");
-  expect((await second.callTool({ name: "exec", arguments: args })).isError).toBe(true);
+  const duplicate = await second.callTool({ name: "exec", arguments: args });
+  expect(duplicate.isError).toBe(true);
+  expect(duplicate.structuredContent).toMatchObject({ agentCode: "exec_receipt_consumed" });
   expect(readFileSync(effect, "utf8")).toBe("once");
   h.unsupported();
   const ref2 = data(await second.callTool({ name: "exec_prepare", arguments: { device: "fixture", identity: "owner" } }));

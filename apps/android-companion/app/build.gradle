@@ -19,8 +19,8 @@ android {
         applicationId 'eu.astancu.rcmcp.android'
         minSdk 29
         targetSdk 36
-        versionCode 17
-        versionName '0.1.15-capture-readiness'
+        versionCode 18
+        versionName '0.1.16-review-fixes'
 
     }
 

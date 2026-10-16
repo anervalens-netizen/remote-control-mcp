@@ -108,7 +108,7 @@ async function readAgentError(response: Response, maxBytes = 1024 * 1024): Promi
       const parsed = coordinationConflictSchema.safeParse(payload.details);
       if (parsed.success) return { diagnostic: `coordination_conflict: ${parsed.data.reason}`, agentCode: "COORDINATION_CONFLICT", coordinationConflict: parsed.data, truncated: false };
     }
-    const agentCode = payload && typeof payload.code === "string" && /^[A-Z][A-Z0-9_]{1,63}$/.test(payload.code) ? payload.code : undefined;
+    const agentCode = payload && typeof payload.code === "string" && /^[A-Za-z][A-Za-z0-9_]{1,63}$/.test(payload.code) ? payload.code : undefined;
     if (payload && (payload.error === "job_start_conflict" || payload.error === "job_start_uncertain")) {
       const jobId = typeof payload.jobId === "string" && /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(payload.jobId) ? payload.jobId : undefined;
       return { ...ordinaryHttpDiagnostic(value), ...(agentCode ? { agentCode } : {}), jobStartFailure: { code: payload.error, ...(jobId ? { jobId } : {}) } };
@@ -206,7 +206,7 @@ export class AgentClient {
     try {
       const knownJobId = ["/v1/jobs/status", "/v1/jobs/follow", "/v1/jobs/output", "/v1/jobs/cancel"].includes(route)
         && body && typeof body === "object" && "id" in body && typeof body.id === "string" ? body.id : undefined;
-      await observeAgent("agent_dispatch", this.getDevice(name).name, context, undefined, knownJobId);
+      if (route !== "/v1/info") await observeAgent("agent_dispatch", this.getDevice(name).name, context, undefined, knownJobId);
       const response = await fetch(`${endpoint.base}${route}`, {
         method: body === undefined ? "GET" : "POST", headers, redirect: "error",
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
@@ -225,7 +225,7 @@ export class AgentClient {
           : route === "/v1/project/run" ? value?.result?.id : route === "/v1/deploy/run" ? value?.job?.id : undefined;
         const returnedJob = typeof candidate === "string" ? candidate : knownJobId;
         const deviceName = this.getDevice(name).name;
-        await observeAgent("agent_response", deviceName, context, true, returnedJob);
+        if (route !== "/v1/info") await observeAgent("agent_response", deviceName, context, true, returnedJob);
         // Only authoritative job routes carry lifecycle evidence. Output EOF,
         // missing receipts and a cancellation request do not prove termination.
         if (["/v1/jobs/start", "/v1/jobs/status", "/v1/jobs/follow", "/v1/jobs/cancel"].includes(route)) {
@@ -243,7 +243,7 @@ export class AgentClient {
         throw new AgentRequestError(`${name} ${context} ${route} invalid JSON response: ${detail}`, name, context, route, "protocol");
       }
     } catch (error) {
-      await observeAgent("agent_response", this.getDevice(name).name, context, false);
+      if (route !== "/v1/info") await observeAgent("agent_response", this.getDevice(name).name, context, false);
       const kind = error instanceof AgentRequestError ? error.kind : options.signal?.aborted && !deadline.timedOut() ? "cancelled" : deadline.timedOut() ? "timeout" : "network";
       const trace = diagnosticContext.getStore();
       if (trace) trace.agentErrors[kind] = (trace.agentErrors[kind] ?? 0) + 1;

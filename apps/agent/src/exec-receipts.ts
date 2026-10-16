@@ -84,6 +84,10 @@ export class ExecReceiptStore {
   read(id: string, offset = 0, length = 12 * 1024) {
     if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(length) || length < 1 || length > 12 * 1024) throw new Error("Invalid receipt page");
     const entry = this.load(id), dir = this.directory(id), result = path.join(dir, "result.json");
+    if (entry.expiresAt <= Date.now() && !this.active.has(id) && (!existsSync(path.join(dir, "claimed")) || existsSync(result))) {
+      rmSync(dir, { recursive: true });
+      throw new ExecReceiptError("exec_receipt_expired", 410, "Exec receipt expired; retained output unavailable; absence never authorizes replay");
+    }
     const reference = { id, scope: "agent_disk", noReplay: true, expiresAt: new Date(entry.expiresAt).toISOString() };
     if (!existsSync(result)) return { ...reference, state: this.active.has(id) ? "running" : existsSync(path.join(dir, "claimed")) ? "unknown" : "reserved" };
     const fd = openSync(result, "r");
