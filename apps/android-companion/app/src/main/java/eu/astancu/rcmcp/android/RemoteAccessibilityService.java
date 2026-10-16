@@ -158,6 +158,10 @@ public final class RemoteAccessibilityService extends AccessibilityService {
     }
 
     private void observe(JSONObject request, CompletableFuture<JSONObject> result, ExecutionLease lease) throws JSONException {
+        observe(request, result, lease, 1);
+    }
+
+    private void observe(JSONObject request, CompletableFuture<JSONObject> result, ExecutionLease lease, int retries) throws JSONException {
         boolean wantImage = request.optBoolean("image", true);
         boolean wantTree = request.optBoolean("tree", true);
         int maxNodes = Protocol.boundedMaxNodes(request);
@@ -189,6 +193,19 @@ public final class RemoteAccessibilityService extends AccessibilityService {
                     || currentDisplay.width != display.width || currentDisplay.height != display.height
                     || currentDisplay.rotation != display.rotation
                     || (concreteWindowIdentity && !activeWindowMatches(packageName, windowId))) {
+                if (retries > 0 && lease.mayRun()) {
+                    // Observation is read-only. Never retry a gesture or reuse an old tree.
+                    mainHandler.postDelayed(() -> {
+                        if (result.isDone()) return;
+                        if (!isActiveService() || !lease.mayRun()) {
+                            completeError(result, "expired_or_paused", "observation_expired");
+                            return;
+                        }
+                        try { observe(request, result, lease, retries - 1); }
+                        catch (JSONException failure) { completeError(result, "observation_failed", "observation_failed"); }
+                    }, 120L);
+                    return;
+                }
                 completeError(result, "observation_changed", "screen_or_window_changed_during_observation");
                 return;
             }
