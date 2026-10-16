@@ -1,3 +1,4 @@
+import { androidStateSchema } from "../../../packages/protocol/src/android.ts";
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { performance } from "node:perf_hooks";
@@ -503,8 +504,12 @@ export class AndroidController {
       const baseline = readiness === "ready";
       const capabilities: AndroidDeviceStatus["capabilities"] = {
         tree: { readiness: baseline ? "available" : "unavailable", reason: baseline ? "accessibility_available" : readiness },
-        screenshot: { readiness: baseline ? "unknown" : "unavailable", reason: baseline ? "capture_not_verified_by_poll" : readiness },
-        action: { readiness: baseline ? "unknown" : "unavailable", reason: baseline ? "local_consent_not_reported_by_poll" : readiness },
+        screenshot: !baseline ? { readiness: "unavailable", reason: readiness }
+          : state?.captureReadiness === undefined ? { readiness: "unknown", reason: "capture_not_verified_by_poll" }
+          : { readiness: ["accessibility_ready", "projection_active"].includes(state.captureReadiness) ? "available" : "unavailable", reason: state.captureReadiness },
+        action: !baseline ? { readiness: "unavailable", reason: readiness }
+          : state?.localInputAllowed === undefined ? { readiness: "unknown", reason: "local_consent_not_reported_by_poll" }
+          : { readiness: state.localInputAllowed ? "available" : "unavailable", reason: state.localInputAllowed ? "local_input_allowed" : "local_setup_or_dialog_active" },
         shell: { readiness: this.online(device) && state?.shellAvailable ? "available" : "unavailable", reason: state?.shellAvailable ? "shell_reported" : "shell_unavailable" },
       };
       return { name: device.config.name, transport: "android-reverse", online: this.online(device), readiness, readinessReason, capabilities, observedAt: device.observedAt, lastPollAt: device.lastPollAt, state, queuedCommands: device.queue.length, activeCommandId: device.active?.commandId ?? null };
@@ -953,6 +958,10 @@ export class AndroidController {
     // Capability headers are ignored by older v1 controllers. Authenticate first
     // and keep the strict body schema compatible during an APK-first rollout.
     if (req.headers["x-rcmcp-receive-file"] === "1") poll.state.receiveFile = true;
+    const capture = androidStateSchema.shape.captureReadiness.safeParse(req.headers["x-rcmcp-capture-readiness"]);
+    if (capture.success && capture.data !== undefined) poll.state.captureReadiness = capture.data;
+    const input = req.headers["x-rcmcp-local-input-allowed"];
+    if (input === "1" || input === "0") poll.state.localInputAllowed = input === "1";
     if (poll.device !== device.config.name) throw new AndroidControllerError("device_mismatch", "Poll device does not match the authenticated device", 403);
     if (device.poll) throw new AndroidControllerError("poll_in_progress", "Only one poll may be active per Android device", 409);
     const controlGenerationChanged = device.controlGeneration !== null

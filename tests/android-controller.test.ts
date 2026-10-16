@@ -353,3 +353,41 @@ it("separates baseline UI readiness from unobserved screenshot/consent capabilit
    action:{readiness:"unknown",reason:"local_consent_not_reported_by_poll"},shell:{readiness:"unavailable"}
  }});
 });
+
+it.each([
+ ["accessibility_ready", "1", "available", "available", "local_input_allowed"],
+ ["projection_active", "0", "available", "unavailable", "local_setup_or_dialog_active"],
+ ["screen_sharing_consent_required", "1", "unavailable", "available", "local_input_allowed"],
+ ["screen_sharing_unavailable", "1", "unavailable", "available", "local_input_allowed"],
+ ["accessibility_unavailable", "0", "unavailable", "unavailable", "local_setup_or_dialog_active"],
+ ["screenshot_unsupported", "1", "unavailable", "available", "local_input_allowed"],
+])("reports authenticated capture %s and input %s independently", async (capture, input, screenshotReady, actionReady, reason) => {
+ const {controller,base}=await makeController(undefined,{pollWaitMs:5});
+ const body=pollBody();
+ const headers={authorization:"Bearer "+token,"content-type":"application/json",
+ "x-rcmcp-capture-readiness":capture,"x-rcmcp-local-input-allowed":input};
+ const response=await fetch(base+"/android/v1/poll",{method:"POST",headers,body:JSON.stringify(body)});
+ expect(response.status).toBe(200); await response.json();
+ expect(controller.status("phone-example")).toMatchObject({capabilities:{
+ screenshot:{readiness:screenshotReady,reason:capture},action:{readiness:actionReady,reason}
+ }});
+ // A subsequent legacy poll must clear previously reported capabilities.
+ await post(base,"/android/v1/poll",body);
+ expect(controller.status("phone-example")).toMatchObject({capabilities:{
+ screenshot:{readiness:"unknown"},action:{readiness:"unknown"}
+ }});
+});
+it("ignores malformed readiness headers and lets locked state override available capture",async()=>{
+ const {controller,base}=await makeController(undefined,{pollWaitMs:5});
+ const send=async(capture:string,input:string,body= pollBody())=>{
+  const response=await fetch(base+"/android/v1/poll",{method:"POST",
+  headers:{authorization:"Bearer "+token,"content-type":"application/json","x-rcmcp-capture-readiness":capture,"x-rcmcp-local-input-allowed":input},
+  body:JSON.stringify(body)});
+  expect(response.status).toBe(200); await response.json();
+ };
+ await send("invented","true");
+ expect(controller.status("phone-example")).toMatchObject({capabilities:{screenshot:{readiness:"unknown"},action:{readiness:"unknown"}}});
+ await send("accessibility_ready","1",pollBody(undefined,undefined,{keyguardLocked:true}));
+ expect(controller.status("phone-example")).toMatchObject({capabilities:{
+ screenshot:{readiness:"unavailable",reason:"keyguard_locked"},action:{readiness:"unavailable",reason:"keyguard_locked"}}});
+});

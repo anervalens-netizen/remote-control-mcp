@@ -41,3 +41,18 @@ new download. Reboot, disconnection, and lost result acknowledgement must never
 be handled by automatically repeating the receive operation. Physical storage,
 STOP during transfer, pending-entry cleanup and result recovery require separate
 installed-device qualification.
+
+## Capture readiness reporting
+
+Version 0.1.15 reports capture prerequisites and the local input guard in
+authenticated poll headers, preserving the strict legacy v1 body. Old companions
+remain explicitly unknown. Accessibility screenshots (API 30+) need no separate
+screen-sharing consent; API 29 reports whether projection is active or requires
+local consent. Availability is sampled at the last poll, not a guarantee that
+protected content or every capture will succeed. Offline/locked/paused state
+takes precedence. Shell authorization remains independent.
+
+An observation invalidated by screen changes retries once, collecting a new
+image and tree. A second change returns observation_changed. Input is never
+retried and existing snapshot age, generation, window, size and rotation guards
+remain unchanged.

@@ -501,8 +501,15 @@ public final class RemoteControlService extends Service {
         connection.setRequestProperty("Authorization", "Bearer " + config.token());
         connection.setRequestProperty("Content-Type", "application/json");
         connection.setRequestProperty("Accept", "application/json");
-        if ("/android/v1/poll".equals(path))
+        if ("/android/v1/poll".equals(path)) {
             connection.setRequestProperty("X-RCMCP-Receive-File", "1");
+            // Additive headers preserve the strict v1 body for old controllers.
+            connection.setRequestProperty("X-RCMCP-Capture-Readiness", CaptureReadiness.reason(
+                    android.os.Build.VERSION.SDK_INT, RemoteAccessibilityService.isRunning(),
+                    ProjectionScreenshotService.status()));
+            connection.setRequestProperty("X-RCMCP-Local-Input-Allowed",
+                    LocalConsentBoundary.INSTANCE.allows("tap") ? "1" : "0");
+        }
         byte[] payload = body.getBytes(StandardCharsets.UTF_8);
         connection.setFixedLengthStreamingMode(payload.length);
         try (OutputStream output = connection.getOutputStream()) {

@@ -30,7 +30,13 @@ describe("Android 10 companion platform wiring", () => {
     expect(source("BackgroundConfigurationImport")).toContain("static synchronized boolean blocksRemoteMutation()");
     expect(activity).toContain("LocalConsentBoundary.INSTANCE.destroy(this)");
     expect(activity).not.toContain('allows("mutation")');
-    expect(source("RemoteControlService")).not.toContain("LocalConsentBoundary");
+    const service = source("RemoteControlService");
+    const transport = service.indexOf('private HttpResponse post(');
+    expect(transport).toBeGreaterThan(0);
+    // The transport reports the guard, but must never gate shell/observe dispatch.
+    expect(service.slice(0, transport)).not.toContain("LocalConsentBoundary");
+    expect(service.match(/LocalConsentBoundary/g)).toHaveLength(1);
+    expect(service.slice(transport)).toContain('LocalConsentBoundary.INSTANCE.allows("tap") ? "1" : "0"');
   });
 
   it("bounds provider work and cleanup, cancels on STOP, and rejects late UI results", () => {
@@ -75,8 +81,8 @@ describe("Android 10 companion platform wiring", () => {
     const gradle = readFileSync(path.join(root, "app/build.gradle"), "utf8");
     expect(gradle).toContain("applicationId 'eu.astancu.rcmcp.android'");
     expect(gradle).toContain("minSdk 29");
-    expect(gradle).toContain("versionCode 13");
-    expect(gradle).toContain("versionName '0.1.12-compatible-cleanup'");
+    expect(gradle).toContain("versionCode 17");
+    expect(gradle).toContain("versionName '0.1.15-capture-readiness'");
     expect(source("Protocol")).toContain("VERSION = 1");
     const manifest = readFileSync(path.join(main, "AndroidManifest.xml"), "utf8");
     expect(manifest).toContain('android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION');

@@ -14,6 +14,8 @@ export const androidStateSchema = z.object({
   paused: z.boolean(),
   controlGeneration: z.number().int().nonnegative().max(2_147_483_647).optional().default(0),
   receiveFile: z.boolean().optional().default(false),
+  captureReadiness: z.enum(["accessibility_ready", "projection_active", "screen_sharing_consent_required", "screen_sharing_unavailable", "accessibility_unavailable", "screenshot_unsupported"]).optional(),
+  localInputAllowed: z.boolean().optional(),
   shellAvailable: z.boolean(),
   network: z.string().min(1),
   batteryPercent: z.number().int().min(0).max(100).nullable(),
