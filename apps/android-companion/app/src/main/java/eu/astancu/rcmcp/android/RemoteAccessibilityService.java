@@ -203,7 +203,7 @@ public final class RemoteAccessibilityService extends AccessibilityService {
                         }
                         try { observe(request, result, lease, retries - 1); }
                         catch (JSONException failure) { completeError(result, "observation_failed", "observation_failed"); }
-                    }, 120L);
+                    }, 500L);
                     return;
                 }
                 completeError(result, "observation_changed", "screen_or_window_changed_during_observation");

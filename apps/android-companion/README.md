@@ -44,7 +44,7 @@ installed-device qualification.
 
 ## Capture readiness reporting
 
-Version 0.1.14 reports capture prerequisites and the local input guard in
+Version 0.1.15 reports capture prerequisites and the local input guard in
 authenticated poll headers, preserving the strict legacy v1 body. Old companions
 remain explicitly unknown. Accessibility screenshots (API 30+) need no separate
 screen-sharing consent; API 29 reports whether projection is active or requires
