@@ -71,3 +71,17 @@ it("expires idle daily buckets both in memory and after restart without requirin
   expect((await observer.health()).dailySummary).toEqual([]);
   expect((await new OperationObserver(root).health()).dailySummary).toEqual([]);
 });
+
+
+it("returns today and six preceding UTC dates, excluding the eighth full-day bucket", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  const observer = new OperationObserver();
+  for (let day = 1; day <= 8; day++) {
+    vi.setSystemTime(new Date("2026-01-" + String(day).padStart(2, "0") + "T12:00:00Z"));
+    const id = (await observer.begin("device_info", undefined))!;
+    await observer.finish(id, {}, true, false);
+  }
+  expect((await observer.health()).dailySummary.map(day => day.date)).toEqual([
+    "2026-01-02", "2026-01-03", "2026-01-04", "2026-01-05", "2026-01-06", "2026-01-07", "2026-01-08",
+  ]);
+});

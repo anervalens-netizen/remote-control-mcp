@@ -73,8 +73,8 @@ export class OperationObserver {
     this.history.days = this.recentDays();
   }
   private recentDays() {
-    const cutoff = new Date(Date.now() - 7 * 86400_000).toISOString().slice(0, 10);
-    return this.history.days.filter(value => value.date >= cutoff).sort((a,b) => a.date.localeCompare(b.date)).slice(-8);
+    const cutoff = new Date(Date.now() - 6 * 86400_000).toISOString().slice(0, 10);
+    return this.history.days.filter(value => value.date >= cutoff).sort((a,b) => a.date.localeCompare(b.date)).slice(-7);
   }
   private counters = { admissionRefused: 0, persistenceFailures: 0, compacted: 0, evicted: 0, recoveredTemporaries: 0 };
   private canRetire(record: ObservedOperation) {
@@ -120,7 +120,7 @@ export class OperationObserver {
       lastCapacityEvictionAt: this.history.lastCapacityEvictionAt,
       legacyCoverageUnknown: this.history.legacyGap, expiredEntries: this.history.expired,
       dailySummary: structuredClone(this.recentDays()),
-      summarySemantics: "UTC day of observed start/return; best-effort metadata counters since collectionStartedAt, not workload success or full historical availability.",
+      summarySemantics: "Current UTC date plus six preceding dates of observed start/return; best-effort metadata counters since collectionStartedAt, not workload success or full historical availability.",
       faults: [...this.faults], counters: { ...this.counters }, totalKnown: this.entries.size, retainedBytes: this.totalBytes, untrackedBytes: this.untrackedBytes,
       maxEntries: this.maxEntries, maxBytes: this.maxBytes, saturated: this.entries.size >= this.maxEntries || this.totalBytes >= this.maxBytes,
       persistence: this.directory ? "metadata_journal" : "controller_memory",
