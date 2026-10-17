@@ -3,6 +3,7 @@ export function withJobDiagnostics<T>(value: T, now = Date.now()): T {
   if (Array.isArray(value)) return value.map(item => withJobDiagnostics(item, now)) as T;
   if (!value || typeof value !== "object") return value;
   const row = value as Record<string, unknown>;
+  if (row.job && typeof row.job === "object") return { ...row, job: withJobDiagnostics(row.job, now) } as T;
   if (Array.isArray(row.items)) return { ...row, items: withJobDiagnostics(row.items, now) } as T;
   if (Array.isArray(row.jobs)) return { ...row, jobs: withJobDiagnostics(row.jobs, now) } as T;
   if (typeof row.id !== "string" || !["running", "cancelling"].includes(String(row.state))) return value;

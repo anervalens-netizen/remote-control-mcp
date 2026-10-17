@@ -157,7 +157,7 @@ function parseEntry(raw: Buffer, mtimeMs: number, key: string): Entry {
     if (parsed.version !== 1 && parsed.state === "delivered" && !parsed.attachAcknowledged) throw new Error();
     if (parsed.version === 3) {
       if ((parsed.state === "historical_resolved") !== Boolean(parsed.historicalResolution)) throw new Error();
-      if (parsed.state === "historical_resolved" && parsed.attachAcknowledged) throw new Error();
+      if (parsed.state === "historical_resolved" && parsed.attachAcknowledged && !parsed.historicalResolution?.evidence) throw new Error();
     }
     const entry: Entry = parsed.version === 1 ? {
       ...parsed, version: 2, attachAcknowledged: false, createdAt: Math.max(0, mtimeMs), attempts: 0, nextAttemptAt: 0,
@@ -222,7 +222,8 @@ export function historicallyResolveEntry(directory: string, recoveryDirectory: s
   return withEntryLock(directory, input.key, () => {
     const { raw, stat } = rawEntry(directory, input.key);
     const entry = parseEntry(raw, stat.mtimeMs, input.key);
-    if (!["tracking", "reconciliation_required"].includes(entry.state) || entry.attachAcknowledged || !entry.jobId ||
+    if (!["tracking", "reconciliation_required"].includes(entry.state) ||
+        (entry.attachAcknowledged && entry.state !== "reconciliation_required") || !entry.jobId ||
         entry.hash !== input.expectedHash || entry.jobId !== input.expectedJobId ||
         entry.correlation.runId !== input.expectedRunId) throw new BridgeError("journal");
     const originalRecordSha256 = createHash("sha256").update(raw).digest("hex");
@@ -250,7 +251,7 @@ export function historicallyResolveEntry(directory: string, recoveryDirectory: s
       reason: "retrospective_verification", resolvedAt, evidenceRecordId: input.evidenceRecordId, originalRecordSha256, evidence,
     });
     const resolved: Entry = {
-      ...entry, version: 3, state: "historical_resolved", attachAcknowledged: false,
+      ...entry, version: 3, state: "historical_resolved",
       attempts: 0, nextAttemptAt: 0, lastError: undefined, historicalResolution: proof,
     };
     saveEntryUnlocked(directory, resolved, false, verifyRecovery);

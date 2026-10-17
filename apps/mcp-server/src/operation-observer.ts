@@ -70,8 +70,11 @@ export class OperationObserver {
     let day = this.history.days.find(value => value.date === date);
     if (!day) { day = { date, started: 0, succeeded: 0, failed: 0 }; this.history.days.push(day); }
     day[field]++;
+    this.history.days = this.recentDays();
+  }
+  private recentDays() {
     const cutoff = new Date(Date.now() - 7 * 86400_000).toISOString().slice(0, 10);
-    this.history.days = this.history.days.filter(value => value.date >= cutoff).sort((a,b) => a.date.localeCompare(b.date)).slice(-8);
+    return this.history.days.filter(value => value.date >= cutoff).sort((a,b) => a.date.localeCompare(b.date)).slice(-8);
   }
   private counters = { admissionRefused: 0, persistenceFailures: 0, compacted: 0, evicted: 0, recoveredTemporaries: 0 };
   private canRetire(record: ObservedOperation) {
@@ -116,7 +119,7 @@ export class OperationObserver {
       completeSince: this.faults.size ? null : this.history.lastCapacityEvictionAt ?? this.history.since,
       lastCapacityEvictionAt: this.history.lastCapacityEvictionAt,
       legacyCoverageUnknown: this.history.legacyGap, expiredEntries: this.history.expired,
-      dailySummary: structuredClone(this.history.days),
+      dailySummary: structuredClone(this.recentDays()),
       summarySemantics: "UTC day of observed start/return; best-effort metadata counters since collectionStartedAt, not workload success or full historical availability.",
       faults: [...this.faults], counters: { ...this.counters }, totalKnown: this.entries.size, retainedBytes: this.totalBytes, untrackedBytes: this.untrackedBytes,
       maxEntries: this.maxEntries, maxBytes: this.maxBytes, saturated: this.entries.size >= this.maxEntries || this.totalBytes >= this.maxBytes,
@@ -202,6 +205,9 @@ export class OperationObserver {
         } catch { this.faults.add("temporary_reconciliation_required"); }
       }
     } catch { this.faults.add("journal_unavailable"); }
+    this.history.days = this.recentDays();
+    // Startup reconciliation can evict records before any serialized operation.
+    await this.saveHealth();
   }
   private serialize(action: () => Promise<void>): Promise<void> {
     this.queue = this.queue.then(action).catch(() => { this.faults.add("journal_write_failed"); this.counters.persistenceFailures++; }).then(() => this.saveHealth());
