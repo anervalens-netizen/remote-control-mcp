@@ -42,8 +42,8 @@ function Console() {
   const initialSnapshotScheduled = useRef(false);
   const lastFleet = useRef(launch?.fleet ? Date.now() : 0);
   const [data, setData] = useState<Json | undefined>(launch);
-  const [scope, setScope] = useState<string | undefined>(launch?.diagnosticScopeId);
-  const [all, setAll] = useState(false);
+  const [scope, setScope] = useState<string | undefined>(launch?.diagnosticScopeId ?? launch?.suggestedDiagnosticScopeId);
+  const [all, setAll] = useState(!launch?.diagnosticScopeId);
   const [fleet, setFleet] = useState<Json[]>(launch?.fleet?.devices ?? []);
   const [fleetPage, setFleetPage] = useState<Json>(launch?.fleet ?? {});
   const [fleetCursor, setFleetCursor] = useState<string>();
@@ -63,7 +63,7 @@ function Console() {
   const [manualJob, setManualJob] = useState("");
   const selectedRef = useRef(selection); selectedRef.current = selection;
   useEffect(() => {
-    changed = () => { setReady(connected); setError(bridgeError); if (launch && launch !== lastLaunch.current) { lastLaunch.current = launch; setData(launch); setScope(launch.diagnosticScopeId); setFleet(launch.fleet?.devices ?? []); setFleetPage(launch.fleet ?? {}); setFleetCursor(undefined); lastFleet.current = Date.now(); setSelection(launch.selected); setLastSuccess(launch.observedAt); } };
+    changed = () => { setReady(connected); setError(bridgeError); if (launch && launch !== lastLaunch.current) { lastLaunch.current = launch; setData(launch); setScope(launch.diagnosticScopeId ?? launch.suggestedDiagnosticScopeId); setAll(!launch.diagnosticScopeId); setFleet(launch.fleet?.devices ?? []); setFleetPage(launch.fleet ?? {}); setFleetCursor(undefined); lastFleet.current = Date.now(); setSelection(launch.selected); setLastSuccess(launch.observedAt); } };
     changed();
     return () => { changed = () => {}; };
   }, []);
@@ -115,6 +115,7 @@ function Console() {
       setError("");
     } catch { setError("This host could not attach the diagnostic scope. Copy the scope to associate future operations explicitly."); }
   }
+  useEffect(() => { if (ready && scope) void associate(); }, [ready, scope]);
   const operations = (all ? !data?.diagnosticScopeId : data?.diagnosticScopeId === scope) ? data?.operations?.items ?? [] : [];
   const jobs = data?.jobs?.device === device && data?.jobs?.identity === identity ? data.jobs : undefined;
   const disconnected = error.startsWith("Connection unavailable");
@@ -136,7 +137,7 @@ function Console() {
     <section><div className="section-title"><h2>{all ? "Observed operations" : "Associated operations"}</h2><label><input type="checkbox" checked={all} onChange={e => { setAll(e.target.checked); setCursor(undefined); }}/> All observed scopes</label></div>
       <div className="scope"><code>{scope ?? "Waiting for an opener snapshot"}</code><button disabled={!scope} onClick={associate}>Associate future operations</button></div>
       <p className="muted">Association is explicit. An empty view does not mean the conversation has no active work.</p>
-      {data?.operations?.coverage?.partial && <div className="notice">Partial observation history: {data.operations.coverage.faults.join(", ")}</div>}
+      {data?.operations?.coverage?.partial && <div className="notice">Partial observation history: {data.operations.coverage.historyHasGaps ? "older records were evicted; the full requested period may not be retained. " : ""}{data.operations.coverage.faults?.join(", ")}</div>}
       <div className="table-wrap"><table><thead><tr><th>Operation</th><th>Association</th><th>Handler</th><th>Started</th><th>Observed duration</th><th>Jobs</th></tr></thead><tbody>{operations.map((op: Json) => <tr key={op.traceId}><td><button className="link" onClick={() => setSelection({ traceId: op.traceId })}>{op.tool}</button><code>{op.traceId.slice(0, 8)}</code></td><td>{op.diagnosticScopeId ? <code title={op.diagnosticScopeId}>{op.diagnosticScopeId === scope ? "This scope" : op.diagnosticScopeId.slice(0, 8)}</code> : <span>Unassociated</span>}</td><td><Badge value={op.state}/>{op.executionOutcome && <small>{op.executionOutcome}</small>}</td><td>{when(op.startedAt)}</td><td title="Controller time between first and latest recorded events; not workload runtime">{observedDuration(op)}</td><td>{op.jobCount}</td></tr>)}</tbody></table></div>
       {!operations.length && <p className="empty">No operations in this observed scope.</p>}
       <div className="pagination"><button disabled={!cursor} onClick={() => setCursor(undefined)}>Newest</button><button disabled={!data?.operations?.nextCursor} onClick={() => setCursor(data?.operations?.nextCursor)}>Older observations</button></div>
@@ -144,14 +145,14 @@ function Console() {
     {device && <section><div className="section-title"><h2>Jobs · {device}</h2><select aria-label="Job execution identity" value={identity} onChange={e => { setIdentity(e.target.value); setJobCursor(undefined); }}><option value="root">Root / system</option><option value="owner">Owner</option><option value="interactive">Interactive</option></select></div>
       <form className="scope" onSubmit={e => { e.preventDefault(); if (manualJob.trim()) setSelection({ job: { device, identity, jobId: manualJob.trim() } }); }}><input aria-label="Known job ID" placeholder="Known job ID" value={manualJob} maxLength={256} onChange={e => setManualJob(e.target.value)}/><button disabled={!manualJob.trim()}>Inspect job</button></form>
       {jobs?.partial && <div className="notice">Job history is incomplete or unavailable.</div>}
-      {(jobs?.items ?? []).map((job: Json) => <button className="job-row" key={job.id} onClick={() => setSelection({ job: { device, identity, jobId: job.id } })}><code>{job.id}</code><Badge value={job.state ?? "unknown"}/><span>{when(job.startedAt)}</span></button>)}
+      {(jobs?.items ?? []).map((job: Json) => <button className="job-row" key={job.id} onClick={() => setSelection({ job: { device, identity, jobId: job.id } })}><code>{job.id}</code><Badge value={job.state ?? "unknown"}/>{job.lifecycleDiagnostics?.reviewRecommended && <span>Long running · review activity</span>}<span>{when(job.startedAt)}</span></button>)}
       <div className="pagination"><button disabled={!jobCursor} onClick={() => setJobCursor(undefined)}>Newest jobs</button><button disabled={!jobs?.nextCursor} onClick={() => setJobCursor(jobs?.nextCursor)}>Older jobs</button></div>
     </section>}
     {selection && <aside aria-label="Operation details"><div className="section-title"><h2>Details</h2><button onClick={() => setSelection({ ...selection })}>Refresh detail</button><button onClick={() => setSelection(undefined)}>Close</button></div>
       {detailError && <div className="notice">{detailError}</div>}
       {!detail && !detailError && <p>Reading observation…</p>}
       {detail && <><p className="muted">{detail.coverage}</p>{detail.observation ? <>
-        <Badge value={detail.observation.state ?? "unknown"}/><p>Observed: {when(detail.observedAt)}</p>
+        <Badge value={detail.observation.state ?? "unknown"}/>{detail.observation.lifecycleDiagnostics?.reviewRecommended && <div className="notice">{detail.observation.lifecycleDiagnostics.guidance}</div>}<p>Observed: {when(detail.observedAt)}</p>
         {detail.observation.contextKeep && <p>ContextKeep task <code>{detail.observation.contextKeep.taskId}</code></p>}
         {detail.observation.exitCode !== undefined && <p>Exit code: {pretty(detail.observation.exitCode)}</p>}{detail.observation.code !== undefined && <p>Exit code: {pretty(detail.observation.code)}</p>}
         {detail.observation.events?.map((event: Json, i: number) => <div className="event" key={i}><time>{when(event.at)}</time><span>{event.stage.replaceAll("_", " ")}</span><small>{event.device} {event.identity}</small></div>)}

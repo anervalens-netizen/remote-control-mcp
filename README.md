@@ -281,3 +281,13 @@ before dispatch. Unused and
 completed expired reservations are pruned on the next reservation. Receipt
 files contain output and remain in the private agent state directory. Lost,
 expired or consumed IDs never authorize a new dispatch.
+
+## Diagnostic history and ContextKeep correlation
+
+The console opens global observed history by default and can filter an explicitly associated scope. A ContextKeep task ID becomes the observation scope when a correlated call does not supply a separate scope. Association does not authorize execution. The current UI resource is v2; the v1 resource remains readable by installed clients.
+
+Observation retention defaults to seven days, 20,000 entries and 64 MiB. Configure bounded limits with `RCMCP_OBSERVATION_RETENTION_MS` (one hour to thirty days), `RCMCP_OBSERVATION_MAX_ENTRIES` (100 to 100,000), and `RCMCP_OBSERVATION_MAX_BYTES` (1 to 256 MiB). Unknown/live job references are retained; saturation is reported instead of silently deleting recovery evidence. Coverage reports capacity gaps, retention bounds and seven-day UTC start/return counters. Counters are best-effort metadata since collection began, not workload success or a complete historical SLA. Increasing retention cannot reconstruct evicted records.
+
+For new correlated execution, call read-only `job_input_hash` with the exact command, cwd and environment before ContextKeep reservation, then pass identical inputs to `job_start`. Permanent acknowledgement/identity conflicts and terminal runs missing attach proof enter `reconciliation_required`; they remain visible without automatic polling or replay. Transient failures retain backoff. Historical reconciliation requires the existing fenced helper, exact evidence and a recovery copy; it does not invent an acknowledgement or discard negative results.
+
+Jobs still running after six hours include a review recommendation in status, wait and console views. `RCMCP_JOB_REVIEW_AFTER_MS` accepts one minute to seven days. Duration alone does not establish a hang and never causes automatic cancellation.

@@ -73,13 +73,13 @@ it("offline/reconnect and lost observation ACK converge without start replay, pr
   expect(f.entry()).toMatchObject({ state: "delivered", observed: { exitCode: 7 }, remoteEvidence: { status: "failed", verification: "failed" } });
   expect(f.client.jobStart).toHaveBeenCalledTimes(1); expect(f.call.mock.calls.filter(([name]) => name === "observe_run")).toHaveLength(1);
 });
-it("actual attempts continue above capped backoff and terminal-negative proof debt remains explicit", async () => {
+it("terminal-negative proof debt parks after one attempt and remains explicit", async () => {
   const f = fixture(), b = f.make(); await b.start("fixture", "user", { command: "synthetic", idempotencyKey: "one" }, f.correlation);
   f.run.status = "lost"; f.run.verification = "failed";
   f.call.mockImplementation(async name => { if (name !== "get_task") throw new Error("stale lease"); return { task: {}, runs: [{ ...f.run }], pagination: { offset: 0, limit: 50, totalRuns: 1 } }; });
   for (let i = 0; i < 35; i++) { await b.pump(); await vi.advanceTimersByTimeAsync(300001); }
-  expect(f.entry()).toMatchObject({ state: "tracking", attempts: 30, totalAttempts: 35, lastError: "proof_missing", attachAcknowledged: false, remoteEvidence: { status: "lost", verification: "failed" } });
-  expect(b.diagnostics().entries[0]).toMatchObject({ classification: "terminal_negative", actualAttempts: 35, backoffExponent: 9, negativeFact: { status: "lost", verification: "failed" } });
+  expect(f.entry()).toMatchObject({ state: "reconciliation_required", attempts: 1, totalAttempts: 1, lastError: "proof_missing", attachAcknowledged: false, remoteEvidence: { status: "lost", verification: "failed" } });
+  expect(b.diagnostics().entries[0]).toMatchObject({ classification: "terminal_negative", actualAttempts: 1, backoffExponent: 1, negativeFact: { status: "lost", verification: "failed" } });
 });
 it("orphan lock is visible and fail-closed; only exact fenced evidence archives it and creates a negative no-replay tombstone", async () => {
   const f = fixture(), b = f.make(), recovery = mkdtempSync(path.join(os.tmpdir(), "ck-evidence-")); dirs.push(recovery);
@@ -147,5 +147,13 @@ it("a failed backoff-reset save retains durable failure evidence and retries the
   const writes = b.diagnostics().durableWrites;
   await vi.advanceTimersByTimeAsync(2000); await b.pump();
   expect(b.diagnostics().durableWrites).toBe(writes);
+  expect(f.client.jobStart).toHaveBeenCalledTimes(1);
+});
+
+it("transient transport attempts retain uncapped counts above the capped backoff exponent", async () => {
+  const f = fixture(), b = f.make(); await b.start("fixture", "user", { command: "synthetic", idempotencyKey: "transport" }, f.correlation);
+  f.call.mockRejectedValue(new Error("synthetic temporary outage"));
+  for (let i = 0; i < 35; i++) { await b.pump(); await vi.advanceTimersByTimeAsync(300001); }
+  expect(f.entry()).toMatchObject({ state: "tracking", attempts: 30, totalAttempts: 35, lastError: "transport" });
   expect(f.client.jobStart).toHaveBeenCalledTimes(1);
 });

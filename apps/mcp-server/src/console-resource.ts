@@ -7,7 +7,7 @@ function telemetryDomains(): string[] {
   catch { return []; }
 }
 
-export const CONSOLE_URI = "ui://remote-control/console/v1.html";
+export const CONSOLE_URI = "ui://remote-control/console/v2.html";
 export const consoleIcon = { src: "data:image/svg+xml;base64," + Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="3" fill="#247d74"/><path d="M8 21h8M12 17v4M6 8l3 2-3 2m6 0h5" fill="none" stroke="#fff" stroke-width="2"/></svg>').toString("base64"), mimeType: "image/svg+xml", sizes: ["any"] };
 
 /** Shared resource definitions are registered per SDK/session, unlike tool
@@ -19,4 +19,12 @@ export const consoleResource = {
     text: await readFile(new URL("../../console/dist/console.html", import.meta.url), "utf8"),
     _meta: { ui: { csp: { connectDomains: telemetryDomains(), resourceDomains: [] }, prefersBorder: true },
       "openai/ui": { preferredDisplayMode: "fullscreen", availableDisplayModes: ["fullscreen"] } satisfies OpenAIUiResourceMetadata } }] }),
+};
+
+export const legacyConsoleResource = {
+  ...consoleResource, name: "remote-control-console-legacy", uri: "ui://remote-control/console/v1.html",
+  read: async () => {
+    const result = await consoleResource.read();
+    return { contents: result.contents.map(item => ({ ...item, uri: "ui://remote-control/console/v1.html" })) };
+  },
 };

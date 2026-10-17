@@ -1,4 +1,5 @@
-import { configuredContextKeepBridge } from "./contextkeep-bridge.ts";
+import { withJobDiagnostics } from "./job-diagnostics.ts";
+import { configuredContextKeepBridge, jobInputHash } from "./contextkeep-bridge.ts";
 import { toolErrorDetails, withToolErrors } from "./tool-errors.ts";
 import { jobFollowFields, jobLineageFields } from "../../../packages/protocol/src/project.ts";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -9,10 +10,10 @@ import { elevationSchema, executionInputSchema, executionLabel, identitySchema, 
 
 const text = (value: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(value) }] });
 const routedText = (legacyValue: unknown, context: AgentEndpointContext, structuredValue?: Record<string, unknown>) => ({
-  ...text(legacyValue),
-  structuredContent: structuredValue ?? (Array.isArray(legacyValue)
+  ...text(withJobDiagnostics(legacyValue)),
+  structuredContent: withJobDiagnostics(structuredValue ?? (Array.isArray(legacyValue)
     ? { items: legacyValue, identity: executionLabel(context), context }
-    : { ...(legacyValue as Record<string, unknown>), identity: executionLabel(context), context }),
+    : { ...(legacyValue as Record<string, unknown>), identity: executionLabel(context), context })),
 });
 
 type JobStartInput = { command: string; cwd?: string; env?: Record<string, string>; idempotencyKey?: string };
@@ -41,11 +42,20 @@ export async function startJobsMany(client: AgentClient, devices: string[], inpu
 }
 
 export function registerJobTools(server: McpServer, client: AgentClient): void {
+  server.registerTool("job_input_hash", {
+    description: "Compute the canonical command/cwd/environment SHA256 before ContextKeep reserve_run. Pass the exact same input to job_start; no execution or agent access occurs.",
+    inputSchema: { command: z.string().min(1), cwd: z.string().optional(), env: z.record(z.string(), z.string()).optional() },
+    outputSchema: z.object({ inputHash: z.string().regex(/^[a-f0-9]{64}$/), algorithm: z.literal("rc-job-input-v1"), startsExecution: z.literal(false) }),
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  }, async input => {
+    const result = { inputHash: jobInputHash(input), algorithm: "rc-job-input-v1" as const, startsExecution: false as const };
+    return { ...text(result), structuredContent: result };
+  });
   const bridge=configuredContextKeepBridge(client);
   const startSchema = executionInputSchema({ contextKeep:z.object({projectId:z.string().uuid(),taskId:z.string().uuid(),runId:z.string().uuid(),leaseToken:z.string().uuid()}).optional(), device: z.string().min(1), command: z.string().min(1), idempotencyKey: z.string().min(1).max(200).optional(), cwd: z.string().optional(), env: z.record(z.string(), z.string()).optional() });
   const jobStatusInputSchema = executionInputSchema({ device: z.string().min(1), id: z.string().min(1).optional(), idempotencyKey: z.string().min(1).max(200).optional() })
     .refine(value => Number(Boolean(value.id)) + Number(Boolean(value.idempotencyKey)) === 1, { message: "Supply exactly one of id or idempotencyKey" });
-  server.registerTool("job_start", { description: "Start a durable background job. Optional idempotencyKey prevents repeated starts for identical input; uncertain prior starts are never replayed automatically.", inputSchema: startSchema },
+  server.registerTool("job_start", { description: "Start a durable background job. For ContextKeep correlation, compute inputHash with job_input_hash before reserve_run and keep command/cwd/env identical. Optional idempotencyKey prevents repeated starts for identical input; uncertain prior starts are never replayed automatically.", inputSchema: startSchema },
     async ({ device, context, identity, elevation, contextKeep, ...input }) => withToolErrors(async () => {
       const target = resolveExecutionContext(client, device, { context, identity, elevation }, "system");
       if(contextKeep&&!bridge)throw new Error("ContextKeep bridge is not configured; correlated execution was not started.");

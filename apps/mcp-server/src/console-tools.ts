@@ -1,3 +1,4 @@
+import { withJobDiagnostics } from "./job-diagnostics.ts";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -70,9 +71,9 @@ const context = (identity: "root" | "owner" | "interactive") => identity === "ro
 function jobSummary(input: unknown): Record<string, unknown> {
   if (!input || typeof input !== "object") return { state: "unknown" };
   const value = input as Record<string, unknown>;
-  return Object.fromEntries(["id", "state", "code", "exitCode", "signal", "pid", "startedAt", "finishedAt", "stdoutBytes", "stderrBytes", "trackedProcessCount", "terminationVerified", "terminationVerificationScope"]
+  return withJobDiagnostics(Object.fromEntries(["id", "state", "code", "exitCode", "signal", "pid", "startedAt", "finishedAt", "stdoutBytes", "stderrBytes", "trackedProcessCount", "terminationVerified", "terminationVerificationScope"]
     .filter(key => typeof value[key] === "string" || typeof value[key] === "number" || typeof value[key] === "boolean" || value[key] === null)
-    .map(key => [key, value[key]]));
+    .map(key => [key, value[key]])));
 }
 async function snapshot(client: AgentClient, input: z.infer<z.ZodObject<typeof snapshotInput>>, signal?: AbortSignal) {
   const [operations, fleet, jobs] = await Promise.all([
@@ -83,7 +84,7 @@ async function snapshot(client: AgentClient, input: z.infer<z.ZodObject<typeof s
       const device = client.getDevice(input.jobDevice!).name;
       try {
         const params = new URLSearchParams({ limit: "10" }); if (input.jobCursor) params.set("cursor", input.jobCursor);
-        const history = await client.requestRoute<Record<string, unknown>>(device, `/v1/jobs/history?${params}`, undefined, context(input.jobIdentity), { timeoutMs: 3000, signal });
+        const history = withJobDiagnostics(await client.requestRoute<Record<string, unknown>>(device, `/v1/jobs/history?${params}`, undefined, context(input.jobIdentity), { timeoutMs: 3000, signal }));
         return { device, identity: input.jobIdentity, observedAt: new Date().toISOString(), items: Array.isArray(history.items) ? history.items.map(jobSummary) : [], nextCursor: history.nextCursor ?? null,
           partial: history.partial === true || !Array.isArray(history.items), freshness: history.freshness ?? null };
       } catch { return { device, identity: input.jobIdentity, observedAt: new Date().toISOString(), items: [], partial: true, error: "Job history unavailable; absence is not proof of no jobs." }; }
@@ -97,13 +98,16 @@ export function registerConsoleTools(server: McpServer, client: AgentClient) {
   registerAppTool(server, "open_remote_control_console", {
     title: "Remote Control Console", description: "Open the read-only fleet and operation console. Scope is client-declared, not proof of chat history. Existing operation/job references can be selected without reassignment.",
     inputSchema: { diagnosticScopeId: scope, reference: reference.optional() },
-    outputSchema: snapshotSchema.extend({ selected: reference.optional() }), annotations: readOnly,
+    outputSchema: snapshotSchema.extend({ selected: reference.optional(), suggestedDiagnosticScopeId: scope }), annotations: readOnly,
     _meta: { ui: { resourceUri: CONSOLE_URI, visibility: ["model", "app"] }, "openai/ui": { entrypoints: [{ type: "global" }, { type: "thread" }], preferredModelDisplayMode: "fullscreen" } satisfies OpenAIUiToolMetadata },
   }, async input => {
     let diagnosticScopeId = input.diagnosticScopeId;
     if (!diagnosticScopeId && input.reference?.traceId) diagnosticScopeId = (await operationsFor(client).inspect(input.reference.traceId))?.diagnosticScopeId;
-    diagnosticScopeId ??= randomUUID();
-    return json({ ...await snapshot(client, { diagnosticScopeId }), ...(input.reference ? { selected: input.reference } : {}) });
+    // A global launch shows real history immediately. Keep a separate suggested
+    // scope for future association rather than filtering by a fresh empty UUID.
+    return json({ ...await snapshot(client, diagnosticScopeId ? { diagnosticScopeId } : {}),
+      suggestedDiagnosticScopeId: diagnosticScopeId ?? randomUUID(),
+      ...(input.reference ? { selected: input.reference } : {}) });
   });
   registerAppTool(server, "dashboard_snapshot", {
     description: "Read bounded fleet and associated operation metadata; optional selected-device job history. No raw logs or commands.",
@@ -129,7 +133,7 @@ export function registerConsoleTools(server: McpServer, client: AgentClient) {
     const job = input.reference.job!;
     const device = client.getDevice(job.device).name;
     const selected = { device, identity: job.identity, jobId: job.jobId };
-    const status = await client.jobStatus(device, job.jobId, context(job.identity), { timeoutMs: 3000, signal: extra.signal });
+    const status = withJobDiagnostics(await client.jobStatus(device, job.jobId, context(job.identity), { timeoutMs: 3000, signal: extra.signal }));
     await operationsFor(client).reconcileJob(selected, (status as Record<string, unknown>).state);
     const output = input.output ? await client.requestRoute<Record<string, unknown>>(device, "/v1/jobs/output", { id: job.jobId, ...input.output, length: input.output.length ?? 4096, encoding: "utf8" }, context(job.identity), { timeoutMs: 3000, signal: extra.signal }) : null;
     return json({ observedAt: new Date().toISOString(), reference: { job: selected }, observation: jobSummary(status), output,

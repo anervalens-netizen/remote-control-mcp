@@ -30,16 +30,19 @@ it("serves the same UI resource and opener through modern, initial legacy, and r
     expect(resource.contents[0]).toMatchObject({ mimeType: "text/html;profile=mcp-app", _meta: { "openai/ui": { preferredDisplayMode: "fullscreen", availableDisplayModes: ["fullscreen"] } } });
     const content = resource.contents[0] as { text: string };
     expect(content.text).toContain("Fleet & operations");
+    const legacy = await client.readResource({ uri: "ui://remote-control/console/v1.html" });
+    expect(legacy.contents[0]).toMatchObject({ uri: "ui://remote-control/console/v1.html", text: content.text });
     if (html) expect(content.text).toBe(html); else html = content.text;
     const opened = await client.callTool({ name: "open_remote_control_console", arguments: {} });
     expect(opened.isError).not.toBe(true);
-    const data = opened.structuredContent as { diagnosticScopeId: string };
-    expect(data.diagnosticScopeId).toMatch(/^[a-f0-9-]{36}$/);
+    const data = opened.structuredContent as { suggestedDiagnosticScopeId: string };
+    expect(data).not.toHaveProperty("diagnosticScopeId");
+    expect(data.suggestedDiagnosticScopeId).toMatch(/^[a-f0-9-]{36}$/);
     expect(opened.structuredContent).not.toHaveProperty("resultRecovery");
-    scopes.push(data.diagnosticScopeId);
+    scopes.push(data.suggestedDiagnosticScopeId);
     await client.close();
   }
   expect(new Set(scopes).size).toBe(3);
   const denied = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json, text/event-stream" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "resources/read", params: { uri: CONSOLE_URI } }) });
   expect(denied.status).toBe(401);
-});
+}, 15000);

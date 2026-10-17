@@ -118,7 +118,7 @@ describe("ContextKeep journal and delivery guarantees", () => {
   it("keeps empty tool success pending rather than acknowledging attach", async () => {
     const f = fixture(); const b = f.make(); await b.start("fixture", "user", f.input, f.work);
     f.call.mockImplementation(async name => name === "get_task" ? f.view() : {});
-    await b.pump(); expect(f.journal()).toMatchObject({ state: "tracking", attachAcknowledged: false, lastError: "ack_mismatch" });
+    await b.pump(); expect(f.journal()).toMatchObject({ state: "reconciliation_required", attachAcknowledged: false, lastError: "ack_mismatch" });
     expect(f.client.jobStatus).not.toHaveBeenCalled(); expect(f.call.mock.calls.map(c => c[0])).toEqual(["attach_run_job", "get_task"]);
   });
   it("leaves stale v1 terminal/verified runs pending when the hash proof is absent", async () => {
@@ -126,7 +126,7 @@ describe("ContextKeep journal and delivery guarantees", () => {
     f.update(e => { e.version = 1; for (const key of ["attachAcknowledged", "createdAt", "attempts", "nextAttemptAt"]) delete e[key]; });
     f.run.status = "completed"; f.run.verification = "passed";
     f.call.mockImplementation(async name => { if (name === "attach_run_job") throw new Error("expired synthetic lease"); return f.view(); });
-    await f.make().pump(); expect(f.journal()).toMatchObject({ state: "tracking", lastError: "proof_missing", attachAcknowledged: false });
+    await f.make().pump(); expect(f.journal()).toMatchObject({ state: "reconciliation_required", lastError: "proof_missing", attachAcknowledged: false });
     expect(f.call.mock.calls.map(c => c[0])).toEqual(["attach_run_job", "get_task"]);
   });
   it("persists attach and observation stages and reconciles verified remote completion without a write", async () => {
@@ -147,7 +147,8 @@ describe("ContextKeep journal and delivery guarantees", () => {
       const f = fixture(); const b = f.make(); await b.start("fixture", "user", f.input, f.work);
       f.update(e => { e.attachAcknowledged = true; e.observed = { state: "completed", exitCode: 0, finishedAt: f.status.finishedAt }; });
       Object.assign(f.run, { status: "completed", [field]: field === "status" ? "failed" : "mismatch" });
-      await b.pump(); expect(f.journal().state).toBe("tracking"); expect(f.call.mock.calls.map(c => c[0])).toEqual(["get_task"]);
+      await b.pump(); expect(f.journal().state).toBe(field === "id" ? "tracking" : "reconciliation_required"); expect(f.call.mock.calls.map(c => c[0])).toEqual(["get_task"]);
+      await b.pump(); expect(f.call.mock.calls.map(c => c[0])).toEqual(["get_task"]);
     });
   }
   it("reconciles an acknowledged terminal run when executor metadata is unavailable", async () => {
@@ -171,7 +172,7 @@ describe("ContextKeep journal and delivery guarantees", () => {
   it("requires observation ACK fields, not only a run in a success object", async () => {
     const f = fixture(); const b = f.make(); await b.start("fixture", "user", f.input, f.work);
     f.call.mockImplementation(async name => name === "get_task" ? f.view() : { run: { ...f.run } });
-    await b.pump(); expect(f.journal()).toMatchObject({ state: "tracking", lastError: "ack_mismatch", attachAcknowledged: true });
+    await b.pump(); expect(f.journal()).toMatchObject({ state: "reconciliation_required", lastError: "ack_mismatch", attachAcknowledged: true });
   });
   it("does not let one hung receipt starve a healthy one; shutdown bounds ignored cancellation", async () => {
     const f = fixture(); const b = f.make(); await b.start("fixture", "user", f.input, f.work);
@@ -209,7 +210,7 @@ it.each([false, true])("retains an observation when its acknowledgement has a co
     ? { run: { ...f.run, status: "failed" }, duplicate, applied: false, observationId: randomUUID() }
     : name === "get_task" ? f.view() : { run: { ...f.run } });
   await bridge.start("fixture", "user", f.input, f.work); await bridge.pump();
-  expect(f.journal()).toMatchObject({ state: "tracking", attachAcknowledged: true, lastError: "ack_mismatch" });
+  expect(f.journal()).toMatchObject({ state: "reconciliation_required", attachAcknowledged: true, lastError: "ack_mismatch" });
   expect(f.client.jobStart).toHaveBeenCalledTimes(1);
 });
 

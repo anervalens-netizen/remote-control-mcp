@@ -17,7 +17,7 @@ const sameJob = (a: JobReference, b: JobReference) => a.device === b.device && a
 const eventSchema = z.object({ stage: z.enum(["handler_started", "agent_dispatch", "agent_response", "handler_returned"]), at: z.string().datetime(), device: z.string().max(256).optional(), identity: identity.optional(), successful: z.boolean().optional() }).strict();
 const operationSchema = z.object({
   version: z.literal(1), traceId: z.string().uuid(), controllerInstanceId: z.string().uuid(), tool: z.string().max(128),
-  diagnosticScopeId: z.string().uuid().optional(), requestHash: z.string().length(64).optional(), sessionHash: z.string().length(64).optional(),
+  diagnosticScopeId: z.string().uuid().optional(), associationSource: z.enum(["explicit", "contextkeep_task"]).optional(), requestHash: z.string().length(64).optional(), sessionHash: z.string().length(64).optional(),
   contextKeep: contextKeepReference.optional(),
   startedAt: z.string().datetime(), updatedAt: z.string().datetime(), state: z.enum(["running", "returned", "unknown"]),
   terminalJobs: z.array(jobReferenceSchema).max(64).optional(),
@@ -34,7 +34,18 @@ export type ObservedOperation = z.infer<typeof operationSchema>;
 type CurrentOperation = { observer: OperationObserver; traceId: string };
 export const operationContext = new AsyncLocalStorage<CurrentOperation>();
 export const consoleReadTools = new Set(["open_remote_control_console", "dashboard_snapshot", "operation_inspect"]);
+const historySchema = z.object({
+  since: z.string().datetime(), legacyGap: z.boolean(), lastCapacityEvictionAt: z.string().datetime().nullable(),
+  expired: z.number().int().nonnegative().safe(),
+  days: z.array(z.object({
+    date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    started: z.number().int().nonnegative().safe(),
+    succeeded: z.number().int().nonnegative().safe(),
+    failed: z.number().int().nonnegative().safe(),
+  }).strict()).max(8),
+}).strict();
 const coverageFileSchema = z.object({
+  history: historySchema.optional(),
   faults: z.array(z.enum(["coverage_persistence_failed", "coverage_unavailable", "unrecognized_journal_entry", "journal_capacity_or_invalid_entry", "journal_corrupt", "temporary_reconciliation_required", "journal_unavailable", "journal_write_failed", "journal_capacity", "journal_update_over_budget"])).max(10),
   counters: z.object({ admissionRefused: z.number().int().nonnegative().safe(), persistenceFailures: z.number().int().nonnegative().safe(), compacted: z.number().int().nonnegative().safe(), evicted: z.number().int().nonnegative().safe(), recoveredTemporaries: z.number().int().nonnegative().safe() }).strict(),
 }).strict();
@@ -50,6 +61,18 @@ export class OperationObserver {
   private readonly faults = new Set<string>();
   private totalBytes = 0;
   private untrackedBytes = 0;
+  private nextPruneAt = 0;
+  private history: z.infer<typeof historySchema> = {
+    since: new Date().toISOString(), legacyGap: false, lastCapacityEvictionAt: null, expired: 0, days: [],
+  };
+  private count(field: "started" | "succeeded" | "failed") {
+    const date = new Date().toISOString().slice(0, 10);
+    let day = this.history.days.find(value => value.date === date);
+    if (!day) { day = { date, started: 0, succeeded: 0, failed: 0 }; this.history.days.push(day); }
+    day[field]++;
+    const cutoff = new Date(Date.now() - 7 * 86400_000).toISOString().slice(0, 10);
+    this.history.days = this.history.days.filter(value => value.date >= cutoff).sort((a,b) => a.date.localeCompare(b.date)).slice(-8);
+  }
   private counters = { admissionRefused: 0, persistenceFailures: 0, compacted: 0, evicted: 0, recoveredTemporaries: 0 };
   private canRetire(record: ObservedOperation) {
     const returned = record.state === "returned" || record.events.some(e => e.stage === "handler_returned") &&
@@ -63,10 +86,11 @@ export class OperationObserver {
     this.entries.delete(id); this.totalBytes -= this.sizes.get(id) ?? 0; this.sizes.delete(id);
   }
   private async capacity(bytes: number, exclude?: string) {
+    if (this.entries.size < this.maxEntries && this.totalBytes + bytes <= this.maxBytes) return;
     for (const [id, record] of [...this.entries].sort((a,b) => a[1].updatedAt.localeCompare(b[1].updatedAt))) {
       if (this.entries.size < this.maxEntries && this.totalBytes + bytes <= this.maxBytes) break;
       if (id === exclude || !this.canRetire(record)) continue;
-      await this.remove(id); this.counters.evicted++;
+      await this.remove(id); this.counters.evicted++; this.history.lastCapacityEvictionAt = new Date().toISOString();
     }
   }
   private async saveHealth() {
@@ -74,12 +98,26 @@ export class OperationObserver {
     const file = path.join(this.directory, "coverage.json");
     const temporary = `${file}.tmp`;
     try {
-      await fs.writeFile(temporary, JSON.stringify({ faults: [...this.faults], counters: this.counters }), { mode: 0o600 });
+      await fs.writeFile(temporary, JSON.stringify({ faults: [...this.faults], counters: this.counters, history: this.history }), { mode: 0o600 });
       await fs.rename(temporary, file);
     } catch { this.faults.add("coverage_persistence_failed"); }
   }
   coverage(id?: string) {
-    return { partial: this.faults.size > 0 || id !== undefined && this.entries.get(id)?.persistence === "unconfirmed",
+    let oldestRetainedAt: string | null = null, newestRetainedAt: string | null = null;
+    for (const row of this.entries.values()) {
+      if (!oldestRetainedAt || row.startedAt < oldestRetainedAt) oldestRetainedAt = row.startedAt;
+      if (!newestRetainedAt || row.startedAt > newestRetainedAt) newestRetainedAt = row.startedAt;
+    }
+    const gapAt = this.history.lastCapacityEvictionAt ?? (this.history.legacyGap ? this.history.since : null);
+    const historyHasGaps = Boolean(gapAt && Date.now() - Date.parse(gapAt) < this.retentionMs);
+    return { partial: this.faults.size > 0 || historyHasGaps || id !== undefined && this.entries.get(id)?.persistence === "unconfirmed",
+      historyHasGaps, retentionMs: this.retentionMs, oldestRetainedAt, newestRetainedAt,
+      collectionStartedAt: this.history.since,
+      completeSince: this.faults.size ? null : this.history.lastCapacityEvictionAt ?? this.history.since,
+      lastCapacityEvictionAt: this.history.lastCapacityEvictionAt,
+      legacyCoverageUnknown: this.history.legacyGap, expiredEntries: this.history.expired,
+      dailySummary: structuredClone(this.history.days),
+      summarySemantics: "UTC day of observed start/return; best-effort metadata counters since collectionStartedAt, not workload success or full historical availability.",
       faults: [...this.faults], counters: { ...this.counters }, totalKnown: this.entries.size, retainedBytes: this.totalBytes, untrackedBytes: this.untrackedBytes,
       maxEntries: this.maxEntries, maxBytes: this.maxBytes, saturated: this.entries.size >= this.maxEntries || this.totalBytes >= this.maxBytes,
       persistence: this.directory ? "metadata_journal" : "controller_memory",
@@ -92,7 +130,7 @@ export class OperationObserver {
   readonly maxEntries: number;
   readonly maxBytes: number;
   readonly retentionMs: number;
-  constructor(directory?: string, maxEntries = 5000, maxBytes = 16 * 1024 * 1024, retentionMs = 7 * 86400_000) {
+  constructor(directory?: string, maxEntries = 20_000, maxBytes = 64 * 1024 * 1024, retentionMs = 7 * 86400_000) {
     this.directory = directory; this.maxEntries = maxEntries; this.maxBytes = maxBytes; this.retentionMs = retentionMs;
     this.ready = this.load();
   }
@@ -116,6 +154,7 @@ export class OperationObserver {
         } finally { await handle.close(); }
         for (const fault of saved.faults) this.faults.add(fault);
         this.counters = saved.counters;
+        this.history = saved.history ?? { ...this.history, legacyGap: saved.counters.evicted > 0 || saved.counters.admissionRefused > 0 };
       } catch (error: any) { if (error.code !== "ENOENT") this.faults.add("coverage_unavailable"); }
       const temporaries: string[] = [];
       for (const file of files) {
@@ -169,9 +208,11 @@ export class OperationObserver {
     return this.queue;
   }
   private async prune() {
+    if (Date.now() < this.nextPruneAt) return;
+    this.nextPruneAt = Date.now() + Math.min(60_000, this.retentionMs);
     for (const [id, record] of this.entries) {
       if (!this.canRetire(record) || Date.now() - Date.parse(record.updatedAt) < this.retentionMs) continue;
-      await this.remove(id);
+      await this.remove(id); this.history.expired++;
     }
   }
   private async save(record: ObservedOperation) {
@@ -232,7 +273,8 @@ export class OperationObserver {
       const workflowResult = contextKeepReference.safeParse(workflow);
       const at = new Date().toISOString();
       const record: ObservedOperation = { version: 1, traceId: randomUUID(), controllerInstanceId: this.controllerInstanceId, tool,
-        ...(scopeResult.success ? { diagnosticScopeId: scopeResult.data } : {}),
+        ...(scopeResult.success ? { diagnosticScopeId: scopeResult.data, associationSource: "explicit" as const } :
+          workflowResult.success ? { diagnosticScopeId: workflowResult.data.taskId, associationSource: "contextkeep_task" as const } : {}),
         ...(workflowResult.success ? { contextKeep: workflowResult.data } : {}),
         ...(requestId === undefined ? {} : { requestHash: correlationHash(requestId) }),
         ...(sessionId === undefined ? {} : { sessionHash: correlationHash(sessionId) }),
@@ -240,6 +282,7 @@ export class OperationObserver {
         clientAcceptance: "unknown", effectVerification: "unverified" };
       id = record.traceId;
       if (await this.save(record) === false) { id = undefined; this.counters.admissionRefused++; }
+      else this.count("started");
     });
     return id;
   }
@@ -267,11 +310,15 @@ export class OperationObserver {
       const original = this.entries.get(id); if (!original) return;
       const record = structuredClone(original);
       record.updatedAt = new Date().toISOString(); record.state = "returned";
+      if (original.requestSucceeded === undefined) this.count(requestSucceeded ? "succeeded" : "failed");
       record.requestSucceeded = requestSucceeded; record.callerDisconnected = disconnected;
+      if (!requestSucceeded) record.failure = { kind: result ? "tool_result_error" : "handler_error" };
       if (record.tool === "exec" && result) { record.executionOutcome = executionOutcome(result); if (typeof result.code === "number" || result.code === null) record.exitCode = result.code; }
       if (result) {
         const safeCode = (v: unknown, max: number) => typeof v === "string" && v.length <= max && /^[a-zA-Z0-9_]+$/.test(v) ? v : undefined;
-        const kind = safeCode(result.kind, 64), agentCode = safeCode(result.agentCode, 64);
+        const nestedError = result.error && typeof result.error === "object" ? result.error as Record<string, unknown> : undefined;
+        const kind = safeCode(result.kind, 64) ?? (nestedError ? "domain_error" : "tool_result_error");
+        const agentCode = safeCode(result.agentCode ?? nestedError?.code, 64);
         const status = typeof result.status === "number" && Number.isInteger(result.status) ? result.status : undefined;
         if (!requestSucceeded) record.failure = { ...(kind ? { kind } : {}), ...(agentCode ? { agentCode } : {}), ...(status === undefined ? {} : { status }) };
         const reason = safeCode(result.terminationReason, 128);
@@ -346,7 +393,14 @@ export function operationsFor(client: AgentClient) {
   let observer = observers.get(client);
   if (!observer) {
     const root = process.env.RCMCP_STATE_DIR;
-    observer = new OperationObserver(root ? path.join(root, "operation-observations-v1") : undefined);
+    const setting = (name: string, fallback: number, min: number, max: number) => {
+      const value = Number(process.env[name]);
+      return Number.isSafeInteger(value) && value >= min && value <= max ? value : fallback;
+    };
+    observer = new OperationObserver(root ? path.join(root, "operation-observations-v1") : undefined,
+      setting("RCMCP_OBSERVATION_MAX_ENTRIES", 20_000, 100, 100_000),
+      setting("RCMCP_OBSERVATION_MAX_BYTES", 64 * 1024 * 1024, 1024 * 1024, 256 * 1024 * 1024),
+      setting("RCMCP_OBSERVATION_RETENTION_MS", 7 * 86400_000, 3600_000, 30 * 86400_000));
     observers.set(client, observer);
   }
   return observer;

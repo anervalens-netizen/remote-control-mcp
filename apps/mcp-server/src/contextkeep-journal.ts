@@ -36,13 +36,13 @@ const historicalResolution = z.strictObject({
 });
 const v1 = z.strictObject({ version: z.literal(1), ...baseFields, state: activeState });
 const v2 = z.strictObject({
-  version: z.literal(2), ...baseFields, ...diagnosticFields, state: activeState, attachAcknowledged: z.boolean(),
+  version: z.literal(2), ...baseFields, ...diagnosticFields, state: z.enum([...activeState.options, "reconciliation_required"]), attachAcknowledged: z.boolean(),
   createdAt: z.number().finite().nonnegative(), attempts: z.number().int().nonnegative().max(30),
   nextAttemptAt: z.number().finite().nonnegative(), lastError: z.enum(errorCategories).optional(),
 });
 const v3 = z.strictObject({
   version: z.literal(3), ...baseFields, ...diagnosticFields,
-  state: z.enum(["job_start_uncertain", "tracking", "delivered", "historical_resolved"]),
+  state: z.enum(["job_start_uncertain", "tracking", "delivered", "historical_resolved", "reconciliation_required"]),
   attachAcknowledged: z.boolean(),
   createdAt: z.number().finite().nonnegative(), attempts: z.number().int().nonnegative().max(30),
   nextAttemptAt: z.number().finite().nonnegative(), lastError: z.enum(errorCategories).optional(),
@@ -203,7 +203,11 @@ function saveEntryUnlocked(directory: string, entry: Entry, create = false, befo
 }
 export function saveEntry(directory: string, entry: Entry, create = false): void {
   return measureSync("persistence", () => withEntryLock(directory, entry.key, () => {
-    if (!create && readEntry(directory, entry.key).state === "historical_resolved") throw new BridgeError("journal");
+    if (!create) {
+      const retained = readEntry(directory, entry.key);
+      if (retained.state === "historical_resolved" ||
+          retained.state === "reconciliation_required" && entry.state !== "reconciliation_required") throw new BridgeError("journal");
+    }
     saveEntryUnlocked(directory, entry, create);
   }));
 }
@@ -218,7 +222,7 @@ export function historicallyResolveEntry(directory: string, recoveryDirectory: s
   return withEntryLock(directory, input.key, () => {
     const { raw, stat } = rawEntry(directory, input.key);
     const entry = parseEntry(raw, stat.mtimeMs, input.key);
-    if (entry.state !== "tracking" || entry.attachAcknowledged || !entry.jobId ||
+    if (!["tracking", "reconciliation_required"].includes(entry.state) || entry.attachAcknowledged || !entry.jobId ||
         entry.hash !== input.expectedHash || entry.jobId !== input.expectedJobId ||
         entry.correlation.runId !== input.expectedRunId) throw new BridgeError("journal");
     const originalRecordSha256 = createHash("sha256").update(raw).digest("hex");

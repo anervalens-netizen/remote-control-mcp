@@ -303,7 +303,14 @@ export class ContextKeepBridge {
       if (this.pending.has(key)) this.pending.get(key)!.totalRetries = entry.totalRetries;
       entry.attempts = Math.min(30, entry.attempts + 1);
       entry.lastError = deadline.signal.aborted ? "timeout" : categoryOf(error);
-      entry.nextAttemptAt = Date.now() + retryDelay(entry.attempts);
+      // A terminal remote run without our durable attach proof cannot heal by
+      // polling. Keep the receipt and negative facts, but require explicit
+      // fenced reconciliation instead of retrying forever. Conflicts are
+      // likewise permanent; transport and pagination failures still retry.
+      const permanent = ["remote_conflict", "ack_mismatch"].includes(entry.lastError) ||
+        entry.lastError === "proof_missing" && Boolean(entry.remoteEvidence);
+      if (permanent) entry.state = "reconciliation_required";
+      entry.nextAttemptAt = permanent ? 0 : Date.now() + retryDelay(entry.attempts);
     } finally { clearTimeout(timer); }
     if (succeeded) {
       const pending = this.pending.get(key);
@@ -354,16 +361,19 @@ export class ContextKeepBridge {
       if (error) lastErrorCategories[error] = (lastErrorCategories[error] ?? 0) + 1;
     }
     if (this.journalError) lastErrorCategories.journal = (lastErrorCategories.journal ?? 0) + 1;
-    return { pendingCount: this.pending.size, oldestPendingMs, lastErrorCategories, corruptCount: this.corrupt.size,
+    return { pendingCount: this.pending.size,
+      retryingCount: [...this.pending.values()].filter(e => e.state === "tracking").length,
+      reconciliationRequiredCount: [...this.pending.values()].filter(e => e.state === "reconciliation_required" || e.state === "job_start_uncertain").length,
+      oldestPendingMs, lastErrorCategories, corruptCount: this.corrupt.size,
       snapshotAt: this.snapshotAt, snapshotAgeMs: Date.now() - this.snapshotAt, reconciliationIntervalMs: reconciliationInterval,
       lockedCount: this.lockedCount, orphanLockCount: this.orphanLocks.length, orphanLockKeys: this.orphanLocks.slice(0, 100),
       persistenceMs: this.persistenceMs, writeFailures: this.writeFailures, lastPumpMs: this.lastPumpMs, durableWrites: this.durableWrites, schedulingWritesAvoided: this.schedulingWritesAvoided,
       entries: [...this.pending.entries()].slice(0, 100).map(([key, e]) => ({ key, ageMs: Date.now() - e.createdAt,
-        lastAttemptAt: e.lastAttemptAt ?? null, nextAttemptAt: Math.max(e.nextAttemptAt, e.saveRetry?.at ?? 0),
+        state: e.state, retrying: e.state === "tracking", lastAttemptAt: e.lastAttemptAt ?? null, nextAttemptAt: e.state === "reconciliation_required" ? null : Math.max(e.nextAttemptAt, e.saveRetry?.at ?? 0),
         actualAttempts: e.totalAttempts ?? 0, actualRetries: e.totalRetries ?? 0, retryCounterScope: "retry failures durable since counter introduced; successful unchanged polls process-local; legacy history unknown", backoffExponent: Math.min(e.saveRetry?.attempts ?? e.attempts, 9),
         lastError: e.saveRetry ? "journal" : e.lastError, requiredAction: e.state === "job_start_uncertain" || e.saveRetry || ["proof_missing", "remote_conflict", "ack_mismatch", "journal"].includes(e.lastError ?? "") ? "Inspect retained evidence; explicit fenced reconciliation only; never replay" : "Read-only observation retries at nextAttemptAt",
         negativeFact: e.remoteEvidence && (["failed", "lost"].includes(e.remoteEvidence.status) || e.remoteEvidence.verification === "failed") ? { status: e.remoteEvidence.status, verification: e.remoteEvidence.verification } : undefined,
-        classification: e.remoteEvidence && (["failed", "lost"].includes(e.remoteEvidence.status) || e.remoteEvidence.verification === "failed") ? "terminal_negative" : e.state === "job_start_uncertain" || e.saveRetry ? "reconciliation_required" : e.lastError === "lookup_in_progress" ? "lookup_in_progress" : e.lastError === "proof_missing" ? "proof_missing" : ["remote_conflict", "ack_mismatch"].includes(e.lastError ?? "") ? "proof_conflict" : "transient",
+        classification: e.remoteEvidence && (["failed", "lost"].includes(e.remoteEvidence.status) || e.remoteEvidence.verification === "failed") ? "terminal_negative" : ["job_start_uncertain", "reconciliation_required"].includes(e.state) || e.saveRetry ? "reconciliation_required" : e.lastError === "lookup_in_progress" ? "lookup_in_progress" : e.lastError === "proof_missing" ? "proof_missing" : ["remote_conflict", "ack_mismatch"].includes(e.lastError ?? "") ? "proof_conflict" : "transient",
       })), entriesTruncated: this.pending.size > 100 };
   }
   startWorker() {
