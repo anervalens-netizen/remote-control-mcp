@@ -9,7 +9,7 @@ const closers: (() => Promise<unknown>)[] = [];
 afterEach(async () => { while (closers.length) await closers.pop()!(); });
 const executablePath = process.env.RCMCP_TEST_BROWSER ?? [chromium.executablePath(), "/usr/bin/chromium", "/usr/bin/google-chrome"].find(p => existsSync(p));
 
-it.skipIf(!executablePath).each(["missing", "selection-only", "snapshot-selection"])("loads and refreshes global observations with a %s opener", async mode => {
+it.skipIf(!executablePath).each(["missing", "selection-only", "snapshot-selection", "late-opener"])("loads and refreshes global observations with a %s opener", async mode => {
   const snapshot = { observedAt: new Date().toISOString(),
     fleet: { totalConfigured: 1, devices: [{ device: "synthetic-device", identity: "owner", connectivity: "reachable", readiness: "ready", observedAt: new Date().toISOString() }] },
     operations: { items: [{ tool: "synthetic-operation", traceId: "11111111-1111-4111-8111-111111111111", state: "returned", startedAt: new Date().toISOString(), jobCount: 0 }], coverage: { partial: false } }, jobs: null };
@@ -23,13 +23,20 @@ it.skipIf(!executablePath).each(["missing", "selection-only", "snapshot-selectio
     const bridge=new AppBridge(null,{name:'synthetic-mobile-host',version:'1'},{serverTools:{},updateModelContext:{}},{hostContext:{displayMode:'fullscreen',availableDisplayModes:['fullscreen'],platform:'mobile'}});
     bridge.oncalltool=async params=>{
       window.calls.push(params);
+      if(params.name==='dashboard_snapshot' && ${JSON.stringify(mode)}==='late-opener') {
+        if(window.calls.filter(x=>x.name==='dashboard_snapshot').length===1) {
+          await bridge.sendToolResult({content:[],structuredContent:fixture});
+          await new Promise(resolve=>setTimeout(resolve,50));
+        }
+        return {isError:true,content:[],structuredContent:{error:'Synthetic poll unavailable'}};
+      }
       if(params.name==='dashboard_snapshot')return {content:[],structuredContent:{...fixture,observedAt:new Date().toISOString(),fleet:params.arguments.includeFleet ? fixture.fleet : null}};
       if(params.name==='operation_inspect')return {content:[],structuredContent:{observedAt:new Date().toISOString(),observation:{state:'completed',code:0},coverage:'Synthetic terminal observation'}};
       throw new Error('Unexpected tool '+params.name);
     };
     bridge.oninitialized=async()=>{
-      await bridge.sendToolInput({arguments:{}});
-      if(${JSON.stringify(mode)}!=='missing')await bridge.sendToolResult({content:[],structuredContent:structuredClone(selectedOpener)});
+      await bridge.sendToolInput({arguments:['selection-only','snapshot-selection'].includes(${JSON.stringify(mode)}) ? {reference:selected} : {}});
+      if(!['missing','late-opener'].includes(${JSON.stringify(mode)}))await bridge.sendToolResult({content:[],structuredContent:structuredClone(selectedOpener)});
     };
     window.sendPartial=async()=>{
       await bridge.sendToolInput({arguments:{reference:selected}});
@@ -52,6 +59,13 @@ it.skipIf(!executablePath).each(["missing", "selection-only", "snapshot-selectio
   await panel.getByRole("button", { name: "synthetic-operation", exact: true }).waitFor({ timeout: 6000 });
   expect(await panel.locator(".device-title").innerText()).toContain("synthetic-device");
   expect(await panel.locator(".freshness").innerText()).not.toContain("Not observed");
+  if (mode === "late-opener") {
+    await panel.getByRole("alert").waitFor();
+    expect(await panel.getByRole("alert").innerText()).toContain("Connection unavailable");
+    expect(await panel.locator(".device-title").innerText()).toContain("synthetic-device");
+    expect(errors).toEqual([]);
+    return;
+  }
   if (mode !== "missing") {
     await panel.getByRole("complementary").getByText("Exit code: 0", { exact: true }).waitFor({ timeout: 3000 });
     await panel.getByRole("button", { name: "Close", exact: true }).click();

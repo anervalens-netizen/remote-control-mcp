@@ -10,7 +10,7 @@ const app = new App({ name: "Remote Control Console", version: "1.0.0" });
 const extensions = new OpenAIExtensions(app);
 let launch: Json | undefined;
 let launchVersion = 0;
-let awaitingOpener = false;
+let awaitingOpener: Json | undefined;
 const receivedOpeners = new Set<string>();
 let changed = () => {};
 let connected = false;
@@ -18,12 +18,23 @@ let bridgeError = "";
 const isSnapshot = (value?: Json) => typeof value?.observedAt === "string" && Array.isArray(value?.operations?.items);
 // Complete tool input is the host's explicit activation signal. A repeated
 // result alone is idempotent; it must not reopen details during ambient polls.
-app.ontoolinput = () => { awaitingOpener = true; };
-app.ontoolcancelled = () => { awaitingOpener = false; };
+function matchesOpener(value: Json, args: Json) {
+  if (args.diagnosticScopeId && value.diagnosticScopeId !== args.diagnosticScopeId) return false;
+  const wanted = args.reference, selected = value.selected;
+  if (wanted?.traceId) return selected?.traceId === wanted.traceId;
+  if (wanted?.job) return ["device", "identity", "jobId"].every(key => selected?.job?.[key] === wanted.job[key]);
+  return !selected && value.diagnosticScopeId === args.diagnosticScopeId;
+}
+app.ontoolinput = params => { awaitingOpener = params.arguments ?? {}; };
+app.ontoolcancelled = () => { awaitingOpener = undefined; };
 app.ontoolresult = result => {
-  const explicit = awaitingOpener; awaitingOpener = false;
+  if (result.isError) return;
   const value = result.structuredContent;
   if (!value || !(isSnapshot(value) || value.selected)) return;
+  const explicit = awaitingOpener !== undefined && matchesOpener(value, awaitingOpener);
+  // An unrelated ambient result cannot consume a pending scope/reference intent.
+  if (awaitingOpener !== undefined && !explicit) return;
+  if (explicit) awaitingOpener = undefined;
   const signature = JSON.stringify(value);
   if (!explicit && receivedOpeners.has(signature)) return;
   receivedOpeners.add(signature);
@@ -57,7 +68,8 @@ function Console() {
   const lastLaunch = useRef(launchVersion);
   const viewEpoch = useRef(0);
   const snapshotInFlight = useRef(false);
-  const hasPolled = useRef(false);
+  const hasStartedPoll = useRef(false);
+  const hasCompletedPoll = useRef(false);
   // Only completed Fleet polls advance this local monotonic clock. Server
   // timestamps and replayed openers cannot postpone or accelerate probes.
   const lastFleet = useRef<number | undefined>(undefined);
@@ -94,7 +106,7 @@ function Console() {
           setCursor(undefined); setFleetCursor(undefined); setJobCursor(undefined);
           // Opener data only bootstraps the panel. Later activations select the
           // view and fetch live data, regardless of cached observation dates.
-          if (!hasPolled.current) {
+          if (!hasCompletedPoll.current) {
             setData(launch);
             if (launch.fleet) { setFleet(launch.fleet.devices ?? []); setFleetPage(launch.fleet); }
             setLastSuccess(launch.observedAt);
@@ -116,22 +128,23 @@ function Console() {
       if (stopped) return;
       if (snapshotInFlight.current) { timer = setTimeout(tick, 250); return; }
       if (document.hidden) { timer = setTimeout(tick, 5000); return; }
-      hasPolled.current = true; snapshotInFlight.current = true; setBusy(true);
+      hasStartedPoll.current = true; snapshotInFlight.current = true; setBusy(true);
       try {
         const includeFleet = lastFleet.current === undefined || performance.now() - lastFleet.current >= 30_000;
         const epoch = viewEpoch.current;
         const next = await call("dashboard_snapshot", { ...(all ? {} : { diagnosticScopeId: scope }), includeFleet, fleetCursor, cursor,
           ...(device ? { jobDevice: device, jobIdentity: identity, jobCursor } : {}) });
         if (stopped || epoch !== viewEpoch.current) return;
+        hasCompletedPoll.current = true;
         setData(next); if (next.fleet) { setFleet(next.fleet.devices); setFleetPage(next.fleet); lastFleet.current = performance.now(); }
         setLastSuccess(next.observedAt); setError(""); failures = 0;
       } catch { if (!stopped) { setError("Connection unavailable. Displayed observations may be old; device and job state are unknown until refreshed."); failures++; } }
       finally { snapshotInFlight.current = false; if (!stopped) { setBusy(false); timer = setTimeout(tick, Math.min(60000, 5000 * 2 ** failures)); } }
     };
     // Allow the host's opener and its React state updates to settle together.
-    // Only an actual poll completes bootstrap; scheduling can be cancelled by
+    // Only a started poll completes scheduling bootstrap; a timer can be cancelled by
     // the opener's scope update before the first request is needed.
-    if (!hasPolled.current && revision === 0) {
+    if (!hasStartedPoll.current && revision === 0) {
       timer = setTimeout(() => {
         const initialView = scope === (launch?.diagnosticScopeId ?? launch?.suggestedDiagnosticScopeId)
           && all === !launch?.diagnosticScopeId && !device && !cursor && !fleetCursor && !jobCursor;

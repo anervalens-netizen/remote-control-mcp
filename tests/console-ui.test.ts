@@ -32,7 +32,7 @@ it.skipIf(!executablePath)("isolates panels, pages text output and recovers stal
         else value={observedAt:new Date().toISOString(),reference:params.arguments.reference,observation:{id:'fixture-job',state:'completed',code:7},output:params.arguments.output?{stream:'stdout',data:params.arguments.output.offset===0?'<img src=x onerror="window.__injected=true">':'second page: end',nextOffset:params.arguments.output.offset===0?45:61,eof:params.arguments.output.offset!==0}:null,coverage:'Fresh agent observation'};
         return {content:[],structuredContent:value};
       };
-      bridge.oninitialized=async()=>{await bridge.sendToolInput({arguments:{}});await bridge.sendToolResult({content:[],structuredContent:fixtures[i]});};
+      bridge.oninitialized=async()=>{await bridge.sendToolInput({arguments:{diagnosticScopeId:fixtures[i].diagnosticScopeId}});await bridge.sendToolResult({content:[],structuredContent:fixtures[i]});};
       await bridge.connect(new PostMessageTransport(frame.contentWindow,frame.contentWindow));frame.src='/console';
     }})();`, resolveDir: process.cwd(), loader: "js" }, bundle: true, write: false, format: "iife", minify: true });
   const html = await readFile("apps/console/dist/console.html", "utf8");

@@ -38,7 +38,13 @@ it.skipIf(!executablePath).each([
       window.calls.push(params);
       // Some hosts rebroadcast the stored opener alongside tool-call results.
       // The object is cloned by transport, even though its observations are old.
-      await bridge.sendToolResult({content:[],structuredContent:structuredClone(opener)});
+      if(window.activationRace) {
+        window.activationRace=false;
+        await bridge.sendToolInput({arguments:{diagnosticScopeId:${JSON.stringify(scope)}}});
+        await bridge.sendToolResult({isError:true,content:[]});
+        await bridge.sendToolResult({content:[],structuredContent:structuredClone(opener)});
+        await bridge.sendToolResult({content:[],structuredContent:scopedOpener()});
+      } else await bridge.sendToolResult({content:[],structuredContent:structuredClone(opener)});
       const observedAt=controllerNow();
       const fleet=params.arguments.includeFleet
         ? {...opener.fleet,devices:opener.fleet.devices.map(row=>({...row,observedAt,runtime:{sha:'fresh-'+(++window.fleetReads)}}))}
@@ -46,13 +52,20 @@ it.skipIf(!executablePath).each([
       return {content:[],structuredContent:{observedAt,...(params.arguments.diagnosticScopeId ? {diagnosticScopeId:params.arguments.diagnosticScopeId}:{}),operations:opener.operations,fleet,jobs:null}};
     };
     bridge.oninitialized=async()=>{
-      await bridge.sendToolInput({arguments:{}});
+      await bridge.sendToolInput({arguments:opener.selected ? {reference:opener.selected} : {}});
       await bridge.sendToolResult({content:[],structuredContent:structuredClone(opener)});
     };
     window.replayOpener=()=>bridge.sendToolResult({content:[],structuredContent:structuredClone(opener)});
-    window.activateCachedScope=async()=>{
+    const scopedOpener=()=>{
       const cached={...opener,diagnosticScopeId:${JSON.stringify(scope)},suggestedDiagnosticScopeId:${JSON.stringify(scope)}};
-      delete cached.selected;
+      delete cached.selected;return cached;
+    };
+    window.activateOriginal=async()=>{
+      await bridge.sendToolInput({arguments:opener.selected ? {reference:opener.selected} : {}});
+      await bridge.sendToolResult({content:[],structuredContent:structuredClone(opener)});
+    };
+    window.activateCachedScope=async()=>{
+      const cached=scopedOpener();
       await bridge.sendToolInput({arguments:{diagnosticScopeId:${JSON.stringify(scope)}}});
       await bridge.sendToolResult({content:[],structuredContent:cached});
     };
@@ -95,6 +108,15 @@ it.skipIf(!executablePath).each([
   await page.clock.runFor(1000);
   await expect.poll(() => page.evaluate(() => (window as any).calls.at(-1).arguments.diagnosticScopeId)).toBe(scope);
   await panel.getByText("fresh-3", { exact: true }).waitFor({ timeout: 3000 });
+  expect(await panel.getByRole("complementary").count()).toBe(0);
+  await page.evaluate(() => (window as any).activateOriginal());
+  await page.clock.runFor(1000);
+  await panel.getByText("fresh-4", { exact: true }).waitFor({ timeout: 3000 });
+  await page.evaluate(() => { (window as any).activationRace = true; });
+  await page.clock.fastForward(6000);
+  await page.clock.runFor(1000);
+  await expect.poll(() => page.evaluate(() => (window as any).calls.at(-1).arguments.diagnosticScopeId)).toBe(scope);
+  await panel.getByText("fresh-5", { exact: true }).waitFor({ timeout: 3000 });
   expect(await panel.getByRole("complementary").count()).toBe(0);
   expect(await panel.locator("h2").first().innerText()).toContain("1 shown · 1 configured");
   expect(errors).toEqual([]);
