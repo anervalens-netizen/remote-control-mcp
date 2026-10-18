@@ -9,7 +9,7 @@ const closers: (() => Promise<unknown>)[] = [];
 afterEach(async () => { while (closers.length) await closers.pop()!(); });
 const executablePath = process.env.RCMCP_TEST_BROWSER ?? [chromium.executablePath(), "/usr/bin/chromium", "/usr/bin/google-chrome"].find(p => existsSync(p));
 
-it.skipIf(!executablePath).each(["missing", "selection-only"])("loads and refreshes global observations with a %s opener", async mode => {
+it.skipIf(!executablePath).each(["missing", "selection-only", "snapshot-selection"])("loads and refreshes global observations with a %s opener", async mode => {
   const snapshot = { observedAt: new Date().toISOString(),
     fleet: { totalConfigured: 1, devices: [{ device: "synthetic-device", identity: "owner", connectivity: "reachable", readiness: "ready", observedAt: new Date().toISOString() }] },
     operations: { items: [{ tool: "synthetic-operation", traceId: "11111111-1111-4111-8111-111111111111", state: "returned", startedAt: new Date().toISOString(), jobCount: 0 }], coverage: { partial: false } }, jobs: null };
@@ -17,6 +17,8 @@ it.skipIf(!executablePath).each(["missing", "selection-only"])("loads and refres
     import { AppBridge, PostMessageTransport } from '@modelcontextprotocol/ext-apps/app-bridge';
     window.calls=[];
     const fixture=${JSON.stringify(snapshot)};
+    const selected={job:{device:'synthetic-device',identity:'owner',jobId:'synthetic-job'}};
+    const selectedOpener=${JSON.stringify(mode)}==='snapshot-selection' ? {...fixture,selected} : {selected};
     const frame=document.createElement('iframe');frame.id='panel';document.body.append(frame);
     const bridge=new AppBridge(null,{name:'synthetic-mobile-host',version:'1'},{serverTools:{},updateModelContext:{}},{hostContext:{displayMode:'fullscreen',availableDisplayModes:['fullscreen'],platform:'mobile'}});
     bridge.oncalltool=async params=>{
@@ -27,9 +29,9 @@ it.skipIf(!executablePath).each(["missing", "selection-only"])("loads and refres
     };
     bridge.oninitialized=async()=>{
       await bridge.sendToolInput({arguments:{}});
-      if(${JSON.stringify(mode)}==='selection-only')await bridge.sendToolResult({content:[],structuredContent:{selected:{job:{device:'synthetic-device',identity:'owner',jobId:'synthetic-job'}}}});
+      if(${JSON.stringify(mode)}!=='missing')await bridge.sendToolResult({content:[],structuredContent:structuredClone(selectedOpener)});
     };
-    window.sendPartial=()=>bridge.sendToolResult({content:[],structuredContent:{selected:{job:{device:'synthetic-device',identity:'owner',jobId:'synthetic-job'}}}});
+    window.sendPartial=()=>bridge.sendToolResult({content:[],structuredContent:structuredClone(selectedOpener)});
     bridge.connect(new PostMessageTransport(frame.contentWindow,frame.contentWindow)).then(()=>{frame.src='/console'});
   `, resolveDir: process.cwd(), loader: "js" }, bundle: true, write: false, format: "iife", minify: true });
   const html = await readFile("apps/console/dist/console.html", "utf8");
@@ -47,7 +49,7 @@ it.skipIf(!executablePath).each(["missing", "selection-only"])("loads and refres
   await panel.getByRole("button", { name: "synthetic-operation", exact: true }).waitFor({ timeout: 6000 });
   expect(await panel.locator(".device-title").innerText()).toContain("synthetic-device");
   expect(await panel.locator(".freshness").innerText()).not.toContain("Not observed");
-  if (mode === "selection-only") {
+  if (mode !== "missing") {
     await panel.getByRole("complementary").getByText("Exit code: 0", { exact: true }).waitFor({ timeout: 3000 });
     await panel.getByRole("button", { name: "Close", exact: true }).click();
   }

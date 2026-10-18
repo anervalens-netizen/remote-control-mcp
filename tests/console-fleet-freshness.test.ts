@@ -9,15 +9,21 @@ const closers: (() => Promise<unknown>)[] = [];
 afterEach(async () => { while (closers.length) await closers.pop()!(); });
 const executablePath = process.env.RCMCP_TEST_BROWSER ?? [chromium.executablePath(), "/usr/bin/chromium", "/usr/bin/google-chrome"].find(p => existsSync(p));
 
-it.skipIf(!executablePath).each(["manual", "automatic"])("keeps %s fleet refreshes when a mobile host repeats its cached opener", async mode => {
+it.skipIf(!executablePath).each([
+  { mode: "manual", clockSkewMs: 0 },
+  { mode: "automatic", clockSkewMs: 0 },
+  { mode: "automatic", clockSkewMs: 120_000 },
+  { mode: "automatic", clockSkewMs: -120_000 },
+])("keeps $mode fleet refreshes with cached openers and $clockSkewMs ms controller clock skew", async ({ mode, clockSkewMs }) => {
   const opener = {
-    observedAt: new Date(Date.now() - 14 * 60_000).toISOString(),
-    fleet: { totalConfigured: 1, devices: [{ device: "synthetic-device", identity: "owner", connectivity: "reachable", readiness: "ready", observedAt: new Date(Date.now() - 14 * 60_000).toISOString(), runtime: { sha: "cached-probe" } }] },
+    observedAt: new Date(Date.now() + clockSkewMs - 14 * 60_000).toISOString(),
+    fleet: { totalConfigured: 1, devices: [{ device: "synthetic-device", identity: "owner", connectivity: "reachable", readiness: "ready", observedAt: new Date(Date.now() + clockSkewMs - 14 * 60_000).toISOString(), runtime: { sha: "cached-probe" } }] },
     operations: { items: [], coverage: { partial: false } }, jobs: null,
   };
   const host = await build({ stdin: { contents: `
     import { AppBridge, PostMessageTransport } from '@modelcontextprotocol/ext-apps/app-bridge';
     const opener=${JSON.stringify(opener)};
+    const controllerNow=()=>new Date(Date.now()+${clockSkewMs}).toISOString();
     window.calls=[];window.fleetReads=0;
     const frame=document.createElement('iframe');frame.id='panel';document.body.append(frame);
     const bridge=new AppBridge(null,{name:'synthetic-mobile-host',version:'1'},{serverTools:{},updateModelContext:{}},{hostContext:{displayMode:'fullscreen',availableDisplayModes:['fullscreen'],platform:'mobile'}});
@@ -27,7 +33,7 @@ it.skipIf(!executablePath).each(["manual", "automatic"])("keeps %s fleet refresh
       // Some hosts rebroadcast the stored opener alongside tool-call results.
       // The object is cloned by transport, even though its observations are old.
       await bridge.sendToolResult({content:[],structuredContent:structuredClone(opener)});
-      const observedAt=new Date().toISOString();
+      const observedAt=controllerNow();
       const fleet=params.arguments.includeFleet
         ? {...opener.fleet,devices:opener.fleet.devices.map(row=>({...row,observedAt,runtime:{sha:'fresh-'+(++window.fleetReads)}}))}
         : null;
@@ -39,7 +45,7 @@ it.skipIf(!executablePath).each(["manual", "automatic"])("keeps %s fleet refresh
     };
     window.replayOpener=()=>bridge.sendToolResult({content:[],structuredContent:structuredClone(opener)});
     window.newOpener=()=>{
-      const observedAt=new Date().toISOString();
+      const observedAt=controllerNow();
       return bridge.sendToolResult({content:[],structuredContent:{...opener,observedAt,fleet:{...opener.fleet,devices:opener.fleet.devices.map(row=>({...row,observedAt,runtime:{sha:'new-opener'}}))}}});
     };
     bridge.connect(new PostMessageTransport(frame.contentWindow,frame.contentWindow)).then(()=>{frame.src='/console'});
@@ -68,7 +74,7 @@ it.skipIf(!executablePath).each(["manual", "automatic"])("keeps %s fleet refresh
   expect(await panel.locator(".device-meta code").innerText()).toBe("fresh-1");
   expect(await page.evaluate(() => (window as any).calls.at(-1).arguments.includeFleet)).toBe(false);
   await page.clock.fastForward(31_000);
-  await panel.getByText("fresh-2", { exact: true }).waitFor();
+  await panel.getByText("fresh-2", { exact: true }).waitFor({ timeout: 3000 });
   await page.evaluate(() => (window as any).replayOpener());
   expect(await panel.locator(".device-meta code").innerText()).toBe("fresh-2");
   await page.evaluate(() => (window as any).newOpener());

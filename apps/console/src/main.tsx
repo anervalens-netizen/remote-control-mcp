@@ -51,7 +51,9 @@ function Console() {
   const newestSnapshot = useRef(isSnapshot(launch) ? snapshotTime(launch) : 0);
   const snapshotInFlight = useRef(false);
   const hasPolled = useRef(false);
-  const lastFleet = useRef(launch?.fleet ? snapshotTime(launch) : 0);
+  // Only completed Fleet polls advance this local monotonic clock. Server
+  // timestamps and replayed openers cannot postpone or accelerate probes.
+  const lastFleet = useRef<number | undefined>(undefined);
   const [data, setData] = useState<Json | undefined>(isSnapshot(launch) ? launch : undefined);
   const [scope, setScope] = useState<string | undefined>(launch?.diagnosticScopeId ?? launch?.suggestedDiagnosticScopeId);
   const [all, setAll] = useState(!launch?.diagnosticScopeId);
@@ -77,23 +79,23 @@ function Console() {
     changed = () => {
       setReady(connected); setError(bridgeError);
       const signature = JSON.stringify(launch);
-      if (launch && (!isSnapshot(launch) || signature !== lastLaunch.current)) {
+      if (isSnapshot(launch) && signature !== lastLaunch.current) {
         lastLaunch.current = signature;
-        if (isSnapshot(launch)) {
-          // A host may replay its old opener around every partial poll response.
-          // Never replace newer observations or reset their refresh budget.
-          if (snapshotTime(launch) < newestSnapshot.current) return;
+        // Host openers may be replayed around partial poll responses.
+        if (snapshotTime(launch) >= newestSnapshot.current) {
           newestSnapshot.current = snapshotTime(launch);
-          setData(launch); setScope(launch.diagnosticScopeId ?? launch.suggestedDiagnosticScopeId);
-          setAll(!launch.diagnosticScopeId);
-          if (launch.fleet) {
-            setFleet(launch.fleet.devices ?? []); setFleetPage(launch.fleet);
-            setFleetCursor(undefined); lastFleet.current = snapshotTime(launch);
+          setData(launch); setScope(launch!.diagnosticScopeId ?? launch!.suggestedDiagnosticScopeId);
+          setAll(!launch!.diagnosticScopeId);
+          if (launch!.fleet) {
+            setFleet(launch!.fleet.devices ?? []); setFleetPage(launch!.fleet);
+            setFleetCursor(undefined);
           }
-          setLastSuccess(launch.observedAt);
+          setLastSuccess(launch!.observedAt);
+          if (!launch!.selected) setSelection(undefined);
         }
-        setSelection(launch.selected);
       }
+      // Selection is a separate opener intent, even when its snapshot is cached.
+      if (launch?.selected) setSelection(launch.selected);
     };
     changed();
     return () => { changed = () => {}; };
@@ -108,12 +110,12 @@ function Console() {
       if (document.hidden) { timer = setTimeout(tick, 5000); return; }
       hasPolled.current = true; snapshotInFlight.current = true; setBusy(true);
       try {
-        const includeFleet = Date.now() - lastFleet.current >= 30_000;
+        const includeFleet = lastFleet.current === undefined || performance.now() - lastFleet.current >= 30_000;
         const next = await call("dashboard_snapshot", { ...(all ? {} : { diagnosticScopeId: scope }), includeFleet, fleetCursor, cursor,
           ...(device ? { jobDevice: device, jobIdentity: identity, jobCursor } : {}) });
         if (stopped || snapshotTime(next) < newestSnapshot.current) return;
         newestSnapshot.current = snapshotTime(next);
-        setData(next); if (next.fleet) { setFleet(next.fleet.devices); setFleetPage(next.fleet); lastFleet.current = snapshotTime(next); }
+        setData(next); if (next.fleet) { setFleet(next.fleet.devices); setFleetPage(next.fleet); lastFleet.current = performance.now(); }
         setLastSuccess(next.observedAt); setError(""); failures = 0;
       } catch { if (!stopped) { setError("Connection unavailable. Displayed observations may be old; device and job state are unknown until refreshed."); failures++; } }
       finally { snapshotInFlight.current = false; if (!stopped) { setBusy(false); timer = setTimeout(tick, Math.min(60000, 5000 * 2 ** failures)); } }
@@ -160,7 +162,7 @@ function Console() {
   const jobs = data?.jobs?.device === device && data?.jobs?.identity === identity ? data.jobs : undefined;
   const disconnected = error.startsWith("Connection unavailable");
   return <main>
-    <header><div><div className="eyebrow">REMOTE CONTROL</div><h1>Fleet & operations</h1><p>Read-only observations across your devices</p></div><button disabled={busy || !ready} onClick={() => { lastFleet.current = 0; refresh(n => n + 1); }}>{busy ? "Refreshing…" : "Refresh"}</button></header>
+    <header><div><div className="eyebrow">REMOTE CONTROL</div><h1>Fleet & operations</h1><p>Read-only observations across your devices</p></div><button disabled={busy || !ready} onClick={() => { lastFleet.current = undefined; refresh(n => n + 1); }}>{busy ? "Refreshing…" : "Refresh"}</button></header>
     {!connected && <div className="notice">{bridgeError || "Connecting to the app host…"}</div>}
     {error && <div className="notice" role="alert">{error}</div>}
     <div className="freshness">Last successful refresh: {when(lastSuccess)} · Device probes carry their own observation times.</div>
@@ -173,7 +175,7 @@ function Console() {
       </div>
       {row.reason && <p className="muted">{row.reason}</p>}
     </button>)}</div>{fleet.length === 0 && <p>No fleet observations available.</p>}
-      <div className="pagination"><button disabled={!fleetCursor || busy} onClick={() => { lastFleet.current = 0; setFleetCursor(undefined); }}>First devices</button><button disabled={!fleetPage.nextCursor || busy} onClick={() => { lastFleet.current = 0; setFleetCursor(fleetPage.nextCursor); }}>Next devices</button></div></section>
+      <div className="pagination"><button disabled={!fleetCursor || busy} onClick={() => { lastFleet.current = undefined; setFleetCursor(undefined); }}>First devices</button><button disabled={!fleetPage.nextCursor || busy} onClick={() => { lastFleet.current = undefined; setFleetCursor(fleetPage.nextCursor); }}>Next devices</button></div></section>
     <section><div className="section-title"><h2>{all ? "Observed operations" : "Associated operations"}</h2><label><input type="checkbox" checked={all} disabled={!scope} onChange={e => { setAll(e.target.checked); setCursor(undefined); }}/> All observed scopes</label></div>
       <div className="scope"><code>{scope ?? "All observed scopes"}</code><button disabled={!scope} onClick={associate}>Associate future operations</button></div>
       <p className="muted">Association is explicit. An empty view does not mean the conversation has no active work.</p>
