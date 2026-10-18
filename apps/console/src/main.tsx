@@ -9,17 +9,26 @@ type Json = Record<string, any>;
 const app = new App({ name: "Remote Control Console", version: "1.0.0" });
 const extensions = new OpenAIExtensions(app);
 let launch: Json | undefined;
+let launchVersion = 0;
+let awaitingOpener = false;
+const receivedOpeners = new Set<string>();
 let changed = () => {};
 let connected = false;
 let bridgeError = "";
 const isSnapshot = (value?: Json) => typeof value?.observedAt === "string" && Array.isArray(value?.operations?.items);
-const snapshotTime = (value?: Json) => {
-  const time = Date.parse(value?.observedAt ?? "");
-  return Number.isFinite(time) ? time : 0;
-};
+// Complete tool input is the host's explicit activation signal. A repeated
+// result alone is idempotent; it must not reopen details during ambient polls.
+app.ontoolinput = () => { awaitingOpener = true; };
+app.ontoolcancelled = () => { awaitingOpener = false; };
 app.ontoolresult = result => {
+  const explicit = awaitingOpener; awaitingOpener = false;
   const value = result.structuredContent;
-  if (value && (isSnapshot(value) || value.selected)) { launch = value; changed(); }
+  if (!value || !(isSnapshot(value) || value.selected)) return;
+  const signature = JSON.stringify(value);
+  if (!explicit && receivedOpeners.has(signature)) return;
+  receivedOpeners.add(signature);
+  if (receivedOpeners.size > 32) receivedOpeners.delete(receivedOpeners.values().next().value!);
+  launch = value; launchVersion++; changed();
 };
 function theme() {
   const context = app.getHostContext();
@@ -45,10 +54,8 @@ function Badge({ value }: { value: string }) {
 
 function Console() {
   const [ready, setReady] = useState(connected);
-  // Host notifications cross a serialization boundary. Object identity cannot
-  // distinguish a new opener from a rebroadcast of the same stored result.
-  const lastLaunch = useRef(JSON.stringify(launch));
-  const newestSnapshot = useRef(isSnapshot(launch) ? snapshotTime(launch) : 0);
+  const lastLaunch = useRef(launchVersion);
+  const viewEpoch = useRef(0);
   const snapshotInFlight = useRef(false);
   const hasPolled = useRef(false);
   // Only completed Fleet polls advance this local monotonic clock. Server
@@ -78,24 +85,25 @@ function Console() {
   useEffect(() => {
     changed = () => {
       setReady(connected); setError(bridgeError);
-      const signature = JSON.stringify(launch);
-      if (isSnapshot(launch) && signature !== lastLaunch.current) {
-        lastLaunch.current = signature;
-        // Host openers may be replayed around partial poll responses.
-        if (snapshotTime(launch) >= newestSnapshot.current) {
-          newestSnapshot.current = snapshotTime(launch);
-          setData(launch); setScope(launch!.diagnosticScopeId ?? launch!.suggestedDiagnosticScopeId);
-          setAll(!launch!.diagnosticScopeId);
-          if (launch!.fleet) {
-            setFleet(launch!.fleet.devices ?? []); setFleetPage(launch!.fleet);
-            setFleetCursor(undefined);
+      if (launch && launchVersion !== lastLaunch.current) {
+        lastLaunch.current = launchVersion;
+        if (isSnapshot(launch)) {
+          viewEpoch.current++;
+          setScope(launch.diagnosticScopeId ?? launch.suggestedDiagnosticScopeId);
+          setAll(!launch.diagnosticScopeId);
+          setCursor(undefined); setFleetCursor(undefined); setJobCursor(undefined);
+          // Opener data only bootstraps the panel. Later activations select the
+          // view and fetch live data, regardless of cached observation dates.
+          if (!hasPolled.current) {
+            setData(launch);
+            if (launch.fleet) { setFleet(launch.fleet.devices ?? []); setFleetPage(launch.fleet); }
+            setLastSuccess(launch.observedAt);
+          } else {
+            lastFleet.current = undefined; refresh(n => n + 1);
           }
-          setLastSuccess(launch!.observedAt);
-          if (!launch!.selected) setSelection(undefined);
         }
+        setSelection(launch.selected);
       }
-      // Selection is a separate opener intent, even when its snapshot is cached.
-      if (launch?.selected) setSelection(launch.selected);
     };
     changed();
     return () => { changed = () => {}; };
@@ -111,10 +119,10 @@ function Console() {
       hasPolled.current = true; snapshotInFlight.current = true; setBusy(true);
       try {
         const includeFleet = lastFleet.current === undefined || performance.now() - lastFleet.current >= 30_000;
+        const epoch = viewEpoch.current;
         const next = await call("dashboard_snapshot", { ...(all ? {} : { diagnosticScopeId: scope }), includeFleet, fleetCursor, cursor,
           ...(device ? { jobDevice: device, jobIdentity: identity, jobCursor } : {}) });
-        if (stopped || snapshotTime(next) < newestSnapshot.current) return;
-        newestSnapshot.current = snapshotTime(next);
+        if (stopped || epoch !== viewEpoch.current) return;
         setData(next); if (next.fleet) { setFleet(next.fleet.devices); setFleetPage(next.fleet); lastFleet.current = performance.now(); }
         setLastSuccess(next.observedAt); setError(""); failures = 0;
       } catch { if (!stopped) { setError("Connection unavailable. Displayed observations may be old; device and job state are unknown until refreshed."); failures++; } }

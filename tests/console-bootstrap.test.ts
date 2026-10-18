@@ -31,7 +31,10 @@ it.skipIf(!executablePath).each(["missing", "selection-only", "snapshot-selectio
       await bridge.sendToolInput({arguments:{}});
       if(${JSON.stringify(mode)}!=='missing')await bridge.sendToolResult({content:[],structuredContent:structuredClone(selectedOpener)});
     };
-    window.sendPartial=()=>bridge.sendToolResult({content:[],structuredContent:structuredClone(selectedOpener)});
+    window.sendPartial=async()=>{
+      await bridge.sendToolInput({arguments:{reference:selected}});
+      await bridge.sendToolResult({content:[],structuredContent:structuredClone(selectedOpener)});
+    };
     bridge.connect(new PostMessageTransport(frame.contentWindow,frame.contentWindow)).then(()=>{frame.src='/console'});
   `, resolveDir: process.cwd(), loader: "js" }, bundle: true, write: false, format: "iife", minify: true });
   const html = await readFile("apps/console/dist/console.html", "utf8");
