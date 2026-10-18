@@ -48,6 +48,12 @@ it("real durable output keeps independent byte cursors for 50 followers and disk
     }
     expect(jobObservers.snapshot().polls - before).toBeLessThan(20);
     expect(jobObservers.snapshot()).toMatchObject({ jobs: 0, subscribers: 0 });
+    // A bounded follower may return all current bytes before the durable job is terminal.
+    // Establish completion separately before testing a new zero-wait disk reader.
+    const finished = await jobFollow({ id: job.id, maxBytes: 20, waitMs: 10_000, until: "complete" });
+    expect(finished).toMatchObject({ terminal: true, state: "completed", exitCode: 0, outputComplete: true });
+    expect(finished.stdout.data).toBe("abcdefghij"); expect(finished.stderr.data).toBe("0123456789");
+    expect(jobObservers.snapshot()).toMatchObject({ jobs: 0, subscribers: 0 });
     const later = await jobFollow({ id: job.id, cursor: { stdout: 4, stderr: 4 }, maxBytes: 20, waitMs: 0 });
     expect(later.stdout.data).toBe("efghij"); expect(later.outputComplete).toBe(true);
   } finally { await jobRemove(job.id, true); }
