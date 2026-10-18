@@ -164,7 +164,7 @@ for client-declared association, independently of durable effect keys. This
 metadata is removed before agent dispatch. Observations preserve bounded metadata
 only under `RCMCP_STATE_DIR/operation-observations-v1`; without a configured state
 root they are memory-only. Keep that directory private and owned by one controller.
-Limits are 5,000 entries, 16 MiB and seven days for terminal observations. Active
+Default limits are 20,000 entries, 64 MiB and seven days for terminal observations. Active
 and uncertain observations are retained at capacity; coverage becomes partial
 instead of blocking workload execution. After restart an unfinished handler is
 unknown. A returned handler is not proof of client consumption, job completion

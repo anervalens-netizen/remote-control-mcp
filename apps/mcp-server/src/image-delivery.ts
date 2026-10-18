@@ -1,10 +1,11 @@
 import sharp, { type OutputInfo } from "sharp";
+import { jsonBytes as bytes } from "./json-budget.ts";
+import { imageTransforms, type ImageTransformBudget } from "./image-transform-budget.ts";
 
 type Image = { type: "image"; data: string; mimeType: string };
-const bytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value));
 /** Original retention is reported by result recovery. Only delivery is
  * transformed; snapshot coordinates always remain in the original pixel space. */
-export async function deliverImages(content: unknown[], structured: Record<string, unknown>, limit: number, signal?: AbortSignal) {
+export async function deliverImages(content: unknown[], structured: Record<string, unknown>, limit: number, signal?: AbortSignal, budget: ImageTransformBudget = imageTransforms) {
   const deadline = performance.now() + 5000;
   const originals = content.filter((item): item is Image => !!item && typeof item === "object" && (item as Image).type === "image");
   const images: Image[] = [];
@@ -15,18 +16,24 @@ export async function deliverImages(content: unknown[], structured: Record<strin
   for (const [index, image] of originals.slice(0, 4).entries()) {
     const row: Record<string, unknown> = { index, captured: true, delivered: false, transformed: false, originalMimeType: image.mimeType };
     delivery.push(row);
+    let release: (() => void) | undefined;
+    let nativePending = false, exited = false;
+    const settled = () => { nativePending = false; if (exited) release?.(); };
     try {
       if (signal?.aborted || performance.now() >= deadline) throw new Error("image_delivery_deadline");
-      if (index >= 4 || image.data.length > 32 * 1024 * 1024) throw new Error("image_delivery_input_limit");
-      const input = Buffer.from(image.data, "base64");
-      row.originalBytes = input.length;
+      if (image.data.length > 32 * 1024 * 1024) throw new Error("image_delivery_input_limit");
+      row.originalBytes = Buffer.byteLength(image.data, "base64");
       const remaining = Math.max(0, limit - bytes(output()) - 2048);
       if (bytes(image) <= remaining) {
         deliveredIndices.set(index, images.length);
         images.push(image);
-        Object.assign(row, { delivered: true, deliveredBytes: input.length, mimeType: image.mimeType });
+        Object.assign(row, { delivered: true, deliveredBytes: row.originalBytes, mimeType: image.mimeType });
         continue;
       }
+      release = budget.acquire();
+      if (!release) { row.reason = "image_delivery_busy"; continue; }
+      const input = Buffer.from(image.data, "base64");
+      row.originalBytes = input.length;
       // Fixed attempts bound work. Decode limits and timeout also apply to
       // malformed/high-compression input. Never truncate encoded image bytes.
       let selected: Image | undefined;
@@ -36,6 +43,11 @@ export async function deliverImages(content: unknown[], structured: Record<strin
         const pipeline = sharp(input, { limitInputPixels: 32 * 1024 * 1024, failOn: "warning" })
           .resize({ width: size, height: size, fit: "inside", withoutEnlargement: true })
           .jpeg({ quality: 75, chromaSubsampling: "4:4:4" }).timeout({ seconds: Math.max(1, Math.ceil(remainingMs / 1000)) });
+        const native = pipeline.toBuffer({ resolveWithObject: true });
+        nativePending = true;
+        // destroy() requests cancellation; only the native promise proves that
+        // work settled. Keep its slot pinned after a caller timeout/abort.
+        void native.then(settled, settled);
         const encoded = await new Promise<{ data: Buffer; info: OutputInfo }>((resolve, reject) => {
           const stop = () => {
             clearTimeout(timer);
@@ -45,7 +57,7 @@ export async function deliverImages(content: unknown[], structured: Record<strin
           };
           const timer = setTimeout(stop, remainingMs);
           signal?.addEventListener("abort", stop, { once: true });
-          pipeline.toBuffer({ resolveWithObject: true }).then(resolve, reject).finally(() => {
+          void native.then(resolve, reject).finally(() => {
             clearTimeout(timer);
             signal?.removeEventListener("abort", stop);
           });
@@ -63,6 +75,7 @@ export async function deliverImages(content: unknown[], structured: Record<strin
       if (selected) { deliveredIndices.set(index, images.length); images.push(selected); }
       else row.reason = "image_delivery_budget";
     } catch { row.reason = "image_delivery_failed"; }
+    finally { exited = true; if (!nativePending) release?.(); }
   }
   // available describes this delivered response, captured describes the original.
   // Do not mutate the retained receipt.

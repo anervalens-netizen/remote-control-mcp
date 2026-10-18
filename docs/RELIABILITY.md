@@ -558,7 +558,7 @@ authoritative terminal job response; this does not change the original request
 success or claim client acceptance. `returned` and an empty job list alone are
 not proof of completion for asynchronous starts.
 
-The 16 MiB journal budget governs admission. Updates to already admitted records
+The configured journal byte budget (64 MiB by default) governs admission. Updates to already admitted records
 may exceed it to preserve job locators and completion; event detail is compacted
 first. Each record is bounded at 512 KiB and the entry count remains bounded.
 Coverage exposes actual bytes, saturation, admission refusals, compaction,
@@ -637,3 +637,28 @@ are returned requests, not evidence of running effects. Failed mutations retain
 conservative uncertainty. Android readiness is baseline readiness; per-capability
 status explicitly marks capture and local-consent checks unknown when the poll
 cannot establish them. Consent enforcement and snapshot freshness remain intact.
+
+### Temporary JSON preparation and native image concurrency
+
+Recovery receipts are measured before allocating JSON strings and buffers.
+The preflight counts JSON escaping and UTF-8 without serializing the complete
+object. It admits at most the recovery byte budget minus reserved tombstone
+space (slightly under 64 MiB by default). Measurements also stop at 256 MiB,
+one million visited values/fields or 128 levels. Oversized/deep receipts retain
+an explicit `receiptUnavailable` tombstone and consumed no-replay ID. Accessors
+and custom serializers are not JSON-shaped receipt data; malformed inspection
+is separately bounded and never executes them. Small supported receipts keep
+their existing wire representation. This bounds preparation copies, not the
+handler's already allocated input objects or total process RSS.
+
+Native image transformations share process-wide admission across sessions.
+`RCMCP_IMAGE_TRANSFORM_CONCURRENCY` accepts 1–4, default 2. Admission happens
+before base64 decoding/native work; there is no pending queue. At capacity,
+`imageDelivery` reports `image_delivery_busy` with `captured:true` and
+`delivered:false`; read the retained original when `payloadAvailable` permits,
+without repeating the capture. Small images that fit pass through without a
+transform slot. The existing input/pixel/deadline limits still apply.
+Cancellation requests decoder shutdown but holds the slot until its promise
+settles, even if the caller has already received a bounded result. Authenticated
+health exposes active/limit/high-water/refusal counters. These limits bound
+native work count; decoder memory and handler objects are not an RSS guarantee.

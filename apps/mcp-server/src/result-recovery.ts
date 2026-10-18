@@ -1,3 +1,4 @@
+import { jsonBytes, JsonBudgetError } from "./json-budget.ts";
 import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -32,6 +33,7 @@ export class ResultRecoveryStore {
   readonly controlEntries: number;
   readonly maxBytes: number;
   constructor(maxEntries = 64, controlEntries = 8, maxBytes = 64 * 1024 * 1024) { this.maxEntries = maxEntries; this.controlEntries = controlEntries; if (!Number.isSafeInteger(maxBytes) || maxBytes < (maxEntries + controlEntries) * 512) throw new Error("Invalid recovery byte budget"); this.maxBytes = maxBytes; }
+  private serializationRefused = 0;
   private entries = new Map<string, { expires: number; state: "reserved" | "running" | "complete"; data?: Buffer; invocation?: Invocation; control: boolean; payloadUnavailable?: boolean }>();
   private sweep() {
     for (const [id, entry] of this.entries) if (entry.state !== "running" && entry.expires <= Date.now()) this.entries.delete(id);
@@ -74,13 +76,30 @@ export class ResultRecoveryStore {
   }
   finish(id: string, value: unknown) {
     const entry = this.entries.get(id)!;
-    // JSON is the wire contract. Keep an immutable snapshot before compaction or
-    // validation, including malformed JSON-shaped receipts for inspection.
-    try { entry.data = Buffer.from(JSON.stringify(value)); }
-    catch {
-      // A malformed in-process callback can return non-JSON values. Retain an
-      // explicitly labelled inspection representation; never claim exact JSON.
-      entry.data = Buffer.from(JSON.stringify({ serializationFailed: true, inspection: inspectNonJson(value) }));
+    // Preflight bounds the string/Buffer copies before JSON.stringify allocates.
+    // Serialization is synchronous: only one such copy is prepared at a time.
+    const serializationLimit = this.maxBytes - (this.maxEntries + this.controlEntries) * 512;
+    const unavailable = (reason: string, limit?: string) => {
+      this.serializationRefused++;
+      entry.payloadUnavailable = true;
+      return Buffer.from(JSON.stringify({ receiptUnavailable: true, reason, noReplay: true,
+        ...(limit ? { serializationLimit: limit, preflight: true } : {}),
+        notice: "Inspect durable job/output receipts; missing payload never authorizes replay." }));
+    };
+    try {
+      jsonBytes(value, serializationLimit);
+      entry.data = Buffer.from(JSON.stringify(value));
+    } catch (error) {
+      if (error instanceof JsonBudgetError) {
+        entry.data = unavailable(error.limit === "bytes" ? "recovery_byte_budget" : "recovery_serialization_budget", error.limit);
+      } else {
+        // Malformed callbacks receive a bounded, explicitly non-exact inspection.
+        try {
+          const inspection = { serializationFailed: true, inspection: inspectNonJson(value) };
+          jsonBytes(inspection, serializationLimit);
+          entry.data = Buffer.from(JSON.stringify(inspection));
+        } catch { entry.data = unavailable("recovery_inspection_budget"); }
+      }
     }
     // Retain the no-replay reservation even when payload bytes are shed.
     // Small explicit tombstones replace bytes; never represent them as originals.
@@ -107,9 +126,11 @@ export class ResultRecoveryStore {
     return { slots: rows.length, normalLimit: this.maxEntries, controlLimit: this.controlEntries,
       controlSlots: rows.filter(e => e.control).length, running: rows.filter(e => e.state === "running").length,
       maxBytes: this.maxBytes,
+      maxSerializationBytes: this.maxBytes - (this.maxEntries + this.controlEntries) * 512,
+      serializationRefused: this.serializationRefused,
       retainedBytes: rows.reduce((sum,e) => sum + (e.data?.length ?? 0), 0),
       largestReceiptBytes: Math.max(0, ...rows.map(e => e.data?.length ?? 0)),
-      scope: "controller_memory", memoryAccounting: "Serialized buffers only; excludes objects and temporary serialization copies." };
+      scope: "controller_memory", memoryAccounting: "Retained buffers only. Preflight bounds temporary JSON copies; input objects and native image allocations are separate." };
   }
   failIfRunning(id: string) {
     if (this.entries.get(id)?.state === "running") this.finish(id, { resultPreparationFailed: true, noReplay: true,
@@ -159,17 +180,37 @@ export function registerResultRecovery(server: McpServer, store: ResultRecoveryS
   }, async ({ id }) => text(store.release(id)));
 }
 
-function inspectNonJson(value: unknown, seen = new WeakSet<object>(), depth = 0): unknown {
-  if (typeof value === "bigint") return { nonJsonType: "bigint", decimal: String(value) };
+function inspectNonJson(value: unknown, seen = new WeakSet<object>(), depth = 0, budget = { nodes: 512 }): unknown {
+  if (--budget.nodes < 0 || depth >= 16) return { nonJsonType: "inspection_limit" };
+  if (typeof value === "string" && value.length > 1024) return { nonJsonType: "string_preview", text: value.slice(0, 1024), originalCodeUnits: value.length };
+  if (typeof value === "bigint") {
+    const max = (1n << 4096n) - 1n;
+    return value > max || value < -max ? { nonJsonType: "bigint", decimalOmitted: true } : { nonJsonType: "bigint", decimal: String(value) };
+  }
   if (typeof value === "function" || typeof value === "symbol" || value === undefined) return { nonJsonType: typeof value };
   if (typeof value === "number" && !Number.isFinite(value)) return { nonJsonType: "number", value: String(value) };
   if (!value || typeof value !== "object") return value;
   if (seen.has(value)) return { nonJsonType: "circular_reference" };
-  if (depth >= 64) return { nonJsonType: "depth_limit" };
   seen.add(value);
-  const result = Array.isArray(value) ? value.map(v => inspectNonJson(v, seen, depth + 1))
-    : Object.fromEntries(Object.entries(Object.getOwnPropertyDescriptors(value)).filter(([, d]) => d.enumerable).map(([key, descriptor]) => [key,
-      "value" in descriptor ? inspectNonJson(descriptor.value, seen, depth + 1) : { nonJsonType: "accessor" }]));
+  const field = (key: string) => {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    return !descriptor ? { nonJsonType: "undefined" } : "value" in descriptor
+      ? inspectNonJson(descriptor.value, seen, depth + 1, budget) : { nonJsonType: "accessor" };
+  };
+  let result: unknown;
+  if (Array.isArray(value)) {
+    const items = Array.from({ length: Math.min(value.length, 32) }, (_, i) => field(String(i)));
+    result = value.length > 32 ? { nonJsonType: "array_preview", items, originalLength: value.length } : items;
+  } else {
+    const mapped: Record<string, unknown> = Object.create(null);
+    let count = 0;
+    for (const key in value) {
+      if (!Object.hasOwn(value, key)) continue;
+      if (count++ >= 32 || budget.nodes <= 0) { mapped.inspectionOmitted = true; break; }
+      mapped[key.slice(0, 1024)] = field(key);
+    }
+    result = mapped;
+  }
   seen.delete(value);
   return result;
 }

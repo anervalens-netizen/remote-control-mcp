@@ -1,3 +1,4 @@
+import { imageTransforms } from "./image-transform-budget.ts";
 import { operationsFor } from "./operation-observer.ts";
 import { recoveryFor } from "./result-recovery.ts";
 import { captureError } from "./error-reporting.ts";
@@ -190,6 +191,7 @@ export function createMcpHttpServer(client: AgentClient, options: {
           compatibility: { ...compatibility.snapshot(), modern: { protocolVersion: "2026-07-28", requests: modernRequests } },
           operationObserver: await operationsFor(client).health(),
           resultRecovery: recoveryFor(client).stats(),
+          imageTransforms: imageTransforms.stats(),
           toolDiagnostics: diagnosticsFor(client).snapshot(),
           eventLoop: { unit: "milliseconds", resolutionMs: 20, meanMs: Number.isFinite(eventLoop.mean) ? eventLoop.mean / 1e6 : null, p95Ms: eventLoop.percentile(95) / 1e6, p99Ms: eventLoop.percentile(99) / 1e6, maxMs: eventLoop.max / 1e6 },
           memory: { rssBytes: memory.rss, heapUsedBytes: memory.heapUsed, heapTotalBytes: memory.heapTotal, externalBytes: memory.external },

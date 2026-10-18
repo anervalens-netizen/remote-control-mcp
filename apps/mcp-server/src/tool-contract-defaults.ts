@@ -1,3 +1,4 @@
+import { jsonBytes } from "./json-budget.ts";
 import { deliverImages } from "./image-delivery.ts";
 import { createTrace, diagnosticContext, measureAsync, measureSync, recordStage, correlationHash } from "../../../packages/protocol/src/diagnostic-context.ts";
 import { executionOutcome } from "../../../packages/protocol/src/execution-outcome.ts";
@@ -30,17 +31,13 @@ const readOnlyTools = new Set([
 
 export const STRUCTURED_CONTENT_MAX_BYTES = 64 * 1024;
 
-function jsonBytes(value: unknown): number {
-  return Buffer.byteLength(JSON.stringify(value), "utf8");
-}
-
 export const TOTAL_RESULT_MAX_BYTES = 256 * 1024;
 type SafeParseSchema = { safeParse(value: unknown): { success: boolean } };
 
 function truncatedEnvelope(value: Record<string, unknown>, originalBytes: number, maxBytes: number) {
   return { ...value, structuredContentTruncated: true, structuredContentOriginalBytes: originalBytes,
     structuredContentLimitBytes: maxBytes,
-    structuredContentNotice: "Bounded preview/page; use resultRecovery for the exact original JSON receipt. Text and structured content describe the same delivered page." };
+    structuredContentNotice: "Bounded preview/page; inspect resultRecovery and payloadAvailable for original receipt availability. Missing bytes never authorize replay. Text and structured content describe the same delivered page." };
 }
 
 /** Only explicitly understood semantic fields may be shortened. Other shapes
@@ -62,10 +59,10 @@ export function compactStructuredContent(value: Record<string, unknown>, maxByte
     }
   } else if (typeof value.data === "string" && typeof value.nextOffset === "number") {
     const encoding = value.encoding === "base64" ? "base64" : "utf8";
-    const bytes = Buffer.from(value.data, encoding);
-    const data = encoding === "base64" ? bytes.subarray(0, 12 * 1024).toString("base64") : utf8Preview(value.data, 12 * 1024);
+    const originalDataBytes = Buffer.byteLength(value.data, encoding);
+    const data = encoding === "base64" ? Buffer.from(value.data.slice(0, 16 * 1024), "base64").subarray(0, 12 * 1024).toString("base64") : utf8Preview(value.data, 12 * 1024);
     const bytesRead = Buffer.byteLength(data, encoding);
-    const offset = typeof value.offset === "number" ? value.offset : typeof value.byteOffset === "number" ? value.byteOffset : value.nextOffset - bytes.length;
+    const offset = typeof value.offset === "number" ? value.offset : typeof value.byteOffset === "number" ? value.byteOffset : value.nextOffset - originalDataBytes;
     candidate = truncatedEnvelope({ ...value, data, bytesRead, nextOffset: offset + bytesRead, eof: false, truncated: true }, originalBytes, maxBytes);
     if (typeof value.startLine === "number") {
       const linesRead = (data.match(/\n/g) ?? []).length;

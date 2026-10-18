@@ -131,4 +131,11 @@ Pending Downloads are cleaned by an application-owned persisted scheduled job an
 - Partial opener updates must not erase an already loaded fleet or operation list.
 - Selection reads must wait for the host handshake; global observations do not require an association identifier.
 - Exercise these cases through the actual app bridge in a synthetic mobile-size browser fixture. Live native-host acceptance remains separate from browser fixtures.
-- Advertise console resource v3 for fresh host assets while preserving v1/v2 reads in all protocol/session paths.
+- Advertise console resource v4 for fresh host assets while preserving v1-v3 reads in all protocol/session paths.
+
+## Temporary resource preparation
+
+- Preflight JSON-shaped receipt size, escapes, depth and traversal before allocating serialized copies; retain consumed no-replay tombstones when preparation cannot fit.
+- Bound malformed inspection without invoking accessors or custom serializers.
+- Share native image admission across sessions and keep cancelled native work charged until it settles. Report capacity refusal separately from capture success.
+- Verify oversized recovery, UTF-8/escaping parity, malformed callbacks, concurrent images, cancellation and native Node loading; retain existing SDK paging/recovery regressions.
