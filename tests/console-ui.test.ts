@@ -88,6 +88,7 @@ it.skipIf(!executablePath)("isolates panels, pages text output and recovers stal
   expect(await first.getByRole("alert").innerText()).toContain("may be old");
   expect(await first.locator(".device-title").innerText()).toContain("lab-fixture");
   expect(await first.locator(".device-title .badge").innerText()).toBe("STALE");
+  expect(await first.locator("section h2 small").first().innerText()).toBe("1 shown · 1 configured");
   const evidence = process.env.RCMCP_UI_EVIDENCE_DIR ?? await mkdtemp(path.join(os.tmpdir(), "rcmcp-console-ui-"));
   if (!process.env.RCMCP_UI_EVIDENCE_DIR) closers.push(() => rm(evidence, { recursive: true, force: true }));
   await mkdir(evidence, { recursive: true });

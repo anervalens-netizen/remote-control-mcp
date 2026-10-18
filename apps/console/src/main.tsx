@@ -151,7 +151,7 @@ function Console() {
     {!connected && <div className="notice">{bridgeError || "Connecting to the app host…"}</div>}
     {error && <div className="notice" role="alert">{error}</div>}
     <div className="freshness">Last successful refresh: {when(lastSuccess)} · Device probes carry their own observation times.</div>
-    <section><h2>Fleet <small>{lastFleet.current ? `${fleet.length} shown · ${fleetPage.totalConfigured ?? fleet.length} configured` : "Not observed yet"}</small></h2><div className="fleet-grid">{fleet.map(row => <button className={`device ${device === row.device ? "selected" : ""}`} key={row.device} onClick={() => { setDevice(row.device); setIdentity(row.identity ?? "root"); setJobCursor(undefined); }}>
+    <section><h2>Fleet <small>{Array.isArray(fleetPage.devices) ? `${fleet.length} shown · ${fleetPage.totalConfigured ?? fleet.length} configured` : "Not observed yet"}</small></h2><div className="fleet-grid">{fleet.map(row => <button className={`device ${device === row.device ? "selected" : ""}`} key={row.device} onClick={() => { setDevice(row.device); setIdentity(row.identity ?? "root"); setJobCursor(undefined); }}>
       <div className="device-title">{row.device}<Badge value={disconnected || !row.observedAt || Date.now() - Date.parse(row.observedAt) > 60_000 ? "stale" : row.connectivity ?? "unknown"}/></div><p>{row.identity ?? "Unselected identity"} · {disconnected ? "Last observed: " : ""}{row.readiness ?? "Readiness unknown"}</p>
       <div className="device-meta">
         <small>Configured: {row.configuredIdentities?.join(", ") ?? "Not reported"}</small>
