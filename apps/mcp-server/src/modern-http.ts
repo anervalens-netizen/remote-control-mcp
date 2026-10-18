@@ -3,7 +3,7 @@ import type { RegisteredTool } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { agentInstructions } from "./instructions.ts";
-import { legacyConsoleResource, consoleResource, consoleIcon } from "./console-resource.ts";
+import { legacyConsoleResources, consoleResource, consoleIcon } from "./console-resource.ts";
 
 type HandlerContext = {
   signal: AbortSignal;
@@ -25,7 +25,7 @@ export function createModernMcpHandler(registry: () => Record<string, unknown>) 
       { instructions: agentInstructions, supportedProtocolVersions: ["2026-07-28"] },
     );
     server.registerResource(consoleResource.name, consoleResource.uri, consoleResource.metadata, consoleResource.read);
-  server.registerResource(legacyConsoleResource.name, legacyConsoleResource.uri, legacyConsoleResource.metadata, legacyConsoleResource.read);
+  for (const resource of legacyConsoleResources) server.registerResource(resource.name, resource.uri, resource.metadata, resource.read);
     for (const [name, value] of Object.entries(registry())) {
       const tool = value as RegisteredTool;
       if (!tool.enabled) continue;

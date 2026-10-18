@@ -12,7 +12,11 @@ let launch: Json | undefined;
 let changed = () => {};
 let connected = false;
 let bridgeError = "";
-app.ontoolresult = result => { if (result.structuredContent) { launch = result.structuredContent; changed(); } };
+const isSnapshot = (value?: Json) => typeof value?.observedAt === "string" && Array.isArray(value?.operations?.items);
+app.ontoolresult = result => {
+  const value = result.structuredContent;
+  if (value && (isSnapshot(value) || value.selected)) { launch = value; changed(); }
+};
 function theme() {
   const context = app.getHostContext();
   if (context?.theme) applyDocumentTheme(context.theme);
@@ -39,9 +43,9 @@ function Console() {
   const [ready, setReady] = useState(connected);
   const lastLaunch = useRef(launch);
   const snapshotInFlight = useRef(false);
-  const initialSnapshotScheduled = useRef(false);
+  const hasPolled = useRef(false);
   const lastFleet = useRef(launch?.fleet ? Date.now() : 0);
-  const [data, setData] = useState<Json | undefined>(launch);
+  const [data, setData] = useState<Json | undefined>(isSnapshot(launch) ? launch : undefined);
   const [scope, setScope] = useState<string | undefined>(launch?.diagnosticScopeId ?? launch?.suggestedDiagnosticScopeId);
   const [all, setAll] = useState(!launch?.diagnosticScopeId);
   const [fleet, setFleet] = useState<Json[]>(launch?.fleet?.devices ?? []);
@@ -53,7 +57,7 @@ function Console() {
   const [detail, setDetail] = useState<Json>();
   const [error, setError] = useState(bridgeError);
   const [detailError, setDetailError] = useState("");
-  const [lastSuccess, setLastSuccess] = useState<string | undefined>(launch?.observedAt);
+  const [lastSuccess, setLastSuccess] = useState<string | undefined>(isSnapshot(launch) ? launch?.observedAt : undefined);
   const [busy, setBusy] = useState(false);
   const [revision, refresh] = useState(0);
   const [cursor, setCursor] = useState<string>();
@@ -63,19 +67,34 @@ function Console() {
   const [manualJob, setManualJob] = useState("");
   const selectedRef = useRef(selection); selectedRef.current = selection;
   useEffect(() => {
-    changed = () => { setReady(connected); setError(bridgeError); if (launch && launch !== lastLaunch.current) { lastLaunch.current = launch; setData(launch); setScope(launch.diagnosticScopeId ?? launch.suggestedDiagnosticScopeId); setAll(!launch.diagnosticScopeId); setFleet(launch.fleet?.devices ?? []); setFleetPage(launch.fleet ?? {}); setFleetCursor(undefined); lastFleet.current = Date.now(); setSelection(launch.selected); setLastSuccess(launch.observedAt); } };
+    changed = () => {
+      setReady(connected); setError(bridgeError);
+      if (launch && launch !== lastLaunch.current) {
+        lastLaunch.current = launch;
+        if (isSnapshot(launch)) {
+          setData(launch); setScope(launch.diagnosticScopeId ?? launch.suggestedDiagnosticScopeId);
+          setAll(!launch.diagnosticScopeId);
+          if (launch.fleet) {
+            setFleet(launch.fleet.devices ?? []); setFleetPage(launch.fleet);
+            setFleetCursor(undefined); lastFleet.current = Date.now();
+          }
+          setLastSuccess(launch.observedAt);
+        }
+        setSelection(launch.selected);
+      }
+    };
     changed();
     return () => { changed = () => {}; };
   }, []);
   useEffect(() => {
-    if (!ready || !scope) return;
+    if (!ready || (!all && !scope)) return;
     let stopped = false, failures = 0;
     let timer: ReturnType<typeof setTimeout>;
     const tick = async () => {
       if (stopped) return;
       if (snapshotInFlight.current) { timer = setTimeout(tick, 250); return; }
       if (document.hidden) { timer = setTimeout(tick, 5000); return; }
-      snapshotInFlight.current = true; setBusy(true);
+      hasPolled.current = true; snapshotInFlight.current = true; setBusy(true);
       try {
         const includeFleet = Date.now() - lastFleet.current >= 30_000;
         const next = await call("dashboard_snapshot", { ...(all ? {} : { diagnosticScopeId: scope }), includeFleet, fleetCursor, cursor,
@@ -86,9 +105,17 @@ function Console() {
       } catch { if (!stopped) { setError("Connection unavailable. Displayed observations may be old; device and job state are unknown until refreshed."); failures++; } }
       finally { snapshotInFlight.current = false; if (!stopped) { setBusy(false); timer = setTimeout(tick, Math.min(60000, 5000 * 2 ** failures)); } }
     };
-    // Render the opener's snapshot first; no duplicate initial backend request.
-    timer = setTimeout(tick, !initialSnapshotScheduled.current && launch ? 5000 : 0);
-    initialSnapshotScheduled.current = true;
+    // Allow the host's opener and its React state updates to settle together.
+    // Only an actual poll completes bootstrap; scheduling can be cancelled by
+    // the opener's scope update before the first request is needed.
+    if (!hasPolled.current && revision === 0) {
+      timer = setTimeout(() => {
+        const initialView = scope === (launch?.diagnosticScopeId ?? launch?.suggestedDiagnosticScopeId)
+          && all === !launch?.diagnosticScopeId && !device && !cursor && !fleetCursor && !jobCursor;
+        if (isSnapshot(launch) && initialView) timer = setTimeout(tick, 5000);
+        else void tick();
+      }, 250);
+    } else timer = setTimeout(tick, 0);
     const visible = () => { if (!document.hidden) { clearTimeout(timer); void tick(); } };
     document.addEventListener("visibilitychange", visible);
     return () => { stopped = true; clearTimeout(timer); document.removeEventListener("visibilitychange", visible); };
@@ -96,9 +123,9 @@ function Console() {
   useEffect(() => {
     let stale = false;
     setDetail(undefined); setDetailError(""); setCopied(false); setCopyFallback("");
-    if (selection && connected) void call("operation_inspect", { reference: selection }).then(value => { if (!stale) setDetail(value); }).catch(() => { if (!stale) setDetailError("Detail unavailable. The operation has not been retried."); });
+    if (selection && ready) void call("operation_inspect", { reference: selection }).then(value => { if (!stale) setDetail(value); }).catch(() => { if (!stale) setDetailError("Detail unavailable. The operation has not been retried."); });
     return () => { stale = true; };
-  }, [selection]);
+  }, [selection, ready]);
   async function output(stream: string, offset = 0) {
     if (!selection?.job || busy) return;
     const reference = selection;
@@ -124,7 +151,7 @@ function Console() {
     {!connected && <div className="notice">{bridgeError || "Connecting to the app host…"}</div>}
     {error && <div className="notice" role="alert">{error}</div>}
     <div className="freshness">Last successful refresh: {when(lastSuccess)} · Device probes carry their own observation times.</div>
-    <section><h2>Fleet <small>{fleet.length} shown · {fleetPage.totalConfigured ?? fleet.length} configured</small></h2><div className="fleet-grid">{fleet.map(row => <button className={`device ${device === row.device ? "selected" : ""}`} key={row.device} onClick={() => { setDevice(row.device); setIdentity(row.identity ?? "root"); setJobCursor(undefined); }}>
+    <section><h2>Fleet <small>{lastFleet.current ? `${fleet.length} shown · ${fleetPage.totalConfigured ?? fleet.length} configured` : "Not observed yet"}</small></h2><div className="fleet-grid">{fleet.map(row => <button className={`device ${device === row.device ? "selected" : ""}`} key={row.device} onClick={() => { setDevice(row.device); setIdentity(row.identity ?? "root"); setJobCursor(undefined); }}>
       <div className="device-title">{row.device}<Badge value={disconnected || !row.observedAt || Date.now() - Date.parse(row.observedAt) > 60_000 ? "stale" : row.connectivity ?? "unknown"}/></div><p>{row.identity ?? "Unselected identity"} · {disconnected ? "Last observed: " : ""}{row.readiness ?? "Readiness unknown"}</p>
       <div className="device-meta">
         <small>Configured: {row.configuredIdentities?.join(", ") ?? "Not reported"}</small>
@@ -134,8 +161,8 @@ function Console() {
       {row.reason && <p className="muted">{row.reason}</p>}
     </button>)}</div>{fleet.length === 0 && <p>No fleet observations available.</p>}
       <div className="pagination"><button disabled={!fleetCursor || busy} onClick={() => { lastFleet.current = 0; setFleetCursor(undefined); }}>First devices</button><button disabled={!fleetPage.nextCursor || busy} onClick={() => { lastFleet.current = 0; setFleetCursor(fleetPage.nextCursor); }}>Next devices</button></div></section>
-    <section><div className="section-title"><h2>{all ? "Observed operations" : "Associated operations"}</h2><label><input type="checkbox" checked={all} onChange={e => { setAll(e.target.checked); setCursor(undefined); }}/> All observed scopes</label></div>
-      <div className="scope"><code>{scope ?? "Waiting for an opener snapshot"}</code><button disabled={!scope} onClick={associate}>Associate future operations</button></div>
+    <section><div className="section-title"><h2>{all ? "Observed operations" : "Associated operations"}</h2><label><input type="checkbox" checked={all} disabled={!scope} onChange={e => { setAll(e.target.checked); setCursor(undefined); }}/> All observed scopes</label></div>
+      <div className="scope"><code>{scope ?? "All observed scopes"}</code><button disabled={!scope} onClick={associate}>Associate future operations</button></div>
       <p className="muted">Association is explicit. An empty view does not mean the conversation has no active work.</p>
       {data?.operations?.coverage?.partial && <div className="notice">Partial observation history: {data.operations.coverage.historyHasGaps ? "older records were evicted; the full requested period may not be retained. " : ""}{data.operations.coverage.faults?.join(", ")}</div>}
       <div className="table-wrap"><table><thead><tr><th>Operation</th><th>Association</th><th>Handler</th><th>Started</th><th>Observed duration</th><th>Jobs</th></tr></thead><tbody>{operations.map((op: Json) => <tr key={op.traceId}><td><button className="link" onClick={() => setSelection({ traceId: op.traceId })}>{op.tool}</button><code>{op.traceId.slice(0, 8)}</code></td><td>{op.diagnosticScopeId ? <code title={op.diagnosticScopeId}>{op.diagnosticScopeId === scope ? "This scope" : op.diagnosticScopeId.slice(0, 8)}</code> : <span>Unassociated</span>}</td><td><Badge value={op.state}/>{op.executionOutcome && <small>{op.executionOutcome}</small>}</td><td>{when(op.startedAt)}</td><td title="Controller time between first and latest recorded events; not workload runtime">{observedDuration(op)}</td><td>{op.jobCount}</td></tr>)}</tbody></table></div>

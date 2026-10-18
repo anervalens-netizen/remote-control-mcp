@@ -30,8 +30,11 @@ it("serves the same UI resource and opener through modern, initial legacy, and r
     expect(resource.contents[0]).toMatchObject({ mimeType: "text/html;profile=mcp-app", _meta: { "openai/ui": { preferredDisplayMode: "fullscreen", availableDisplayModes: ["fullscreen"] } } });
     const content = resource.contents[0] as { text: string };
     expect(content.text).toContain("Fleet & operations");
-    const legacy = await client.readResource({ uri: "ui://remote-control/console/v1.html" });
-    expect(legacy.contents[0]).toMatchObject({ uri: "ui://remote-control/console/v1.html", text: content.text });
+    for (const version of [1, 2]) {
+      const uri = `ui://remote-control/console/v${version}.html`;
+      const legacy = await client.readResource({ uri });
+      expect(legacy.contents[0]).toMatchObject({ uri, text: content.text });
+    }
     if (html) expect(content.text).toBe(html); else html = content.text;
     const opened = await client.callTool({ name: "open_remote_control_console", arguments: {} });
     expect(opened.isError).not.toBe(true);

@@ -17,7 +17,7 @@ import { registerRepoTools } from "./repo-tools.ts";
 import { installDefaultToolOutputContracts } from "./tool-contract-defaults.ts";
 import { registerAndroidTools } from "./android-tools.ts";
 import { registerConsoleTools } from "./console-tools.ts";
-import { legacyConsoleResource, consoleResource } from "./console-resource.ts";
+import { legacyConsoleResources, consoleResource } from "./console-resource.ts";
 
 export function registerTools(server: McpServer, client: AgentClient): void {
   installDefaultToolOutputContracts(server, diagnosticsFor(client), client);
@@ -38,5 +38,5 @@ export function registerTools(server: McpServer, client: AgentClient): void {
   registerAndroidTools(server, client);
   registerConsoleTools(server, client);
   server.registerResource(consoleResource.name, consoleResource.uri, consoleResource.metadata, consoleResource.read);
-  server.registerResource(legacyConsoleResource.name, legacyConsoleResource.uri, legacyConsoleResource.metadata, legacyConsoleResource.read);
+  for (const resource of legacyConsoleResources) server.registerResource(resource.name, resource.uri, resource.metadata, resource.read);
 }

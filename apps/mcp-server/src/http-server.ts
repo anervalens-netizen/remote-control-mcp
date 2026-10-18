@@ -17,7 +17,7 @@ import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import type { AgentClient } from "./agent-client.ts";
 import { registerTools } from "./all-tools.ts";
 import { readToolRegistry, installToolRegistry } from "./sdk-tool-registry.ts";
-import { legacyConsoleResource, consoleResource } from "./console-resource.ts";
+import { legacyConsoleResources, consoleResource } from "./console-resource.ts";
 
 type Session = { server: McpServer; transport: StreamableHTTPServerTransport; lastUsed: number; active: number };
 
@@ -115,7 +115,7 @@ export function createMcpHttpServer(client: AgentClient, options: {
       // SDK request handlers against this session's underlying Server.
       installToolRegistry(server, sharedToolRegistry);
       server.registerResource(consoleResource.name, consoleResource.uri, consoleResource.metadata, consoleResource.read);
-  server.registerResource(legacyConsoleResource.name, legacyConsoleResource.uri, legacyConsoleResource.metadata, legacyConsoleResource.read);
+  for (const resource of legacyConsoleResources) server.registerResource(resource.name, resource.uri, resource.metadata, resource.read);
     }
     return server;
   }

@@ -124,3 +124,11 @@ Pending Downloads are cleaned by an application-owned persisted scheduled job an
 - Distinguish failed read-only requests from uncertain effects; retain safe cause and termination metadata.
 - Report Android capture/consent uncertainty separately from baseline UI readiness.
 - Qualify connector delivery and native image dependencies independently on each deployed platform.
+
+## Console host initialization
+
+- Global read-only observations must load after the host handshake even if the opener result is absent or contains only a selected job.
+- Partial opener updates must not erase an already loaded fleet or operation list.
+- Selection reads must wait for the host handshake; global observations do not require an association identifier.
+- Exercise these cases through the actual app bridge in a synthetic mobile-size browser fixture. Live native-host acceptance remains separate from browser fixtures.
+- Advertise console resource v3 for fresh host assets while preserving v1/v2 reads in all protocol/session paths.
