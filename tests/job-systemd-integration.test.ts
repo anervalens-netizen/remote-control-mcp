@@ -112,7 +112,9 @@ process.exit(0);
       lookup.mockRestore();
       expect((await jobStart(input)).id).toBe(recovered.id);
       expect(admission).toHaveBeenCalledTimes(1);
-      await until(() => existsSync(effect), Boolean);
+      // Shell redirection creates the file before echo has written its bytes.
+      // Wait for the exact effect, keeping duplicate execution a test failure.
+      await until(() => existsSync(effect) ? readFileSync(effect, "utf8") : "", value => value === "once\n");
       expect(readFileSync(effect, "utf8")).toBe("once\n");
       const diagnostic = (await exec("systemctl", [...(jobSystemdManagerScope() === "user" ? ["--user"] : []), "show", recovered.systemdUnit!, "--property=ExecStart,Environment,Description"])).stdout;
       expect(diagnostic).not.toContain(input.command);
@@ -120,6 +122,7 @@ process.exit(0);
       expect(diagnostic).not.toContain("SYNTHETIC_SECRET");
       writeFileSync(release, "go");
       expect(await jobFollow({ id: recovered.id, until: "complete", waitMs: 8000 })).toMatchObject({ terminal: true, state: "completed", exitCode: 0 });
+      expect(readFileSync(effect, "utf8")).toBe("once\n");
       await jobRemove(recovered.id);
     } finally {
       admission.mockRestore();

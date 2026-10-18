@@ -137,9 +137,13 @@ native("preserves completed effects on overall timeout and offers receipt readba
   const {sessionId}=await manager.session({action:"start",executablePath}) as any;
   const app=Fastify();registerBrowserRoutes(app,manager);
   try{
-    const response=await app.inject({method:"POST",url:"/v1/browser/actions",payload:{sessionId,timeoutMs:150,actions:[
+    // Warm the native transport outside the deliberately timed batch. Loaded
+    // CI workers can spend the old 150 ms budget establishing its first call.
+    const warmup=await manager.actions({sessionId,actions:[{action:"evaluate",expression:"0"}]}) as any;
+    expect(warmup).toMatchObject({ok:true,executed:1});
+    const response=await app.inject({method:"POST",url:"/v1/browser/actions",payload:{sessionId,timeoutMs:1500,actions:[
       {action:"evaluate",expression:"globalThis.counter=(globalThis.counter??0)+1"},
-      {action:"evaluate",expression:"new Promise(resolve=>setTimeout(()=>{globalThis.finished=true;resolve(2)},700))"},
+      {action:"evaluate",expression:"new Promise(resolve=>setTimeout(()=>{globalThis.finished=true;resolve(2)},3000))"},
       {action:"evaluate",expression:"globalThis.counter++"},
     ]}});
     expect(response.statusCode).toBe(200);
