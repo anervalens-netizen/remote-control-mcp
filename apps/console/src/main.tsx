@@ -13,6 +13,10 @@ let changed = () => {};
 let connected = false;
 let bridgeError = "";
 const isSnapshot = (value?: Json) => typeof value?.observedAt === "string" && Array.isArray(value?.operations?.items);
+const snapshotTime = (value?: Json) => {
+  const time = Date.parse(value?.observedAt ?? "");
+  return Number.isFinite(time) ? time : 0;
+};
 app.ontoolresult = result => {
   const value = result.structuredContent;
   if (value && (isSnapshot(value) || value.selected)) { launch = value; changed(); }
@@ -41,10 +45,13 @@ function Badge({ value }: { value: string }) {
 
 function Console() {
   const [ready, setReady] = useState(connected);
-  const lastLaunch = useRef(launch);
+  // Host notifications cross a serialization boundary. Object identity cannot
+  // distinguish a new opener from a rebroadcast of the same stored result.
+  const lastLaunch = useRef(JSON.stringify(launch));
+  const newestSnapshot = useRef(isSnapshot(launch) ? snapshotTime(launch) : 0);
   const snapshotInFlight = useRef(false);
   const hasPolled = useRef(false);
-  const lastFleet = useRef(launch?.fleet ? Date.now() : 0);
+  const lastFleet = useRef(launch?.fleet ? snapshotTime(launch) : 0);
   const [data, setData] = useState<Json | undefined>(isSnapshot(launch) ? launch : undefined);
   const [scope, setScope] = useState<string | undefined>(launch?.diagnosticScopeId ?? launch?.suggestedDiagnosticScopeId);
   const [all, setAll] = useState(!launch?.diagnosticScopeId);
@@ -69,14 +76,19 @@ function Console() {
   useEffect(() => {
     changed = () => {
       setReady(connected); setError(bridgeError);
-      if (launch && launch !== lastLaunch.current) {
-        lastLaunch.current = launch;
+      const signature = JSON.stringify(launch);
+      if (launch && (!isSnapshot(launch) || signature !== lastLaunch.current)) {
+        lastLaunch.current = signature;
         if (isSnapshot(launch)) {
+          // A host may replay its old opener around every partial poll response.
+          // Never replace newer observations or reset their refresh budget.
+          if (snapshotTime(launch) < newestSnapshot.current) return;
+          newestSnapshot.current = snapshotTime(launch);
           setData(launch); setScope(launch.diagnosticScopeId ?? launch.suggestedDiagnosticScopeId);
           setAll(!launch.diagnosticScopeId);
           if (launch.fleet) {
             setFleet(launch.fleet.devices ?? []); setFleetPage(launch.fleet);
-            setFleetCursor(undefined); lastFleet.current = Date.now();
+            setFleetCursor(undefined); lastFleet.current = snapshotTime(launch);
           }
           setLastSuccess(launch.observedAt);
         }
@@ -99,8 +111,9 @@ function Console() {
         const includeFleet = Date.now() - lastFleet.current >= 30_000;
         const next = await call("dashboard_snapshot", { ...(all ? {} : { diagnosticScopeId: scope }), includeFleet, fleetCursor, cursor,
           ...(device ? { jobDevice: device, jobIdentity: identity, jobCursor } : {}) });
-        if (stopped) return;
-        setData(next); if (next.fleet) { setFleet(next.fleet.devices); setFleetPage(next.fleet); lastFleet.current = Date.now(); }
+        if (stopped || snapshotTime(next) < newestSnapshot.current) return;
+        newestSnapshot.current = snapshotTime(next);
+        setData(next); if (next.fleet) { setFleet(next.fleet.devices); setFleetPage(next.fleet); lastFleet.current = snapshotTime(next); }
         setLastSuccess(next.observedAt); setError(""); failures = 0;
       } catch { if (!stopped) { setError("Connection unavailable. Displayed observations may be old; device and job state are unknown until refreshed."); failures++; } }
       finally { snapshotInFlight.current = false; if (!stopped) { setBusy(false); timer = setTimeout(tick, Math.min(60000, 5000 * 2 ** failures)); } }

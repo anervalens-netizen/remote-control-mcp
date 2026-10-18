@@ -284,7 +284,7 @@ expired or consumed IDs never authorize a new dispatch.
 
 ## Diagnostic history and ContextKeep correlation
 
-The console opens global observed history by default and can filter an explicitly associated scope. A ContextKeep task ID becomes the observation scope when a correlated call does not supply a separate scope. Association does not authorize execution. The current UI resource is v2; the v1 resource remains readable by installed clients.
+The console opens global observed history by default and can filter an explicitly associated scope. A ContextKeep task ID becomes the observation scope when a correlated call does not supply a separate scope. Association does not authorize execution. The current UI resource is v4; the v1–v3 resources remain readable by installed clients. Repeated cached opener results cannot replace newer snapshots or postpone Fleet probes. Fleet refresh scheduling uses the snapshot observation time, so reopening an old result does not make its device observations fresh.
 
 Observation retention defaults to seven days, 20,000 entries and 64 MiB. Configure bounded limits with `RCMCP_OBSERVATION_RETENTION_MS` (one hour to thirty days), `RCMCP_OBSERVATION_MAX_ENTRIES` (100 to 100,000), and `RCMCP_OBSERVATION_MAX_BYTES` (1 to 256 MiB). Unknown/live job references are retained; saturation is reported instead of silently deleting recovery evidence. Coverage reports capacity gaps, retention bounds and seven-day UTC start/return counters. Counters are best-effort metadata since collection began, not workload success or a complete historical SLA. Increasing retention cannot reconstruct evicted records.
 

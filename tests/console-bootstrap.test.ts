@@ -21,7 +21,7 @@ it.skipIf(!executablePath).each(["missing", "selection-only"])("loads and refres
     const bridge=new AppBridge(null,{name:'synthetic-mobile-host',version:'1'},{serverTools:{},updateModelContext:{}},{hostContext:{displayMode:'fullscreen',availableDisplayModes:['fullscreen'],platform:'mobile'}});
     bridge.oncalltool=async params=>{
       window.calls.push(params);
-      if(params.name==='dashboard_snapshot')return {content:[],structuredContent:{...fixture,observedAt:new Date().toISOString()}};
+      if(params.name==='dashboard_snapshot')return {content:[],structuredContent:{...fixture,observedAt:new Date().toISOString(),fleet:params.arguments.includeFleet ? fixture.fleet : null}};
       if(params.name==='operation_inspect')return {content:[],structuredContent:{observedAt:new Date().toISOString(),observation:{state:'completed',code:0},coverage:'Synthetic terminal observation'}};
       throw new Error('Unexpected tool '+params.name);
     };
