@@ -65,7 +65,8 @@ it("accepts a clean Git repository with more than 4096 tracked files", async () 
   }
   commit(root, "many clean tracked files");
   await expect(resolveCoordinationResource({ kind: "repo", path: root })).resolves.toMatchObject({ baseVersion: expect.stringMatching(/^[a-f0-9]{64}$/) });
-});
+// Native Windows file creation and Git scans need a larger fixture budget.
+}, process.platform === "win32" ? 90_000 : 15_000);
 
 it("accepts clean tracked content larger than 64 MiB", async () => {
   const root = repository("r13-large-content-"), file = path.join(root, "large-synthetic.bin");
