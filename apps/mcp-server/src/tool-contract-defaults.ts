@@ -20,14 +20,7 @@ const installedServers = new WeakSet<object>();
 const controlTools = new Set(["job_status", "job_output", "job_output_since", "job_wait", "job_cancel", "job_list", "job_history", "job_lineage", "job_find", "batch_recover", "pty_output", "pty_terminate", "search_stop", "search_results", "android_command_status", "android_cancel"]);
 const scopedTools = new Set(["exec", "batch_exec", "job_start", "job_start_many", "project_run", "deploy_run", "repo_apply_patch", "fs_edit", "service_action"]);
 
-// Hints describe effects; they never authorize or restrict the owner. Do not
-// infer read-only from a name: mixed/action tools deliberately have no default.
-const readOnlyTools = new Set([
-  "devices_list", "device_info", "device_contexts", "fs_read", "fs_list", "batch_read",
-  "job_status", "job_output", "job_output_since", "job_wait", "job_list", "job_history", "job_lineage",
-  "pty_output", "search_results", "search_status", "service_inspect", "service_logs",
-  "network_snapshot", "android_status",
-]);
+import { readOnlyTools } from "./tool-effects.ts";
 
 export const STRUCTURED_CONTENT_MAX_BYTES = 64 * 1024;
 
@@ -207,7 +200,7 @@ export function installDefaultToolOutputContracts(server: McpServer, diagnostics
           operationFinished = true;
         }
         // Retain the trace in the immutable receipt, before delivery compaction.
-        const traced = { ...structured, ...(observer ? { observationCoverage: { ...observer.coverage(operationId), admitted: Boolean(operationId) } } : {}), ...(observer && operationId
+        const traced = { ...structured, ...(observer ? { observationCoverage: { ...observer.compactCoverage(operationId), admitted: Boolean(operationId) } } : {}), ...(observer && operationId
           ? { operationTrace: { traceId: operationId, controllerInstanceId: observer.controllerInstanceId } } : {}) };
         if (reference) reference = recovery.finish(reference.id, { ...result, structuredContent: traced });
         if (name === "exec") {
@@ -269,7 +262,7 @@ export function installDefaultToolOutputContracts(server: McpServer, diagnostics
             await observer.finish(operationId, observedResult, requestSucceeded, Boolean(extra?.signal?.aborted), reference?.id);
             operationFinished = true;
           }
-          Object.assign(failure.structuredContent, { observationCoverage: { ...observer.coverage(operationId), admitted: Boolean(operationId) } });
+          Object.assign(failure.structuredContent, { observationCoverage: { ...observer.compactCoverage(operationId), admitted: Boolean(operationId) } });
         }
         if (!advertisedSchema.safeParse(failure.structuredContent).success || jsonBytes(failure) > TOTAL_RESULT_MAX_BYTES) throw new Error("Invalid final error receipt");
         trace.totalBytes = jsonBytes(failure);

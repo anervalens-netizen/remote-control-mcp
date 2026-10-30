@@ -7,8 +7,7 @@ import { executionOutcome } from "../../../packages/protocol/src/execution-outco
 import { correlationHash } from "../../../packages/protocol/src/diagnostic-context.ts";
 import type { AgentClient, AgentEndpointContext } from "./agent-client.ts";
 
-// Explicit read-only contracts; never infer effect safety from an error code.
-const readOnlyOperations = new Set(["android_observe", "android_command_status", "batch_recover", "pty_output", "search_results", "search_status", "exec_recover", "fs_read", "fs_list", "batch_read", "job_status", "job_output", "job_output_since", "job_wait", "job_list", "job_history", "job_lineage", "device_info", "device_contexts", "devices_list", "service_inspect", "service_logs", "network_snapshot", "android_status"]);
+import { readOnlyTools } from "./tool-effects.ts";
 const identity = z.enum(["owner", "root", "interactive"]);
 const contextKeepReference = z.object({ projectId: z.string().uuid(), taskId: z.string().uuid(), runId: z.string().uuid() });
 export const jobReferenceSchema = z.object({ device: z.string().max(256), identity, jobId: z.string().min(1).max(256) }).strict();
@@ -82,7 +81,7 @@ export class OperationObserver {
       ["job_wait", "job_status", "job_output", "job_output_since"].includes(record.tool);
     const needsLocator = ["job_start", "job_start_many", "project_run", "deploy_run", "batch_exec", "process_start", "pty_start"].includes(record.tool);
     return record.persistence !== "unconfirmed" && returned && (!needsLocator || record.jobs.length > 0 || !record.events.some(e => e.stage === "agent_dispatch")) && !record.jobsPartial && record.jobs.every(job => record.terminalJobs?.some(t => sameJob(job, t))) &&
-      (record.jobs.length > 0 || record.requestSucceeded === true || readOnlyOperations.has(record.tool) || !record.events.some(e => e.stage === "agent_dispatch"));
+      (record.jobs.length > 0 || record.requestSucceeded === true || readOnlyTools.has(record.tool) || !record.events.some(e => e.stage === "agent_dispatch"));
   }
   private async remove(id: string) {
     if (this.directory) await fs.unlink(path.join(this.directory, `${id}.json`)).catch(error => { if (error.code !== "ENOENT") throw error; });
@@ -126,6 +125,12 @@ export class OperationObserver {
       persistence: this.directory ? "metadata_journal" : "controller_memory",
       ...(id ? { observationPersistence: this.entries.get(id)?.persistence ?? "unconfirmed" } : {}),
       scope: "Observed handler calls only; association is client-declared; job state must be read from its agent." };
+  }
+  /** Routine receipts keep safety facts; open_remote_control_console exposes full coverage. */
+  compactCoverage(id?: string) {
+    const { partial, historyHasGaps, faults, persistence, observationPersistence, saturated } = this.coverage(id);
+    return { partial, historyHasGaps, faults, persistence, ...(id ? { observationPersistence } : {}), saturated,
+      detailsTool: "open_remote_control_console" as const };
   }
   private queue: Promise<void> = Promise.resolve();
   private readonly ready: Promise<void>;
@@ -334,7 +339,7 @@ export class OperationObserver {
       // A failed/disconnected call can leave effects running after dispatch.
       // Preserve that uncertainty independently of the handler-return event.
       if (record.executionOutcome === "uncertain" || (result?.timedOut === true && result.terminationVerified !== true) ||
-          ((!requestSucceeded || disconnected) && !readOnlyOperations.has(record.tool) && record.events.some(event => event.stage === "agent_dispatch"))) record.state = "unknown";
+          ((!requestSucceeded || disconnected) && !readOnlyTools.has(record.tool) && record.events.some(event => event.stage === "agent_dispatch"))) record.state = "unknown";
       if (recoveryId) record.recoveryId = recoveryId;
       if (!record.events.some(event => event.stage === "handler_returned")) {
         if (record.events.length < 128) record.events.push({ stage: "handler_returned", at: record.updatedAt }); else record.eventsPartial = true;

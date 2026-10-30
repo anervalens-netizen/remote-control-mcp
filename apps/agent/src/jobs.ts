@@ -1,3 +1,4 @@
+import { windowsUtf8Preamble } from "./windows-encoding.ts";
 import { z } from "zod";
 import { admitJobUnit, inspectJobUnit, inspectJobUnitAsync, inspectJobUnitForCleanup, jobCgroupEmpty, jobCgroupIsolation, jobUnitName, releaseJobUnit, stopJobUnit, systemdLauncherContent, type JobUnit } from "./job-systemd.ts";
 import { coordinationDevice, coordinationIdentity } from "./coordination.ts";
@@ -182,7 +183,7 @@ if (process.platform !== "win32") {
 
 const linuxRunnerContent = '#!/bin/bash\nif [ "$RCMCP_JOB_REDIRECT" = 1 ]; then exec >>"$RCMCP_JOB_STDOUT" 2>>"$RCMCP_JOB_STDERR"; fi\n/bin/bash -lc "$RCMCP_JOB_COMMAND"\ncode=$?\n"$RCMCP_JOB_NODE" "$RCMCP_JOB_EXIT_HELPER" "$RCMCP_JOB_EXIT_FILE" "$code" "$RCMCP_JOB_STDOUT" "$RCMCP_JOB_STDERR"\nhelper=$?\nif [ "$helper" -ne 0 ]; then exit "$helper"; fi\nexit "$code"\n';
 const windowsRunnerContent = `$ErrorActionPreference = "Continue"
-$wrapped = '$OutputEncoding=[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false); ' + $env:RCMCP_JOB_COMMAND
+$wrapped = '${windowsUtf8Preamble}' + $env:RCMCP_JOB_COMMAND
 $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($wrapped))
 $argsList = @('-NoLogo','-NoProfile','-NonInteractive','-OutputFormat','Text','-EncodedCommand',$encoded)
 $params = @{

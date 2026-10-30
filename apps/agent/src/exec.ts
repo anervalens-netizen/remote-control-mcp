@@ -1,3 +1,4 @@
+import { windowsUtf8Preamble } from "./windows-encoding.ts";
 import { utf8SafeLength } from "./state.ts";
 import { createDeadline } from "../../../packages/protocol/src/deadline.ts";
 import crossSpawn from "cross-spawn";
@@ -14,7 +15,7 @@ const DRAIN_TIMEOUT_MS = 500;
 
 function shellCommand(command: string): { file: string; args: string[] } {
   if (process.platform === "win32") {
-    return { file: "powershell.exe", args: ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command] };
+    return { file: "powershell.exe", args: ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", windowsUtf8Preamble + command] };
   }
   return { file: "/bin/bash", args: ["-lc", command] };
 }

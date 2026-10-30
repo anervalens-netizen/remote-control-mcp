@@ -178,9 +178,17 @@ export function registerExtraRoutes(app: FastifyInstance): void {
 
   app.post("/v1/repo/snapshot", async (request, reply) => {
     const parsed = repoSnapshotSchema.safeParse(request.body); if (!parsed.success) return reply.code(400).send({ error: "invalid_request", details: parsed.error.issues });
-    return parsed.data.profile === "summary"
-      ? repoSnapshot(parsed.data.path, parsed.data.logCount, "summary")
-      : repoSnapshot(parsed.data.path, parsed.data.logCount, "full");
+    try {
+      return await (parsed.data.profile === "summary"
+        ? repoSnapshot(parsed.data.path, parsed.data.logCount, "summary")
+        : repoSnapshot(parsed.data.path, parsed.data.logCount, "full"));
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "REPO_PATH_NOT_FOUND") return reply.code(404).send({ error: "path_not_found", code: "ENOENT" });
+      if (code === "ENOTDIR" || code === "REPO_NOT_FOUND") return reply.code(400).send({ error: "not_a_repository", code });
+      if (code === "EACCES" || code === "EPERM") return reply.code(403).send({ error: "access_denied", code });
+      throw error;
+    }
   });
   app.post("/v1/repo/checkpoint", async (request, reply) => {
     const parsed = repoCheckpointSchema.safeParse(request.body); if (!parsed.success) return reply.code(400).send({ error: "invalid_request", details: parsed.error.issues });

@@ -234,8 +234,27 @@ export async function repoSnapshot(
   logCount = 8,
   profile: "summary" | "full" = "full",
 ): Promise<RepoSnapshotSummary | RepoSnapshotFull> {
-  const [root, head, branch, upstream, status] = await Promise.all([
-    git(path, ["rev-parse", "--show-toplevel"]),
+  // Establish the failure domain before launching the optional Git probes.
+  // Do not turn permissions or unexpected Git failures into "not found".
+  let inputStat;
+  try { inputStat = await stat(path); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT")
+      throw Object.assign(new Error("Repository path does not exist"), { code: "REPO_PATH_NOT_FOUND" });
+    throw error;
+  }
+  if (!inputStat.isDirectory()) throw Object.assign(new Error("Repository path is not a directory"), { code: "ENOTDIR" });
+  let root: string | null;
+  try { root = await git(path, ["rev-parse", "--show-toplevel"]); }
+  catch (error) {
+    const stderr = (error as { stderr?: unknown }).stderr;
+    if (typeof stderr === "string" && /not a git repository/i.test(stderr))
+      throw Object.assign(new Error("Path is not a Git repository"), { code: "REPO_NOT_FOUND" });
+    if (typeof stderr === "string" && /permission denied|access is denied/i.test(stderr))
+      throw Object.assign(new Error("Repository access denied"), { code: "EACCES" });
+    throw error;
+  }
+  const [head, branch, upstream, status] = await Promise.all([
     git(path, ["rev-parse", "HEAD"], true),
     git(path, ["symbolic-ref", "--short", "-q", "HEAD"], true),
     git(path, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"], true),
