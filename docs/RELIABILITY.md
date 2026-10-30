@@ -662,3 +662,26 @@ Cancellation requests decoder shutdown but holds the slot until its promise
 settles, even if the caller has already received a bounded result. Authenticated
 health exposes active/limit/high-water/refusal counters. These limits bound
 native work count; decoder memory and handler objects are not an RSS guarantee.
+
+### Guarded Windows scheduled-task updater
+
+`deploy/windows/updater/run-update.ps1` consumes a private, explicit per-attempt
+plan. It verifies the target against the supplied trusted Git repository using
+`verify-release.ts`, verifies both runtime and exact listener/process identity,
+and journals each requested mutation. A named mutex prevents concurrent updater
+instances; a persistent guard in the private `%ProgramData%\RemoteControlMCP\updater` directory survives a runner crash. Create that directory with SYSTEM/administrator access before use. An existing guard, abandoned lock or receipt requires inspection; never remove one merely to retry. The
+runner is designed to be started by `submit-update.ps1` as a one-shot SYSTEM
+task outside the agent process tree. It does not create a job admission fence.
+Stop or coordinate new work externally until the transition and verification
+finish. Preserve old and new release directories, job journals and private
+receipts; never rerun a timed-out or disconnected attempt under a new receipt.
+`-Mode inspect` only reads the retained record and does not resume execution.
+
+If the target fails, rollback restores the captured task actions, including a
+missing working directory, and stops only target processes bound to the planned
+executable, command, creation time and port. An unknown listener or a candidate
+without an identifiable listener fails closed for operator inspection. A
+`rollback_health_verified` receipt requires fresh old-runtime health and
+listener identity; `rollback_incomplete` requires manual reconciliation. A
+successful receipt does not establish client acceptance or physical desktop
+behavior. Keep the old release and service configuration available for recovery.

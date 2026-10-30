@@ -295,3 +295,28 @@ Observation retention defaults to seven days, 20,000 entries and 64 MiB. Configu
 For new correlated execution, call read-only `job_input_hash` with the exact command, cwd and environment before ContextKeep reservation, then pass identical inputs to `job_start`. Permanent acknowledgement/identity conflicts and terminal runs missing attach proof enter `reconciliation_required`; they remain visible without automatic polling or replay. Transient failures retain backoff. Historical reconciliation requires the existing fenced helper, exact evidence and a recovery copy; it does not invent an acknowledgement or discard negative results.
 
 Jobs still running after six hours include a review recommendation in status, wait and console views. `RCMCP_JOB_REVIEW_AFTER_MS` accepts one minute to seven days. Duration alone does not establish a hang and never causes automatic cancellation.
+
+### Windows agent updates
+
+The guarded updater in `deploy/windows/updater/` runs as a separate SYSTEM
+scheduled task and retains a durable per-attempt operation journal. Prepare
+and review a private plan based on `plan.example.json`: provide exact task
+snapshots, release identities, process command lines, creation times, ports and
+private environment-file paths. Never put credentials in the plan. The candidate
+must already be staged and `scripts/verify-release.ts` must verify its full Git
+identity. Run `run-update.ps1 -Mode dry-run` with a new private receipt path;
+read it with `-Mode inspect` before submission. `submit-update.ps1` accepts a
+unique task name, plan, receipt, runner and runner SHA-256; it starts an
+independent no-trigger task. An existing task or receipt means inspect, not
+replay. Preserve the task and receipt when submission or execution is uncertain.
+
+The updater checks authenticated runtime identity, port ownership, exact process
+identity and job history. It terminates only bound process handles, handles
+orphaned agents, records effects before requesting them, and restores task
+actions with optional working directories. Rollback must verify the old runtime
+and listener; an ambiguous process or failed rollback remains explicitly
+incomplete. Lost job records remain untouched. The agent does not provide a job
+admission fence: quiesce external callers and independently account for active
+work throughout the transition. A history read alone cannot exclude concurrent
+new work. Create `%ProgramData%\RemoteControlMCP\updater` with a private SYSTEM/administrator ACL before use; it contains a persistent active-attempt guard. Protect plans and receipts with the operator's private ACLs. Validate
+native interactive desktop behavior separately before declaring release success.

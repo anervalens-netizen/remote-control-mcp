@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "oldSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "targetSha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "releaseRoot": "C:\\Example\\releases",
+  "repository": "C:\\Example\\repository",
+  "nodePath": "C:\\Example\\node.exe",
+  "agents": [{
+    "name": "ExampleAgent",
+    "envFile": "C:\\Example\\agent.env",
+    "context": "system",
+    "port": 49001,
+    "pid": 1234,
+    "created": "2026-01-01T00:00:00.0000000Z",
+    "expectedCommand": "\"C:\\Example\\node.exe\" C:\\Example\\releases\\aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\\apps\\agent\\src\\index.ts ",
+    "targetCommand": "\"C:\\Example\\node.exe\" C:\\Example\\releases\\bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\\apps\\agent\\src\\index.ts ",
+    "oldAction": {"execute": "powershell.exe", "arguments": "-File C:\\Example\\old.ps1", "workingDirectory": null},
+    "targetAction": {"execute": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe", "arguments": "-File C:\\Example\\new.ps1", "workingDirectory": "C:\\Example"}
+  }]
+}
