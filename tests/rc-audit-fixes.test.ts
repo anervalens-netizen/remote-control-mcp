@@ -63,3 +63,16 @@ it.skipIf(process.platform !== "win32")("captures Unicode PowerShell output and 
   const piped = await runCommand({ command: "'ă😀' | & $env:RCMCP_TEST_NODE -e 'process.stdin.pipe(process.stdout)'", env: { RCMCP_TEST_NODE: process.execPath } });
   expect(piped.stdout).toContain("ă😀"); expect(piped.code).toBe(0);
 });
+
+
+it.skipIf(process.platform !== "win32")("preserves PowerShell grammar and final failure status", async () => {
+  const param = await runCommand({ command: 'param([string]$x="OK"); $x' });
+  expect(param.stdout.trim()).toBe("OK"); expect(param.stderr).not.toMatch(/param.*not recognized/i); expect(param.code).toBe(0);
+  const using = await runCommand({ command: 'using namespace System.Text\n[StringBuilder]::new("OK").ToString()' });
+  expect(using.stdout.trim()).toBe("OK"); expect(using.code).toBe(0);
+  const comment = await runCommand({ command: 'Write-Output OK # trailing comment' });
+  expect(comment.stdout.trim()).toBe("OK"); expect(comment.code).toBe(0);
+  const native = await runCommand({ command: 'cmd.exe /c exit 7' }); expect(native.code).toBe(1);
+  const error = await runCommand({ command: 'Write-Error failure' }); expect(error.code).toBe(1);
+  const recovered = await runCommand({ command: 'cmd.exe /c exit 7; Write-Output OK' }); expect(recovered.code).toBe(0);
+});

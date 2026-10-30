@@ -13,9 +13,16 @@ const EXECUTION_MARKER_KEY = "RCMCP_EXECUTION_ID";
 const TERMINATION_TIMEOUT_MS = 500;
 const DRAIN_TIMEOUT_MS = 500;
 
-function shellCommand(command: string): { file: string; args: string[] } {
+function shellCommand(command: string): { file: string; args: string[]; env?: Record<string, string> } {
   if (process.platform === "win32") {
-    return { file: "powershell.exe", args: ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", windowsUtf8Preamble + command] };
+    // Preserve leading using/param statements by parsing the original as a
+    // scriptblock. Check its last status inside the block: dot-sourcing alone
+    // masks non-terminating errors and native nonzero exits. An environment
+    // slot avoids expanding arbitrary commands against Windows' argv limit.
+    const key = `RCMCP_EXEC_SOURCE_${randomUUID().replaceAll("-", "")}`;
+    const variable = `$rcmcp_${key.slice(-32)}`;
+    const script = `${windowsUtf8Preamble}${variable}=$env:${key}; Remove-Item Env:${key}; . ([ScriptBlock]::Create(${variable} + [Environment]::NewLine + 'if (-not $?) { exit 1 }'))`;
+    return { file: "powershell.exe", args: ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script], env: { [key]: command } };
   }
   return { file: "/bin/bash", args: ["-lc", command] };
 }
@@ -232,7 +239,7 @@ export async function runCommand(request: ExecRequest, signal?: AbortSignal): Pr
   const shell = shellCommand(request.command);
   return runProcess(shell.file, shell.args, {
     cwd: request.cwd,
-    env: request.env,
+    env: { ...request.env, ...shell.env },
     timeoutMs: request.timeoutMs,
     maxOutputBytes: request.maxOutputBytes,
     signal,
