@@ -43,7 +43,22 @@ does not establish application persistence. The automatic fresh observation is
 evidence to inspect, not an automatic assertion of business success. Native
 payloads, private state and qualification receipts must stay out of public logs.
 
-## Automatic dependency updates
+## Release notifications and owner-requested updates
+
+`scripts/agent-desktop-release-notify.py <private-config.json>` checks stable
+upstream releases without an LLM and sends a Telegram notification only for a
+new version or a check failure. It never installs software. Run it from one
+systemd oneshot service every six hours. `--test` sends one deduplicated setup
+message. Keep `stateDirectory`, `installedVersion`, `telegramTokenFile` and
+`telegramChatId` in a private configuration file. Existing owner notification
+credentials can be referenced without copying their contents into source.
+
+The notifier reserves each message before delivery and records the returned
+Telegram message ID. An uncertain delivery is retained for inspection instead
+of being resent automatically. Unchanged checks send no message. The private
+installed version must be reconciled after an owner-requested upgrade.
+
+## Optional automatic dependency updates
 
 `scripts/agent-desktop-monitor.ts <private-config.json>` runs without an LLM.
 Use one systemd oneshot service as its single writer, with a recurring timer.
