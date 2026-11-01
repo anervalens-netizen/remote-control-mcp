@@ -1,3 +1,4 @@
+import { linuxMonitors, linuxWindows, linuxScreenshot, linuxFocus, linuxMouse, linuxKeyboard, linuxClipboardGet, linuxClipboardSet, linuxSession, linuxLaunch, linuxBrowser, linuxUia, linuxHelperStatus } from "./linux-desktop.ts";
 import { desktopFocusSchema, desktopMouseSchema, desktopKeyboardSchema } from "../../../packages/protocol/src/desktop.ts";
 import { execFile } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -117,6 +118,7 @@ async function runPowerShell(script: string, input?: unknown) {
 }
 
 export function desktopHelperStatus() {
+  if (process.platform === "linux") return linuxHelperStatus();
   return {
     enabled: process.env.RCMCP_DESKTOP_HELPER !== "0", transport: process.env.RCMCP_DESKTOP_HELPER === "0" ? "oneshot" : "persistent",
     ...(helper?.status() ?? { running: false, pid: null, busy: false, starts: 0, completed: 0, lastError: null }),
@@ -124,18 +126,22 @@ export function desktopHelperStatus() {
 }
 
 export async function desktopMonitors() {
+  if (process.platform === "linux") return linuxMonitors();
   const value = await runPowerShell(`Add-Type -AssemblyName System.Windows.Forms; $out=@([System.Windows.Forms.Screen]::AllScreens | ForEach-Object { [pscustomobject]@{ deviceName=$_.DeviceName; primary=$_.Primary; bitsPerPixel=$_.BitsPerPixel; bounds=@{x=$_.Bounds.X;y=$_.Bounds.Y;width=$_.Bounds.Width;height=$_.Bounds.Height}; workingArea=@{x=$_.WorkingArea.X;y=$_.WorkingArea.Y;width=$_.WorkingArea.Width;height=$_.WorkingArea.Height} } }); ConvertTo-Json -InputObject $out -Compress -Depth 5`);
   return Array.isArray(value) ? value : value === null ? [] : [value];
 }
 
-export async function desktopUia(input: DesktopUiaInput) { return runPowerShell(uiaScript, input); }
+export async function desktopUia(input: DesktopUiaInput) {
+  if (process.platform === "linux") return linuxUia(input); return runPowerShell(uiaScript, input); }
 
 export async function desktopWindows(input: DesktopWindowsInput = {}) {
+  if (process.platform === "linux") return linuxWindows(input);
   const value = await runPowerShell(windowsScript, input);
   return Array.isArray(value) ? value : value === null ? [] : [value];
 }
 
 export async function desktopScreenshot(input: { monitor?: number | "all"; scale?: number }): Promise<unknown> {
+  if (process.platform === "linux") return linuxScreenshot(input);
   return desktopSequence(() => captureDesktopFile(outputPath => runPowerShell(`Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 $i=Get-Content -Raw -Encoding UTF8 -LiteralPath $args[0] | ConvertFrom-Json
@@ -164,8 +170,9 @@ try {
 }`, { ...input, outputPath })));
 }
 
-export async function desktopFocus(input: { handle?: number; pid?: number; title?: string }) {
+export async function desktopFocus(input: { handle?: number | string; pid?: number; title?: string }) {
   input = desktopFocusSchema.parse(input);
+  if (process.platform === "linux") return linuxFocus(input);
   return runPowerShell(windowsPrelude + `$i=Get-Content -Raw -Encoding UTF8 -LiteralPath $args[0]|ConvertFrom-Json; if(-not ("RcmcpFocus" -as [type])){ Add-Type @'\nusing System; using System.Runtime.InteropServices; public static class RcmcpFocus { [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h); [DllImport("user32.dll")] public static extern bool ShowWindowAsync(IntPtr h,int n); [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
 [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h,out uint pid);
 [DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId();
@@ -191,11 +198,13 @@ public static bool Focus(IntPtr h) {
 
 export async function desktopMouse(input: { action: "position" | "move" | "click" | "doubleClick" | "scroll"; x?: number; y?: number; button?: "left" | "right" | "middle"; delta?: number }) {
   input = desktopMouseSchema.parse(input);
+  if (process.platform === "linux") return linuxMouse(input);
   return runPowerShell(`$i=Get-Content -Raw -Encoding UTF8 -LiteralPath $args[0]|ConvertFrom-Json; if(-not ("RcmcpMouse" -as [type])){ Add-Type @'\nusing System; using System.Runtime.InteropServices; public static class RcmcpMouse { [StructLayout(LayoutKind.Sequential)] public struct POINT { public int X,Y; } [DllImport("user32.dll")] public static extern bool SetCursorPos(int X,int Y); [DllImport("user32.dll")] public static extern bool GetCursorPos(out POINT p); [DllImport("user32.dll")] public static extern void mouse_event(uint f,uint dx,uint dy,int data,UIntPtr extra); }\n'@ }; if($i.action -ne 'position' -and $null -ne $i.x -and $null -ne $i.y){[void][RcmcpMouse]::SetCursorPos([int]$i.x,[int]$i.y);Start-Sleep -Milliseconds 40}; $button=if($i.button){[string]$i.button}else{'left'}; $flags=@{left=@(2,4);right=@(8,16);middle=@(32,64)}; if($i.action -eq 'click' -or $i.action -eq 'doubleClick'){ $count=if($i.action -eq 'doubleClick'){2}else{1}; 1..$count|ForEach-Object{ $f=$flags[$button];[RcmcpMouse]::mouse_event([uint32]$f[0],0,0,0,[UIntPtr]::Zero);[RcmcpMouse]::mouse_event([uint32]$f[1],0,0,0,[UIntPtr]::Zero);Start-Sleep -Milliseconds 80 } } elseif($i.action -eq 'scroll'){$delta=if($null -ne $i.delta){[int]$i.delta}else{120};[RcmcpMouse]::mouse_event(2048,0,0,$delta,[UIntPtr]::Zero)}; $p=New-Object RcmcpMouse+POINT;[void][RcmcpMouse]::GetCursorPos([ref]$p);[pscustomobject]@{ok=$true;x=$p.X;y=$p.Y}|ConvertTo-Json -Compress`, input);
 }
 
 export async function desktopKeyboard(input: { action: "type" | "press" | "hotkey"; text?: string; keys?: string[] }) {
   input = desktopKeyboardSchema.parse(input);
+  if (process.platform === "linux") return linuxKeyboard(input);
   return runPowerShell(`$i=Get-Content -Raw -Encoding UTF8 -LiteralPath $args[0]|ConvertFrom-Json
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
@@ -357,17 +366,21 @@ if($i.action -eq 'hotkey'){
 }
 
 export async function desktopClipboardGet() {
+  if (process.platform === "linux") return linuxClipboardGet();
   return runPowerShell(`Add-Type -AssemblyName System.Windows.Forms; [pscustomobject]@{text=[System.Windows.Forms.Clipboard]::GetText()}|ConvertTo-Json -Compress`);
 }
 export async function desktopClipboardSet(input: { text: string }) {
+  if (process.platform === "linux") return linuxClipboardSet(input);
   return runPowerShell(`$i=Get-Content -Raw -Encoding UTF8 -LiteralPath $args[0]|ConvertFrom-Json; Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.Clipboard]::SetText([string]$i.text); [pscustomobject]@{ok=$true;chars=([string]$i.text).Length}|ConvertTo-Json -Compress`, input);
 }
 export async function desktopSessionStatus() {
+  if (process.platform === "linux") return linuxSession();
   return runPowerShell(`${desktopSessionProbePowerShell}
 Get-RcmcpDesktopSessionStatus | ConvertTo-Json -Compress -Depth 6`);
 }
 
 export async function desktopLaunch(input: { target: string; arguments?: string[]; waitForWindowMs?: number; requireWindow?: boolean }) {
+  if (process.platform === "linux") return linuxLaunch(input);
   return runPowerShell(`${desktopSessionProbePowerShell}
 if(-not ("RcmcpLaunchWindow" -as [type])){ Add-Type @'
 using System;
@@ -489,6 +502,7 @@ $status = if ($verified -and $windowVerified) { 'window' }
 }
 
 export async function desktopBrowserOpen(input: { url: string; browser?: "auto" | "edge" | "chrome" | "brave" | "firefox"; newWindow?: boolean }) {
+  if (process.platform === "linux") return linuxBrowser(input);
   return runPowerShell(`$i=Get-Content -Raw -Encoding UTF8 -LiteralPath $args[0]|ConvertFrom-Json; $candidates=@(); $pf=[Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFiles); $pfx=[Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFilesX86); if($i.browser -eq 'edge' -or $i.browser -eq 'auto' -or -not $i.browser){$candidates += @((Join-Path $pfx 'Microsoft\\Edge\\Application\\msedge.exe'),(Join-Path $pf 'Microsoft\\Edge\\Application\\msedge.exe'))}; if($i.browser -eq 'chrome' -or $i.browser -eq 'auto' -or -not $i.browser){$candidates += @((Join-Path $pf 'Google\\Chrome\\Application\\chrome.exe'),(Join-Path $pfx 'Google\\Chrome\\Application\\chrome.exe'))}; if($i.browser -eq 'brave' -or $i.browser -eq 'auto' -or -not $i.browser){$candidates += @((Join-Path $pf 'BraveSoftware\\Brave-Browser\\Application\\brave.exe'),(Join-Path $pfx 'BraveSoftware\\Brave-Browser\\Application\\brave.exe'))}; if($i.browser -eq 'firefox' -or $i.browser -eq 'auto' -or -not $i.browser){$candidates += @((Join-Path $pf 'Mozilla Firefox\\firefox.exe'),(Join-Path $pfx 'Mozilla Firefox\\firefox.exe'))}; $exe=$candidates|Where-Object{$_ -and (Test-Path $_)}|Select-Object -First 1; if(-not $exe){throw 'No supported browser executable found'}; $name=[IO.Path]::GetFileName($exe).ToLower(); if($name -eq 'firefox.exe'){$a=if($i.newWindow -eq $false){@('-new-tab',[string]$i.url)}else{@('-new-window',[string]$i.url)}}else{$a=if($i.newWindow -eq $false){@('--new-tab',[string]$i.url)}else{@('--new-window',[string]$i.url)}}; $p=Start-Process -FilePath $exe -ArgumentList $a -PassThru; [pscustomobject]@{ok=$true;browser=$name;executable=$exe;pid=if($p){$p.Id}else{$null};url=[string]$i.url}|ConvertTo-Json -Compress`, input);
 }
 

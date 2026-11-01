@@ -265,8 +265,17 @@ export class AgentClient {
   private request<T>(name: string, route: string, body?: unknown, context: AgentEndpointContext = "system", options?: AgentRequestOptions): Promise<T> {
     return this.requestRoute(name, route, body, context, options);
   }
+  private async linuxOwnerDesktopRequest<T>(name: string, route: string, body?: unknown, options?: AgentRequestOptions): Promise<T> {
+    const info = await this.info(name, "user", { signal: options?.signal }) as { runtime?: { platform?: string; capabilities?: string[] } };
+    if (info.runtime?.platform !== "linux" || !info.runtime?.capabilities?.includes("linux-desktop-v1")) throw new AgentRequestError(`${name} desktop context is not configured and owner Linux desktop capability is unavailable`, name, "desktop", route, "context");
+    return this.requestRoute(name, route, body, "user", options);
+  }
   private desktopRequest<T>(name: string, route: string, body?: unknown, options?: AgentRequestOptions): Promise<T> {
-    return this.requestRoute(name, route, body, "desktop", options);
+    const device = this.getDevice(name);
+    if (device.desktopUrl) return this.requestRoute(name, route, body, "desktop", options);
+    // Linux owner agents expose desktop routes in the same user service.
+    // Preserve an explicit desktop URL and never fall back to a root endpoint.
+    return this.linuxOwnerDesktopRequest(name, route, body, options);
   }
 
   semanticDesktopObserve(name: string, input: unknown, context: AgentEndpointContext, signal?: AbortSignal): Promise<Record<string, unknown>> {

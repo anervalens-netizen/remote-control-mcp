@@ -32,12 +32,12 @@ export function registerDesktopTools(server: McpServer, client: AgentClient): vo
   }, async ({ device, ...input }, extra) => text(await client.desktopWindows(device, input, extra.signal)));
 
   server.registerTool("desktop_uia", {
-    description: "Inspect and operate Windows UI Automation elements. Query a window handle (or desktop root), filter name/automationId/controlType, then use returned elementId to inspect/invoke/setValue/focus/select/toggle/expand/collapse. Query defaults depth 3, limit 100; offset/nextOffset page matches. Inspect lists pattern methods/typed arguments; action=pattern invokes any supported method. textLimit=-1 reads full exposed text. References bind process lifetime, window and runtime ID; they can resolve after helper restart or in one-shot mode. Requery stale elements.",
+    description: "Inspect and operate Windows UI Automation or Linux AT-SPI elements. Linux uses string window handles and observation-bound elementIds; Windows pattern methods are Windows-only. Query a window handle (or desktop root), filter name/automationId/controlType, then use returned elementId to inspect/invoke/setValue/focus/select/toggle/expand/collapse. Query defaults depth 3, limit 100; offset/nextOffset page matches. Inspect lists pattern methods/typed arguments; action=pattern invokes any supported method. textLimit=-1 reads full exposed text. References bind process lifetime, window and runtime ID; they can resolve after helper restart or in one-shot mode. Requery stale elements.",
     inputSchema: { device: z.string().min(1), ...desktopUiaSchema.shape },
   }, async ({ device, ...input }, extra) => text(await client.desktopUia(device, desktopUiaSchema.parse(input), extra.signal)));
 
   server.registerTool("desktop_session_status", {
-    description: "Inspect the interactive desktop session, current input desktop and UAC/Secure Desktop evidence without disabling Secure Desktop.",
+    description: "Inspect the Linux or Windows interactive desktop session, current input desktop and UAC/Secure Desktop evidence without disabling Secure Desktop.",
     inputSchema: { device: z.string().min(1) },
     outputSchema: desktopSessionOutput,
     annotations: { readOnlyHint: true, openWorldHint: false },

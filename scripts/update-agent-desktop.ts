@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -50,12 +50,13 @@ export async function installCandidate(raw: unknown) {
     const names = (await run("tar", ["-tzf", archive], { timeout: 10000 })).stdout.trim().split(/\r?\n/);
     const verbose = (await run("tar", ["-tvzf", archive], { timeout: 10000 })).stdout.trim().split(/\r?\n/);
     validateArchiveEntries(names, verbose);
-    const extracted = path.join(staging, "extracted"); mkdirSync(extracted);
+    const extracted = path.join(staging, "extracted"); mkdirSync(extracted, { mode: 0o700 });
     await run("tar", ["-xzf", archive, "-C", extracted], { timeout: 10000 });
     if (existsSync(directory)) {
       // A known failed qualification may be retried against the same immutable bytes.
       for (const name of names) if (digest(readFileSync(path.join(directory, name))) !== digest(readFileSync(path.join(extracted, name)))) throw new Error("existing_candidate_integrity_mismatch");
     } else { const { renameSync } = await import("node:fs"); renameSync(extracted, directory); }
+    if (process.platform === "linux") chmodSync(directory, 0o700);
     const binary = path.join(directory, process.platform === "win32" ? "agent-desktop.exe" : "agent-desktop");
     const manifest = semanticManifestSchema.parse({ version: 1, engineVersion: candidate.version, jsonVersion: "2.5", binary, sha256: digest(readFileSync(binary)),
       files: names.filter(name => path.join(directory, name) !== binary).map(name => ({ path: path.join(directory, name), sha256: digest(readFileSync(path.join(directory, name))) })),

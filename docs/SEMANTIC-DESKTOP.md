@@ -101,3 +101,33 @@ notification is not proof that the owner read it.
 
 Sources: [upstream installation](https://github.com/vercel-labs/agent-desktop/blob/v1.0.2/docs/install.md)
 and [JSON contract](https://github.com/vercel-labs/agent-desktop/blob/v1.0.2/docs/json-output.md).
+
+## Linux desktop tools
+
+The existing desktop tools also support an owner-session Linux backend. Enable
+`RCMCP_DESKTOP_ENABLED=1` on the owner agent, with the verified semantic engine
+manifest installed. The controller preserves an explicit desktop endpoint;
+otherwise it routes to the owner agent only after verifying Linux and the
+`linux-desktop-v1` capability. It never falls back to root.
+
+Qualified desktop environments are KDE Plasma on X11 and KDE Plasma on Wayland.
+Both provide monitor geometry, window enumeration/focus, screenshots, mouse,
+keyboard/Unicode text, clipboard, executable launch, browser launch and batches.
+Accessibility uses AT-SPI through agent-desktop; applications must expose their
+controls. Linux window handles can be strings and must be passed back unchanged.
+Windows-specific UIA patterns are rejected; use semantic actions instead.
+
+Install Python 3 with PyGObject/Gio, KWin, kscreen-doctor and Spectacle. X11
+physical input additionally needs xdotool. Wayland physical input requires
+KWin's owner-session EIS interface and libei with text capability (qualified
+with libei 1.6). No root input daemon or broad device permissions are required.
+The native clipboard helper and its containing directory must belong to the
+owner and must not be writable by other users or groups.
+
+Coordinates are logical desktop coordinates, including negative monitor origins.
+Captures report their origin and scale. Mixed-scale screenshot layouts currently
+fail explicitly pending qualification. Locked sessions refuse input. Other
+compositors are not covered by this qualification. The Linux helper is one-shot;
+`running=false` is normal between operations. Input delivery is not application
+effect verification: observe the result before deciding on another action,
+especially after a timeout. Never blindly repeat a click.

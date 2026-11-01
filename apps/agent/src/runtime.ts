@@ -67,7 +67,7 @@ function canElevate(admin: boolean): boolean {
 }
 
 function probeInteractiveSessionSync(): boolean {
-  if (process.env.RCMCP_DESKTOP_ENABLED === "1") return true;
+  if (process.env.RCMCP_DESKTOP_ENABLED === "1" && process.platform === "win32") return true;
   if (process.platform === "win32") {
     const probe = spawnSync("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "[bool](Get-Process explorer -ErrorAction SilentlyContinue)"], { encoding: "utf8", timeout: 3000, windowsHide: true });
     return probe.status === 0 && probe.stdout.trim().toLowerCase() === "true";
@@ -96,7 +96,7 @@ let interactiveAvailable = probeInteractiveSessionSync();
 let interactiveProbeInFlight = false;
 
 function refreshInteractiveSessionAsync(): void {
-  if (desktopEnabled) {
+  if (desktopEnabled && process.platform === "win32") {
     interactiveAvailable = true;
     return;
   }
@@ -119,7 +119,7 @@ function refreshInteractiveSessionAsync(): void {
   );
 }
 
-if (!desktopEnabled && (process.platform === "win32" || (process.platform === "linux" && process.getuid?.() !== 0 && semanticDesktopConfigured()))) {
+if ((!desktopEnabled && process.platform === "win32") || (process.platform === "linux" && process.getuid?.() !== 0 && semanticDesktopConfigured())) {
   refreshInteractiveSessionAsync();
   const interactiveRefreshTimer = setInterval(refreshInteractiveSessionAsync, 5000);
   interactiveRefreshTimer.unref();
@@ -152,6 +152,7 @@ export function runtimeStatus() {
     "exec-receipts-v1",
     "job-key-recovery-v1", "utf8-byte-pages-v1", "high-level-coordination-v1",
     ...(jobIsolation.ready ? ["job-cgroup-isolation-v1"] : []),
+    ...(desktopEnabled && process.platform === "linux" ? ["linux-desktop-v1"] : []),
     ...(desktopEnabled ? ["desktop", "desktop-session", "desktop-batch", "desktop-helper", "desktop-window-enumeration", "desktop-uia", "clipboard", "browser"] : []),
     ...(elevationAvailable ? ["elevation"] : []),
     ...(interactiveAvailable ? ["interactive-session"] : []),

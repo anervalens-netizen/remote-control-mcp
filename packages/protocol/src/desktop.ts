@@ -4,7 +4,7 @@ export type DesktopWindowsInput = z.infer<z.ZodObject<typeof desktopWindowsField
 
 export const desktopUiaFields = {
   action: z.enum(["query", "inspect", "focus", "invoke", "setValue", "select", "toggle", "expand", "collapse", "pattern"]).optional(),
-  handle: z.number().int().positive().optional(), elementId: z.string().min(1).optional(),
+  handle: z.union([z.number().int().positive(), z.string().min(1)]).optional(), elementId: z.string().min(1).optional(),
   name: z.string().optional(), automationId: z.string().optional(), controlType: z.string().optional(),
   depth: z.number().int().nonnegative().optional(), offset: z.number().int().nonnegative().optional(), limit: z.number().int().positive().optional(),
   textLimit: z.number().int().min(-1).optional(), value: z.string().optional(),
@@ -19,7 +19,7 @@ export type DesktopUiaInput = z.infer<typeof desktopUiaSchema>;
 
 
 export const desktopFocusSchema = z.object({
-  handle: z.number().int().positive().optional(), pid: z.number().int().positive().optional(), title: z.string().min(1).optional(),
+  handle: z.union([z.number().int().positive(), z.string().min(1)]).optional(), pid: z.number().int().positive().optional(), title: z.string().min(1).optional(),
 }).strict().refine(v => v.handle !== undefined || v.pid !== undefined || v.title !== undefined, "handle, pid or title is required");
 export const desktopMouseSchema = z.object({
   action: z.enum(["position", "move", "click", "doubleClick", "scroll"]),

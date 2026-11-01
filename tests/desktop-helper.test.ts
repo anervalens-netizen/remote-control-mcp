@@ -107,7 +107,7 @@ describe('desktop sequence routing', () => {
     } finally { await app.close(); }
   });
   it.skipIf(process.platform === 'win32')('stops or continues after individual action errors with truthful partial results', async () => {
-    const actions = [{ kind: 'wait' as const, ms: 1 }, { kind: 'monitors' as const }, { kind: 'wait' as const, ms: 1 }];
+    const actions = [{ kind: 'wait' as const, ms: 1 }, { kind: 'uia' as const, action: 'pattern' as const, elementId: 'synthetic', pattern: 'WindowsOnly', method: 'Synthetic' }, { kind: 'wait' as const, ms: 1 }];
     expect(await desktopBatch({ actions })).toMatchObject({ ok: false, executed: 2, skipped: 1, stoppedOnError: true });
     expect(await desktopBatch({ actions, stopOnError: false })).toMatchObject({ ok: false, executed: 3, skipped: 0, stoppedOnError: false });
   });
