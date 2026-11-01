@@ -10,6 +10,7 @@ import { registerTransferTools } from "./transfer-tools.ts";
 import { registerJobTools } from "./job-tools.ts";
 import { registerHighLevelTools } from "./high-level-tools.ts";
 import { registerDesktopTools } from "./desktop-tools.ts";
+import { registerSemanticDesktopTools } from "./semantic-desktop-tools.ts";
 import { registerHostTools } from "./host-tools.ts";
 import { registerSecretTools } from "./secret-tools.ts";
 import { registerCapabilityTools } from "./capability-tools.ts";
@@ -31,6 +32,7 @@ export function registerTools(server: McpServer, client: AgentClient): void {
   registerJobTools(server, client);
   registerHighLevelTools(server, client);
   registerDesktopTools(server, client);
+  registerSemanticDesktopTools(server, client);
   registerHostTools(server, client);
   registerSecretTools(server, client);
   registerCapabilityTools(server, client);

@@ -17,6 +17,8 @@ node .github/check-public-data.mjs --history HEAD
 Tests use isolated temporary state. Do not override them with production state directories. The lockfile fixes resolved packages; direct versions and action commit hashes are pinned. Change those deliberately and rerun the entire relevant suite, including SDK/session compatibility tests.
 
 The read-only console is built with `pnpm build:console` (included in `pnpm check`).
+Optional Linux/Windows semantic desktop control and automatic dependency updates
+are described in [Semantic desktop](docs/SEMANTIC-DESKTOP.md).
 Build it before starting the controller from a fresh checkout or immutable
 release. Ship `apps/console/dist/console.html` and its SHA-256 manifest alongside
 the verified source; the source attestation alone does not attest generated

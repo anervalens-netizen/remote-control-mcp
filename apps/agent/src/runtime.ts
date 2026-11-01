@@ -8,6 +8,7 @@ import { readWindowsIdentity, type WindowsTokenIdentity } from "./windows-identi
 import process from "node:process";
 import { stateRoot } from "./state.ts";
 import { jobCgroupIsolation } from "./job-systemd.ts";
+import { semanticDesktopConfigured, semanticSession } from "./semantic-desktop-env.ts";
 
 export type RuntimeContext = "system" | "user" | "desktop" | "unknown";
 export type PrivilegeLevel = "root" | "system" | "admin" | "owner" | "user" | "unknown";
@@ -99,7 +100,13 @@ function refreshInteractiveSessionAsync(): void {
     interactiveAvailable = true;
     return;
   }
-  if (process.platform !== "win32" || interactiveProbeInFlight) return;
+  if (interactiveProbeInFlight) return;
+  if (process.platform === "linux" && process.getuid?.() !== 0 && semanticDesktopConfigured()) {
+    interactiveProbeInFlight = true;
+    void semanticSession().then(() => { interactiveAvailable = true; }, () => { interactiveAvailable = false; }).finally(() => { interactiveProbeInFlight = false; });
+    return;
+  }
+  if (process.platform !== "win32") return;
   interactiveProbeInFlight = true;
   execFile(
     "powershell.exe",
@@ -112,7 +119,7 @@ function refreshInteractiveSessionAsync(): void {
   );
 }
 
-if (process.platform === "win32" && !desktopEnabled) {
+if (!desktopEnabled && (process.platform === "win32" || (process.platform === "linux" && process.getuid?.() !== 0 && semanticDesktopConfigured()))) {
   refreshInteractiveSessionAsync();
   const interactiveRefreshTimer = setInterval(refreshInteractiveSessionAsync, 5000);
   interactiveRefreshTimer.unref();
@@ -135,6 +142,7 @@ export function runtimeStatus() {
   const jobIsolation = jobCgroupIsolation();
   const capabilities = [
     "power-requests", "wake-relay",
+    ...(semanticDesktopConfigured() ? ["desktop-semantic-v1"] : []),
     "browser-sessions", "browser-dom", "browser-cdp",
     "exec", "filesystem", "process", "pty", "jobs", "service", "repo", "project", "docker",
     "metrics", "network", "storage", "gpu", "packages", "power",
@@ -175,6 +183,7 @@ export function runtimeStatus() {
       jobCgroupIsolation: jobIsolation,
       search: { ready: searchReady, binary: rgPath },
       desktop: { ready: desktopEnabled, enabled: desktopEnabled, interactiveSessionAvailable: interactiveAvailable },
+      semanticDesktop: { configured: semanticDesktopConfigured(), readinessProbe: "/v1/desktop/observe", readinessKind: "status" },
       identity: { privilege, ownerUser: process.env.RCMCP_OWNER_USER ?? null, elevationAvailable, verified: windowsIdentity?.verified ?? true, source: windowsIdentity ? "windows-token" : "posix", accountSid: windowsIdentity?.accountSid ?? null, ...(windowsIdentity?.error ? { error: windowsIdentity.error } : {}) },
     },
   };

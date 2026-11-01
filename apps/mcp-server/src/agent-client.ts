@@ -269,6 +269,13 @@ export class AgentClient {
     return this.requestRoute(name, route, body, "desktop", options);
   }
 
+  semanticDesktopObserve(name: string, input: unknown, context: AgentEndpointContext, signal?: AbortSignal): Promise<Record<string, unknown>> {
+    return this.requestRoute(name, "/v1/desktop/observe", input, context, { signal, timeoutMs: 35000 });
+  }
+  semanticDesktopAct(name: string, input: unknown, context: AgentEndpointContext, signal?: AbortSignal): Promise<Record<string, unknown>> {
+    return this.requestRoute(name, "/v1/desktop/act", input, context, { signal, timeoutMs: 65000 });
+  }
+
   info(name: string, context: AgentEndpointContext = "system", options?: AgentRequestOptions): Promise<unknown> {
     const device = this.getDevice(name);
     if (device.transport === "android-reverse") {

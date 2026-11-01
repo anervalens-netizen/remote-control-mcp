@@ -16,6 +16,8 @@ import { killProcess, listProcesses, startProcess } from "./processes.ts";
 import { ptyInput, ptyList, ptyOutput, ptyRemove, ptyResize, ptyStart, ptyTerminate } from "./pty.ts";
 import { registerExecRoutes } from "./exec-routes.ts";
 import { registerDesktopRoutes } from "./desktop-routes.ts";
+import { registerSemanticDesktopRoutes } from "./semantic-desktop-routes.ts";
+import { semanticDesktopConfigured } from "./semantic-desktop-env.ts";
 import { runtimeStatus } from "./runtime.ts";
 import { recoverMoveCaptures } from "./filesystem-atomic.ts";
 
@@ -206,4 +208,5 @@ app.post("/v1/pty/remove", async (request, reply) => { const p=ptyRemoveSchema.s
 registerExtraRoutes(app);
 registerBrowserRoutes(app);
 if (process.env.RCMCP_DESKTOP_ENABLED === "1") registerDesktopRoutes(app);
+if (semanticDesktopConfigured()) registerSemanticDesktopRoutes(app);
 await app.listen({ host, port });

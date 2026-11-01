@@ -9,6 +9,8 @@ import { afterAll } from "vitest";
 const stateDir = path.join(os.tmpdir(), `rcmcp-vitest-${process.pid}-${randomUUID()}`);
 mkdirSync(stateDir, { recursive: true });
 process.env.RCMCP_STATE_DIR = stateDir;
+// Keep native desktop fixtures isolated from the installed owner manifest.
+process.env.RCMCP_AGENT_DESKTOP_MANIFEST = path.join(stateDir, "agent-desktop.json");
 // Native runs may inherit an installed agent environment. Fixture state must
 // never share its coordination, secret or bridge journal directories.
 for (const key of ["RCMCP_COORDINATION_DIR", "RCMCP_SECRET_DIR", "RCMCP_CONTEXTKEEP_STATE_DIR"]) delete process.env[key];
