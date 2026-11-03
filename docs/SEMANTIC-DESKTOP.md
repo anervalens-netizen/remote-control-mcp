@@ -77,8 +77,8 @@ Known failed or incompatible updates are retained as blocked for investigation.
 `scripts/update-agent-desktop.ts <base64-candidate-json>` is the trusted
 controller-to-agent installer. The authenticated controller attests provenance;
 the installer independently checks the archive digest, platform and entries.
-Only the expected regular executable/helper files are accepted. JSON contract
-2.5 is required; a new engine major requires adapter review. These compatibility
+Only the expected regular executable/helper files are accepted. JSON contracts
+2.5 and 2.6 are supported; responses must match the activated manifest; a new engine major requires adapter review. These compatibility
 guards do not automatically accept arbitrary future releases.
 
 Before activation the candidate must write/read a synthetic field, invoke a
@@ -131,3 +131,12 @@ compositors are not covered by this qualification. The Linux helper is one-shot;
 `running=false` is normal between operations. Input delivery is not application
 effect verification: observe the result before deciding on another action,
 especially after a timeout. Never blindly repeat a click.
+
+## JSON 2.6 compatibility
+
+Agent Desktop 1.1.0 emits contract 2.6. Its capture-proof and ambiguity refusals
+pass through unchanged, including `identity_unproven` and refusal details.
+No automatic action retry or physical fallback is added. Fresh native state and
+observation bindings follow the binary hash and contract, so observations from
+an older engine cannot be used to act after activation. Contract 2.5 remains
+supported for rollback. Qualification still requires real synthetic UI effects.

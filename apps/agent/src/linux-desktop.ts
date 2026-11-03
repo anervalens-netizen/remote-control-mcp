@@ -45,7 +45,7 @@ async function native(args: string[], env: NodeJS.ProcessEnv): Promise<any> {
   try { stdout = await run(manifest.binary, args, env); }
   catch (error) { stdout = (error as { stdout?: string }).stdout ?? ''; if (!stdout) throw error; }
   const value = JSON.parse(stdout);
-  if (value.version !== '2.5' || !value.ok) throw new Error(JSON.stringify(value.error ?? { code: 'native_contract_mismatch' }));
+  if (value.version !== manifest.jsonVersion || !value.ok) throw new Error(JSON.stringify(value.error ?? { code: 'native_contract_mismatch' }));
   return value.data;
 }
 export function parseKscreen(value: any): Monitor[] {

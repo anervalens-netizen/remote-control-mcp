@@ -15,17 +15,17 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 
 const roots: string[] = [];
 afterEach(() => roots.splice(0).forEach(root => rmSync(root, { recursive: true, force: true })));
-function setup() {
+function setup(contract: "2.5" | "2.6" = "2.5") {
   const root = mkdtempSync(path.join(os.tmpdir(), "semantic-desktop-test-")); roots.push(root);
   let binding = "session-one", effects = 0, uncertain = false, complete = true;
   const calls: string[][] = [];
-  const manifest: SemanticManifest = { version: 1, engineVersion: "1.0.2", jsonVersion: "2.5", binary: path.join(root, "native"), sha256: "a".repeat(64), files: [], provenanceVerified: true };
+  const manifest: SemanticManifest = { version: 1, engineVersion: "1.0.2", jsonVersion: contract, binary: path.join(root, "native"), sha256: "a".repeat(64), files: [], provenanceVerified: true };
   const deps = { root, manifest: () => manifest, session: async () => ({ env: {}, fingerprint: binding }), invoke: async (_: unknown, args: string[]) => {
     calls.push(args);
-    if (args[0] === "snapshot") return { version: "2.5", ok: true, data: { complete, tree: { name: "Synthetic entry", ref_id: "@synthetic:e1" } } };
+    if (args[0] === "snapshot") return { version: contract, ok: true, data: { complete, tree: { name: "Synthetic entry", ref_id: "@synthetic:e1" } } };
     effects++;
     if (uncertain) throw new Error("transport lost after effect");
-    return { version: "2.5", ok: true, data: { disposition: { delivery: "delivered_unverified", retry: "unsafe" } } };
+    return { version: contract, ok: true, data: { disposition: { delivery: "delivered_unverified", retry: "unsafe" } } };
   } };
   return { root, deps, backend: new SemanticDesktop(deps), calls, effects: () => effects, session: (s: string) => { binding = s; }, uncertain: () => { uncertain = true; }, partial: () => { complete = false; } };
 }
@@ -122,4 +122,30 @@ it.each(["user", "desktop"] as const)("routes actual MCP calls through the %s en
 
 it("does not accept reference-shaped UI text as an actionable element", () => {
   expect(collectRefs({ tree: [{ ref_id: "@synthetic:e1", name: "@synthetic:e2" }] })).toEqual(["@synthetic:e1"]);
+});
+
+it.each(["2.5", "2.6"] as const)("qualifies effects and durable recovery under contract %s", async contract => {
+  const s = setup(contract), input = await actionInput(s);
+  expect(await s.backend.act(input)).toMatchObject({ ok: true, version: contract });
+  expect(await new SemanticDesktop(s.deps).act(input)).toMatchObject({ recovered: true, replayed: false });
+  expect(s.effects()).toBe(1);
+});
+it("rejects responses that disagree with the manifest contract", async () => {
+  const s = setup("2.6"); s.deps.manifest().jsonVersion = "2.5";
+  expect(await s.backend.observe({ kind: "status" })).toMatchObject({ ok: false, error: { code: "native_contract_mismatch" } });
+});
+it("preserves 2.6 identity refusals without retrying a ref action", async () => {
+  const s = setup("2.6"), input = await actionInput(s, { observeAfter: false });
+  let calls = 0;
+  const refusal = { code: "AMBIGUOUS_TARGET", details: { kind: "identity_not_unique", retryable: false }, disposition: { delivery: "not_delivered", retry: "safe" } };
+  const backend = new SemanticDesktop({ ...s.deps, invoke: async () => { calls++; return { version: "2.6", ok: false, error: refusal }; } });
+  expect(await backend.act(input)).toMatchObject({ ok: false, error: refusal });
+  expect(await new SemanticDesktop({ ...s.deps }).act(input)).toMatchObject({ recovered: true, error: refusal });
+  expect(calls).toBe(1);
+});
+it("invalidates observations after a contract switch", async () => {
+  const s = setup(), input = await actionInput(s);
+  s.deps.manifest().jsonVersion = "2.6";
+  expect(await s.backend.act(input)).toMatchObject({ ok: false, error: { code: "stale_observation_or_session_unavailable" } });
+  expect(s.effects()).toBe(0);
 });

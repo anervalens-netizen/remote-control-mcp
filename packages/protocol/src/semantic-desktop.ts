@@ -30,7 +30,7 @@ export type SemanticAct = z.infer<typeof semanticActSchema>;
 export const semanticManifestSchema = z.object({
   version: z.literal(1),
   engineVersion: z.string().regex(/^\d+\.\d+\.\d+$/),
-  jsonVersion: z.literal("2.5"),
+  jsonVersion: z.enum(["2.5", "2.6"]),
   binary: z.string().min(1),
   sha256: z.string().regex(/^[a-f0-9]{64}$/),
   files: z.array(z.object({ path: z.string(), sha256: z.string().regex(/^[a-f0-9]{64}$/) })).default([]),

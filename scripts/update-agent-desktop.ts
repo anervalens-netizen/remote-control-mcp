@@ -58,16 +58,16 @@ export async function installCandidate(raw: unknown) {
     } else { const { renameSync } = await import("node:fs"); renameSync(extracted, directory); }
     if (process.platform === "linux") chmodSync(directory, 0o700);
     const binary = path.join(directory, process.platform === "win32" ? "agent-desktop.exe" : "agent-desktop");
-    const manifest = semanticManifestSchema.parse({ version: 1, engineVersion: candidate.version, jsonVersion: "2.5", binary, sha256: digest(readFileSync(binary)),
+    const version = JSON.parse((await run(binary, ["version"], { timeout: 10000 })).stdout);
+    if (!["2.5", "2.6"].includes(version.version) || version.data?.version !== candidate.version || version.ok !== true) throw new Error("candidate_contract_mismatch");
+    const manifest = semanticManifestSchema.parse({ version: 1, engineVersion: candidate.version, jsonVersion: version.version, binary, sha256: digest(readFileSync(binary)),
       files: names.filter(name => path.join(directory, name) !== binary).map(name => ({ path: path.join(directory, name), sha256: digest(readFileSync(path.join(directory, name))) })),
       upstreamCommit: candidate.commit, archiveSha256: candidate.sha256, provenanceVerified: true });
-    const version = JSON.parse((await run(binary, ["version"], { timeout: 10000 })).stdout);
-    if (version.version !== "2.5" || version.data?.version !== candidate.version || !version.ok) throw new Error("candidate_contract_mismatch");
     let qualification: unknown;
     if (candidate.allowHeadless) {
       const session = await semanticSession(false);
       const status = JSON.parse((await run(binary, ["status"], { timeout: 10000, env: session.env })).stdout);
-      if (!status.ok || status.version !== "2.5") throw new Error("candidate_status_failed");
+      if (!status.ok || status.version !== manifest.jsonVersion) throw new Error("candidate_status_failed");
       qualification = { ok: true, scope: "binary_and_contract_only", desktopEffectVerified: false };
     } else qualification = await qualifySemanticDesktop(manifest);
     atomicWriteJson(path.join(directory, "qualification.json"), qualification);

@@ -53,7 +53,7 @@ export class SemanticDesktop {
       }
       value = JSON.parse(stdout.trim());
     }
-    if (!value || value.version !== "2.5" || typeof value.ok !== "boolean") throw new Error("native_contract_mismatch");
+    if (!value || value.version !== ctx.manifest.jsonVersion || typeof value.ok !== "boolean") throw new Error("native_contract_mismatch");
     return value;
   }
   private readObservation(id: string, ctx: Context, ref: string): Observation {
