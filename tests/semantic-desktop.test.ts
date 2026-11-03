@@ -1,5 +1,5 @@
 import { afterEach, expect, it } from "vitest";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
@@ -148,4 +148,23 @@ it("invalidates observations after a contract switch", async () => {
   s.deps.manifest().jsonVersion = "2.6";
   expect(await s.backend.act(input)).toMatchObject({ ok: false, error: { code: "stale_observation_or_session_unavailable" } });
   expect(s.effects()).toBe(0);
+});
+
+it("does not authorize unproven refs or create an action receipt", async () => {
+  const s = setup("2.6"); let calls = 0;
+  const backend = new SemanticDesktop({ ...s.deps, invoke: async () => {
+    calls++; return { version: "2.6", ok: true, data: { identity_unproven: true, complete: true, tree: { ref_id: "@synthetic:e1" } } };
+  } });
+  const obs = await backend.observe({ app: "fixture" });
+  expect(obs).toMatchObject({ ok: true, data: { identity_unproven: true, complete: true } });
+  const commandId = randomUUID();
+  expect(await backend.act({ commandId, observationId: obs.observationId, ref: "@synthetic:e1", action: "click" })).toMatchObject({ ok: false, error: { disposition: { delivery: "not_delivered" } } });
+  expect(calls).toBe(1);
+  expect(existsSync(path.join(s.root, "commands", `${commandId}.json`))).toBe(false);
+});
+it("keeps proven refs usable in a presentation-truncated snapshot", async () => {
+  const s = setup("2.6"); s.partial();
+  const input = await actionInput(s, { observeAfter: false });
+  expect(await s.backend.act(input)).toMatchObject({ ok: true });
+  expect(s.effects()).toBe(1);
 });

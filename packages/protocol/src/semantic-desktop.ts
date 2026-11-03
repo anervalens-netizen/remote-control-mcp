@@ -27,10 +27,12 @@ export const semanticActSchema = z.object({
 }).strict();
 export type SemanticObserve = z.infer<typeof semanticObserveSchema>;
 export type SemanticAct = z.infer<typeof semanticActSchema>;
+export const semanticJsonVersionSchema = z.enum(["2.5", "2.6"]);
+
 export const semanticManifestSchema = z.object({
   version: z.literal(1),
   engineVersion: z.string().regex(/^\d+\.\d+\.\d+$/),
-  jsonVersion: z.enum(["2.5", "2.6"]),
+  jsonVersion: semanticJsonVersionSchema,
   binary: z.string().min(1),
   sha256: z.string().regex(/^[a-f0-9]{64}$/),
   files: z.array(z.object({ path: z.string(), sha256: z.string().regex(/^[a-f0-9]{64}$/) })).default([]),

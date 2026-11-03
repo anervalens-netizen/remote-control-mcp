@@ -1,7 +1,7 @@
 import { afterEach, expect, it } from 'vitest';
 import Fastify from 'fastify';
 import { AgentClient } from '../apps/mcp-server/src/agent-client.ts';
-import { keyCodes, parseKscreen } from '../apps/agent/src/linux-desktop.ts';
+import { keyCodes, parseKscreen, readLinuxNativeEnvelope } from '../apps/agent/src/linux-desktop.ts';
 import { desktopFocusSchema } from '../packages/protocol/src/desktop.ts';
 const close: Array<() => Promise<unknown>> = [];
 afterEach(async () => { for (const fn of close.splice(0)) await fn(); });
@@ -38,4 +38,14 @@ it('preserves an explicitly configured Windows desktop route without probing ano
   const { client, calls } = await fixture('win32', false, true);
   expect(await client.desktopMonitors('fixture')).toEqual([]);
   expect(calls).toEqual(['monitors']);
+});
+
+it.each(['2.5', '2.6'] as const)('reads Linux data under manifest contract %s', version => {
+  expect(readLinuxNativeEnvelope({ version, ok: true, data: { windows: [] } }, version)).toEqual({ windows: [] });
+});
+it.each(['2.5', '2.7', undefined])('refuses mismatched Linux contract %s', version => {
+  expect(() => readLinuxNativeEnvelope({ version, ok: true, data: {} }, '2.6')).toThrow('native_contract_mismatch');
+});
+it('preserves native error details rather than accepting a failed Linux response', () => {
+  expect(() => readLinuxNativeEnvelope({ version: '2.6', ok: false, error: { code: 'AMBIGUOUS_TARGET' } }, '2.6')).toThrow('AMBIGUOUS_TARGET');
 });

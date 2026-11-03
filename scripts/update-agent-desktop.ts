@@ -5,7 +5,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { z } from "zod";
-import { semanticManifestSchema } from "../packages/protocol/src/semantic-desktop.ts";
+import { semanticManifestSchema, semanticJsonVersionSchema } from "../packages/protocol/src/semantic-desktop.ts";
 import { atomicWriteJson } from "../apps/agent/src/state.ts";
 import { digest, loadSemanticManifest, semanticManifestPath, semanticSession } from "../apps/agent/src/semantic-desktop-env.ts";
 import { qualifySemanticDesktop } from "../apps/agent/src/semantic-desktop-qualification.ts";
@@ -21,6 +21,11 @@ export const candidateSchema = z.object({
 export function validateArchiveEntries(names: string[], verbose: string[]) {
   const allowed = new Set(["agent-desktop", "agent-desktop.exe", "agent-desktop-linux-clipboard-owner"]);
   if (!names.length || names.some(n => !allowed.has(n)) || new Set(names).size !== names.length || verbose.some(line => line && line[0] !== "-")) throw new Error("unsafe_release_archive");
+}
+export function candidateJsonVersion(value: unknown, engineVersion: string) {
+  const result = z.object({ version: semanticJsonVersionSchema, ok: z.literal(true), data: z.object({ version: z.literal(engineVersion) }) }).safeParse(value);
+  if (!result.success) throw new Error("candidate_contract_mismatch");
+  return result.data.version;
 }
 export async function installCandidate(raw: unknown) {
   const candidate = candidateSchema.parse(raw);
@@ -59,8 +64,8 @@ export async function installCandidate(raw: unknown) {
     if (process.platform === "linux") chmodSync(directory, 0o700);
     const binary = path.join(directory, process.platform === "win32" ? "agent-desktop.exe" : "agent-desktop");
     const version = JSON.parse((await run(binary, ["version"], { timeout: 10000 })).stdout);
-    if (!["2.5", "2.6"].includes(version.version) || version.data?.version !== candidate.version || version.ok !== true) throw new Error("candidate_contract_mismatch");
-    const manifest = semanticManifestSchema.parse({ version: 1, engineVersion: candidate.version, jsonVersion: version.version, binary, sha256: digest(readFileSync(binary)),
+    const jsonVersion = candidateJsonVersion(version, candidate.version);
+    const manifest = semanticManifestSchema.parse({ version: 1, engineVersion: candidate.version, jsonVersion, binary, sha256: digest(readFileSync(binary)),
       files: names.filter(name => path.join(directory, name) !== binary).map(name => ({ path: path.join(directory, name), sha256: digest(readFileSync(path.join(directory, name))) })),
       upstreamCommit: candidate.commit, archiveSha256: candidate.sha256, provenanceVerified: true });
     let qualification: unknown;

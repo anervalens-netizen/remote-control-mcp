@@ -89,7 +89,7 @@ export class SemanticDesktop {
     if (!result.ok || input.kind !== "snapshot") return { ...result, engineVersion: ctx.manifest.engineVersion };
     const id = randomUUID();
     const request = parent ? { ...parent.request, ...input, app: parent.request.app, windowId: parent.request.windowId } : input;
-    atomicWriteJson(path.join(this.directory("observations"), `${id}.json`), { id, createdAt: Date.now(), binding: ctx.binding, refs: collectRefs(result.data), request } satisfies Observation);
+    atomicWriteJson(path.join(this.directory("observations"), `${id}.json`), { id, createdAt: Date.now(), binding: ctx.binding, refs: result.data?.identity_unproven === true ? [] : collectRefs(result.data), request } satisfies Observation);
     return { ...result, observationId: id, engineVersion: ctx.manifest.engineVersion };
   }
   observe(raw: unknown): Promise<Record<string, any>> {

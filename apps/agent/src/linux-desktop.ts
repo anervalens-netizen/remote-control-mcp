@@ -10,6 +10,7 @@ import { semanticDesktop } from './semantic-desktop.ts';
 import { captureDesktopFile } from './desktop-screenshot.ts';
 import type { DesktopUiaInput, DesktopWindowsInput } from '../../../packages/protocol/src/desktop.ts';
 import { randomUUID } from 'node:crypto';
+import type { SemanticManifest } from '../../../packages/protocol/src/semantic-desktop.ts';
 
 const exec = promisify(execFile);
 const helperPath = fileURLToPath(new URL('./linux-desktop-helper.py', import.meta.url));
@@ -39,14 +40,17 @@ async function helper(input: unknown, env: NodeJS.ProcessEnv): Promise<any> {
     child.stdin.end(JSON.stringify(input));
   });
 }
+export function readLinuxNativeEnvelope(value: any, jsonVersion: SemanticManifest['jsonVersion']): any {
+  if (!value || value.version !== jsonVersion || value.ok !== true) throw new Error(JSON.stringify(value?.error ?? { code: 'native_contract_mismatch' }));
+  return value.data;
+}
 async function native(args: string[], env: NodeJS.ProcessEnv): Promise<any> {
   const manifest = loadSemanticManifest();
   let stdout: string;
   try { stdout = await run(manifest.binary, args, env); }
   catch (error) { stdout = (error as { stdout?: string }).stdout ?? ''; if (!stdout) throw error; }
   const value = JSON.parse(stdout);
-  if (value.version !== manifest.jsonVersion || !value.ok) throw new Error(JSON.stringify(value.error ?? { code: 'native_contract_mismatch' }));
-  return value.data;
+  return readLinuxNativeEnvelope(value, manifest.jsonVersion);
 }
 export function parseKscreen(value: any): Monitor[] {
   return value.outputs.filter((o: any) => o.connected && o.enabled).map((o: any) => {

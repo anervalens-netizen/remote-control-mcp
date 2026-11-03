@@ -16,7 +16,7 @@ export function registerSemanticDesktopTools(server: McpServer, client: AgentCli
   const context = (device: string) => client.getDevice(device).desktopUrl ? "desktop" as const : "user" as const;
   const deliver = (value: Record<string, unknown>) => ({ isError: value.ok === false, content: [{ type: "text" as const, text: JSON.stringify(value) }], structuredContent: value });
   server.registerTool("desktop_observe", {
-    description: "Observe native desktop apps through agent-desktop on Linux or Windows. kind=status/apps/windows discovers readiness and targets; snapshot returns compact semantic UI and observationId. Use ref+observationId to drill into a region or kind=get to read a property. Partial snapshots are explicitly marked complete=false. No screenshots or physical input. Requires the owner's graphical session for app observation.",
+    description: "Observe native desktop apps through agent-desktop on Linux or Windows. kind=status/apps/windows discovers readiness and targets; snapshot returns compact semantic UI and observationId. Use ref+observationId to drill into a region or kind=get to read a property. Partial snapshots are explicitly marked complete=false. When data.identity_unproven=true, refs cannot be used; take a fresh snapshot with a larger timeout. No screenshots or physical input. Requires the owner's graphical session for app observation.",
     inputSchema: { device: z.string().min(1), ...semanticObserveSchema.shape },
     outputSchema: semanticOutput,
     annotations: { readOnlyHint: true, openWorldHint: false },

@@ -134,9 +134,13 @@ especially after a timeout. Never blindly repeat a click.
 
 ## JSON 2.6 compatibility
 
-Agent Desktop 1.1.0 emits contract 2.6. Its capture-proof and ambiguity refusals
-pass through unchanged, including `identity_unproven` and refusal details.
+Agent Desktop 1.1.0 emits contract 2.6. Snapshot flags and ambiguity refusal details pass through unchanged. A snapshot
+with `data.identity_unproven=true` remains readable but grants no actionable refs;
+take a new snapshot with a larger timeout. This differs from `complete`, which
+describes the presented tree and does not by itself invalidate proven refs.
 No automatic action retry or physical fallback is added. Fresh native state and
 observation bindings follow the binary hash and contract, so observations from
 an older engine cannot be used to act after activation. Contract 2.5 remains
 supported for rollback. Qualification still requires real synthetic UI effects.
+
+Upstream [JSON 2.6 migration](https://github.com/vercel-labs/agent-desktop/blob/v1.1.0/docs/json-output.md#version-26-migration).

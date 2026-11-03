@@ -1,6 +1,6 @@
 import { expect, it } from "vitest";
 import { candidateAsset, quoteArgument } from "../scripts/agent-desktop-monitor.ts";
-import { validateArchiveEntries, candidateSchema } from "../scripts/update-agent-desktop.ts";
+import { validateArchiveEntries, candidateSchema, candidateJsonVersion } from "../scripts/update-agent-desktop.ts";
 
 it("binds a stable release to its exact official archive and digest", () => {
   const release = { tag_name: "v1.0.2", prerelease: false, draft: false, assets: [{ name: "agent-desktop-v1.0.2-x86_64-unknown-linux-gnu.tar.gz", browser_download_url: "https://github.com/vercel-labs/agent-desktop/releases/download/v1.0.2/agent-desktop-v1.0.2-x86_64-unknown-linux-gnu.tar.gz", digest: `sha256:${"a".repeat(64)}` }] };
@@ -23,4 +23,18 @@ it("requires provenance verification from the authenticated update controller", 
 it("quotes configured command paths without interpreting shell syntax", () => {
   expect(quoteArgument("a'b$(x)", false)).toBe("'a'\\''b$(x)'");
   expect(quoteArgument("a'b$(x)", true)).toBe("'a''b$(x)'");
+});
+
+it.each(["2.5", "2.6"])("records the candidate contract %s", version => {
+  expect(candidateJsonVersion({ version, ok: true, data: { version: "1.1.0" } }, "1.1.0")).toBe(version);
+});
+it.each([
+  { version: "2.7", ok: true, data: { version: "1.1.0" } },
+  { ok: true, data: { version: "1.1.0" } },
+  { version: "2.6", ok: "true", data: { version: "1.1.0" } },
+  { version: "2.6", ok: false, data: { version: "1.1.0" } },
+  { version: "2.6", ok: true, data: { version: "1.0.2" } },
+  null,
+])("rejects an invalid candidate contract %j", value => {
+  expect(() => candidateJsonVersion(value, "1.1.0")).toThrow("candidate_contract_mismatch");
 });
