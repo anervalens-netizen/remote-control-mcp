@@ -166,7 +166,7 @@ it.skipIf(process.platform === "win32").each(["SIGTERM", "SIGINT"] as const)(
       const result = await Promise.race([live.closed, new Promise<never>((_, reject) => {
         const timer = setTimeout(() => reject(new Error("Isolated shutdown timed out")), 5000); timer.unref();
       })]);
-      expect(result).toEqual([0, null]);
+      expect(result).toEqual([null, signal]);
       const file = path.join(root, "state", "agent-ingress-v1", "aggregate.json");
       const saved = JSON.parse(await readFile(file, "utf8"));
       expect(saved).toMatchObject({ cleanShutdown: true, previousUnfinished: 0, lastInstanceId: firstInstance });

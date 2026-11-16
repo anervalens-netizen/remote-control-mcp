@@ -31,7 +31,7 @@ async function liveIdentity(pid: number): Promise<string | undefined> {
 }
 
 it.skipIf(process.platform !== "linux").each(["SIGTERM", "SIGINT"] as const)(
-  "exits the real agent normally after %s with an attached live PTY", async signal => {
+  "exits the real agent by %s after cleanup with an attached live PTY", async signal => {
     const root = await mkdtemp(path.join(os.tmpdir(), "agent-pty-shutdown-"));
     const token = randomUUID();
     const reservation = createServer();
@@ -44,6 +44,7 @@ it.skipIf(process.platform !== "linux").each(["SIGTERM", "SIGINT"] as const)(
       RCMCP_STATE_DIR: path.join(root, "state"), RCMCP_DESKTOP_ENABLED: "0", RCMCP_JOB_CGROUP_ISOLATION: "0" });
     const child = spawn(process.execPath, [path.resolve("apps/agent/src/index.ts")], { env, stdio: ["ignore", "pipe", "pipe"] });
     const closed = once(child, "close");
+    const childIdentity = await liveIdentity(child.pid!);
     let logs = "";
     child.stdout.on("data", chunk => { logs = (logs + chunk).slice(-8192); });
     child.stderr.on("data", chunk => { logs = (logs + chunk).slice(-8192); });
@@ -90,11 +91,11 @@ it.skipIf(process.platform !== "linux").each(["SIGTERM", "SIGINT"] as const)(
         originalPtyAlive: await liveIdentity(terminal!.pid) === terminalIdentity,
         cleanShutdown: saved.cleanShutdown, previousUnfinished: saved.previousUnfinished, claimPresent,
       };
-      expect(observed).toEqual({ agentExited: true, exitCode: 0, exitSignal: null,
+      expect(observed).toEqual({ agentExited: true, exitCode: null, exitSignal: signal,
         originalPtyAlive: false, cleanShutdown: true, previousUnfinished: 0, claimPresent: false });
     } finally {
       // Cleanup is limited to this child and the exact marked PTY identity.
-      if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+      if (childIdentity && await liveIdentity(child.pid!) === childIdentity) child.kill("SIGKILL");
       expect(await within(closed, 5000)).toBeDefined();
       if (terminal && terminalIdentity && await liveIdentity(terminal.pid) === terminalIdentity) {
         const environment = await readFile(`/proc/${terminal.pid}/environ`, "utf8");

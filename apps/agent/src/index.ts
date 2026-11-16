@@ -87,16 +87,91 @@ if (configuredBodyLimitBytes !== null && (!Number.isSafeInteger(configuredBodyLi
 // a numeric parser limit, so MAX_SAFE_INTEGER is the practical no-fixed-cap value.
 const bodyLimit = configuredBodyLimitBytes ?? Number.MAX_SAFE_INTEGER;
 const app = Fastify({ logger: true, bodyLimit });
-// Track only this server's accepted sockets, including connections upgraded
-// outside the ordinary HTTP lifecycle. Outbound and durable-job handles differ.
+// Track the primary listener's accepted sockets and every admitted HTTP socket,
+// including Fastify's additional localhost listeners. Unparsed secondary sockets
+// have no admitted request to cancel; process termination closes those descriptors.
 const connections = new Set<Socket>();
-app.server.on("connection", socket => {
+let connectionsDrained: (() => void) | undefined;
+const trackConnection = (socket: Socket) => {
+  if (connections.has(socket)) return;
   connections.add(socket);
-  socket.once("close", () => connections.delete(socket));
-});
+  socket.once("close", () => {
+    connections.delete(socket);
+    if (connections.size === 0) connectionsDrained?.();
+  });
+};
+app.server.on("connection", trackConnection);
+app.addHook("onRequest", async request => { trackConnection(request.raw.socket); });
+
+let ingress: ReturnType<typeof registerAgentIngress> | undefined;
+let closing: Promise<void> | undefined;
+const SHUTDOWN_GRACE_MS = 5000;
+const SHUTDOWN_DRAIN_MS = 3000;
+const closeConnections = () => {
+  for (const socket of connections) {
+    try { socket.destroy(); }
+    catch { process.exitCode = 1; }
+  }
+};
+const requestClose = (signal: "SIGTERM" | "SIGINT") => {
+  closing ??= (async () => {
+    let cancelGrace = () => {};
+    let closeSettled = false;
+    try {
+      const closed = app.close().catch(error => {
+        process.exitCode = 1;
+        app.log.error({ err: error }, "Agent shutdown failed");
+      }).then(() => new Promise<void>(resolve => {
+        // Fastify's primary close can settle while secondary HTTP requests remain.
+        if (connections.size === 0) resolve();
+        else connectionsDrained = resolve;
+      })).finally(() => { closeSettled = true; });
+      const grace = new Promise<void>(resolve => {
+        const timer = setTimeout(() => resolve(), SHUTDOWN_GRACE_MS);
+        cancelGrace = () => clearTimeout(timer);
+      });
+      await Promise.race([closed, grace]);
+      cancelGrace();
+      if (!closeSettled) {
+        closeConnections();
+        // Socket closure starts existing request-owned cancellation. Fastify
+        // may close before that async cleanup settles, so retain its drain time.
+        await new Promise<void>(resolve => setTimeout(resolve, SHUTDOWN_DRAIN_MS));
+        if (!closeSettled) {
+          process.exitCode = 1;
+          app.log.error("Agent shutdown cleanup exceeded its drain deadline");
+        }
+      }
+    } catch (error) {
+      process.exitCode = 1;
+      app.log.error({ err: error }, "Agent shutdown failed");
+    } finally {
+      cancelGrace();
+      closeConnections();
+      // Idempotent after onClose; otherwise persist only observed HTTP endings.
+      // Unfinished requests remain unfinished, not successful workload effects.
+      try { ingress?.close(); }
+      catch (error) {
+        process.exitCode = 1;
+        app.log.error({ err: error }, "Agent ingress shutdown failed");
+      }
+      if (process.platform === "win32") process.exit(process.exitCode ?? 0);
+      // POSIX process.exit() can join a worker blocked in fs.open indefinitely.
+      // Restore the requested signal after cleanup and signal only this process.
+      // A cleanup failure uses uncatchable SIGKILL (no core), not a clean-stop
+      // signal. Neither outcome proves termination of detached jobs or effects.
+      const finalSignal = Number(process.exitCode ?? 0) === 0 ? signal : "SIGKILL";
+      process.removeAllListeners(finalSignal);
+      process.kill(process.pid, finalSignal);
+    }
+  })();
+};
+// Install before acquiring the writer claim: a startup stop must run cleanup too.
+process.on("SIGTERM", () => requestClose("SIGTERM"));
+process.on("SIGINT", () => requestClose("SIGINT"));
 const ingressRuntime = runtimeStatus();
 const retentionDays = Number(process.env.RCMCP_INGRESS_RETENTION_DAYS ?? 90);
-const ingress = registerAgentIngress(app, {
+ingress = registerAgentIngress(app, {
   token, allowUnauthenticated, instanceId: ingressRuntime.instanceId,
   identity: ingressRuntime.context === "system" ? "root" : ingressRuntime.context === "user" ? "owner" : ingressRuntime.context === "desktop" ? "interactive" : "unknown",
   stateDirectory: path.join(stateRoot, "agent-ingress-v1"),
@@ -215,61 +290,6 @@ registerExtraRoutes(app);
 registerBrowserRoutes(app);
 if (process.env.RCMCP_DESKTOP_ENABLED === "1") registerDesktopRoutes(app);
 if (semanticDesktopConfigured()) registerSemanticDesktopRoutes(app);
-let closing: Promise<void> | undefined;
-const SHUTDOWN_GRACE_MS = 5000;
-const SHUTDOWN_DRAIN_MS = 3000;
-const closeConnections = () => {
-  for (const socket of connections) {
-    try { socket.destroy(); }
-    catch { process.exitCode = 1; }
-  }
-};
-const requestClose = () => {
-  closing ??= (async () => {
-    let cancelGrace = () => {};
-    let closeSettled = false;
-    try {
-      const closed = app.close().catch(error => {
-        process.exitCode = 1;
-        app.log.error({ err: error }, "Agent shutdown failed");
-      }).finally(() => { closeSettled = true; });
-      const grace = new Promise<void>(resolve => {
-        const timer = setTimeout(() => resolve(), SHUTDOWN_GRACE_MS);
-        cancelGrace = () => clearTimeout(timer);
-      });
-      await Promise.race([closed, grace]);
-      cancelGrace();
-      if (!closeSettled) {
-        closeConnections();
-        // Socket closure starts existing request-owned cancellation. Fastify
-        // may close before that async cleanup settles, so retain its drain time.
-        await new Promise<void>(resolve => setTimeout(resolve, SHUTDOWN_DRAIN_MS));
-        if (!closeSettled) {
-          process.exitCode = 1;
-          app.log.error("Agent shutdown cleanup exceeded its drain deadline");
-        }
-      }
-    } catch (error) {
-      process.exitCode = 1;
-      app.log.error({ err: error }, "Agent shutdown failed");
-    } finally {
-      cancelGrace();
-      closeConnections();
-      // Idempotent after onClose; otherwise persist only observed HTTP endings.
-      // Unfinished requests remain unfinished, not successful workload effects.
-      try { ingress.close(); }
-      catch (error) {
-        process.exitCode = 1;
-        app.log.error({ err: error }, "Agent ingress shutdown failed");
-      }
-      // Bounds the responsive event loop, not a stalled kernel/filesystem call.
-      // Exits this process without terminating detached durable jobs.
-      process.exit(process.exitCode ?? 0);
-    }
-  })();
-};
-process.on("SIGTERM", requestClose);
-process.on("SIGINT", requestClose);
 try {
   await app.listen({ host, port });
 } catch (error) {

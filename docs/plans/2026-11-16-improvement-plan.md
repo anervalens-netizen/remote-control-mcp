@@ -2,7 +2,7 @@
 
 Plan version: 2026-11-16. Status: implementation backlog; current states are recorded in the linked tracker.
 
-The [implementation tracker](2026-11-16-improvement-tracker.md) is the single checklist for this plan. It contains 60 stable work-item IDs. This document defines their purpose, dependencies, acceptance criteria and required evidence. The initial-state labels below preserve the planning baseline; they are not current completion claims. The tracker separates accepted source changes, qualified runtime behavior and unresolved operational work.
+The [implementation tracker](2026-11-16-improvement-tracker.md) is the single checklist for this plan. It contains 61 stable work-item IDs: the original 60 and the implementation follow-up RC26-INV-05. This document defines their purpose, dependencies, acceptance criteria and required evidence. The initial-state labels below preserve the planning baseline; they are not current completion claims. The tracker separates accepted source changes, qualified runtime behavior and unresolved operational work.
 
 ## Objective and scope
 
@@ -535,6 +535,20 @@ Document how the operator identifies the canonical source checkout and immutable
 
 **Evidence to retain:** Generic workflow documentation; private workspace/release mapping and preserved-diff reference.
 
+#### RC26-INV-05
+
+**Isolate automated review probes from installed services**
+
+Lot 3 · P1 · review execution isolation · Added during implementation: `planned`.
+
+Dependencies: RC26-INV-04, RC26-GOV-02. Sources: implementation review follow-up; M06, M08, M10.
+
+Run automated source probes in a suitable isolated test account or disposable runtime with synthetic credentials and fixture state. Keep the review worker separate from installed service credentials, state roots and process-control authority. Preserve normal owner-authorized Remote Control identities and workflows; this item does not add command allowlists, owner confirmation gates or a replacement application access model.
+
+**Acceptance:** A synthetic review worker can build and test its own checkout and clean up its identity-bound fixtures. It cannot signal an unrelated installed process, control an installed service or alter installed state. Verify the boundary rather than inferring it from a temporary directory or a documented rule. Unsupported native/platform scenarios remain explicitly unverified. Keep the existing review publication and operator workflows usable.
+
+**Evidence to retain:** Synthetic positive fixture tests and denied cross-boundary operations; verified review-worker configuration and cleanup evidence. Keep real host, process and incident records private. Procedural guidance alone does not close this item.
+
 ### Agent and console usability
 
 #### RC26-UX-01
@@ -1018,7 +1032,7 @@ These are source-backed comparison inputs reviewed for this plan. Reconfirm the 
 | M05 | Profile linear scans and memory over time before index/refactor or hardware conclusions | HIS-04, PERF-01–03 |
 | M06 | Meaningful failure, concurrency, restart, stale-proof, native and recovery scenarios | BASE-03, REC-04, DEP-04–05, EFF-02–03, HIS-03, MCP-04 |
 | M07 | Native/client unavailable remains unverified; compatibility is not equal SHA everywhere | BASE-01, INV-02–03, MCP-05, EXP-03–04 |
-| M08 | Preserve local edits, canonical source/release separation, stable state and original receipts | BASE-01, REC-05, DEP-05, INV-04 |
+| M08 | Preserve local edits, canonical source/release separation, stable state and original receipts | BASE-01, REC-05, DEP-05, INV-04–05 |
 | M09 | Exact-release behavior and rollback evidence; no compilation/CI-only production claims | DEP-05, MCP-05, PERF-03, DEL-01–03 |
 | M10 | Per-item status/evidence/dependencies; private task synchronization; justified non-adoption | GOV-03, DEL-01–04 |
 

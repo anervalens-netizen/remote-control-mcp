@@ -112,6 +112,7 @@ export class IngressObserver {
   private readonly file?: string;
   private writerFd?: number;
   private writerIdentity?: { dev: number; ino: number };
+  private writerClaimBlocked = false;
   private readonly now: () => number;
   private readonly monotonicNow: () => number;
   private readonly knownRoutes = new Set<string>();
@@ -175,17 +176,24 @@ export class IngressObserver {
       mkdirSync(path.dirname(this.file), { recursive: true, mode: 0o700 });
       // No PID-based takeover: another observer can be live, or this can be
       // preserved orphan evidence. Only an exclusive create admits a writer.
-      this.writerFd = openSync(this.file + ".writer", constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL |
-        (constants.O_NOFOLLOW ?? 0), 0o600);
+      try {
+        this.writerFd = openSync(this.file + ".writer", constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL |
+          (constants.O_NOFOLLOW ?? 0), 0o600);
+      } catch (error) {
+        // Only an existing claim observed by exclusive open implies contention.
+        // A directory or permission failure does not establish another writer.
+        this.writerClaimBlocked = (error as NodeJS.ErrnoException).code === "EEXIST";
+        throw error;
+      }
       const owned = fstatSync(this.writerFd);
       this.writerIdentity = { dev: owned.dev, ino: owned.ino };
       writeFileSync(this.writerFd, JSON.stringify({
         version: 1, instanceId: this.instanceId, pid: process.pid, createdAt: this.processStartedAt,
       }) + "\n");
       fsyncSync(this.writerFd);
-    } catch (error) {
+    } catch {
       this.persistenceDisabled = true;
-      this.faults.add((error as NodeJS.ErrnoException).code === "EEXIST" ? "state_writer_locked" : "state_unavailable");
+      this.faults.add(this.writerClaimBlocked ? "state_writer_locked" : "state_unavailable");
       // Partial creation is not a successfully acquired claim. Remove only the
       // inode captured immediately after our exclusive open, then close the fd.
       // If ownership cannot be checked, preserve the path for inspection.
@@ -415,11 +423,11 @@ export class IngressObserver {
       const faults = new Set<Fault>(parsed.faults);
       if (parsed.greatestObservedAt > this.greatestObservedAt) faults.add("clock_regressed");
       const gaps: Gap[] = [...parsed.gaps];
-      // Retain the unobserved interval even without write ownership. A blocked
-      // observer cannot distinguish an orphan from a live competing writer, so
-      // it reports unknown continuity instead of inferring a process restart.
+      // An existing claim cannot distinguish an orphan from a live writer.
+      // Other acquisition failures retain the saved shutdown marker's meaning;
+      // unavailable persistence alone is not evidence of writer contention.
       gaps.push({
-        reason: this.persistenceDisabled ? "writer_continuity_unknown"
+        reason: this.writerClaimBlocked ? "writer_continuity_unknown"
           : parsed.cleanShutdown ? "clean_restart_interval" : "unclean_restart",
         from: parsed.lastSavedAt, to: this.processStartedAt, previousUnfinished: parsed.previousUnfinished,
       });

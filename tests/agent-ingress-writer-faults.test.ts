@@ -209,13 +209,25 @@ it("fences an actually closed writer descriptor and preserves the last aggregate
   expect(fs.readFileSync(claim, "utf8")).toBe(beforeClaim);
 });
 
-it("keeps workload counters available when claim creation is denied before a descriptor exists", async () => {
-  const root = await directory(), claim = path.join(root, "aggregate.json.writer");
+it.each([
+  { stage: "mkdir", code: "EACCES" },
+  { stage: "mkdir", code: "EEXIST" },
+  { stage: "open", code: "EACCES" },
+] as const)("preserves a clean restart interval when $stage fails with $code before a claim exists", async ({ stage, code }) => {
+  const root = await directory(), file = path.join(root, "aggregate.json"), claim = file + ".writer";
+  const previous = observer(root); received(previous); previous.close();
+  const retained = fs.readFileSync(file, "utf8");
+  expect(JSON.parse(retained).cleanShutdown).toBe(true);
+  expect(fs.existsSync(claim)).toBe(false);
   let injected = false;
   const restore = patchFilesystem(native => ({
-    openSync(file, flags, mode) {
-      if (file === claim) { injected = true; throw fault("EACCES"); }
-      return native.openSync(file, flags, mode);
+    mkdirSync: ((selected: fs.PathLike, options?: fs.MakeDirectoryOptions & { recursive?: boolean }) => {
+      if (selected === root && stage === "mkdir") { injected = true; throw fault(code); }
+      return native.mkdirSync(selected, options);
+    }) as typeof fs.mkdirSync,
+    openSync(selected, flags, mode) {
+      if (selected === claim && stage === "open") { injected = true; throw fault(code); }
+      return native.openSync(selected, flags, mode);
     },
   }));
   const value = observer(root);
@@ -224,9 +236,42 @@ it("keeps workload counters available when claim creation is denied before a des
   expect(injected).toBe(true);
   expect(value.snapshot().coverage).toMatchObject({ persistence: "unavailable", repairRequired: true });
   expect(value.snapshot().coverage.faults).toContain("state_unavailable");
+  expect(value.snapshot().coverage.faults).not.toContain("state_writer_locked");
+  expect(value.snapshot().history.gaps).toEqual([expect.objectContaining({
+    reason: "clean_restart_interval", from: JSON.parse(retained).lastSavedAt, previousUnfinished: 0,
+  })]);
   expect(value.snapshot().totals).toMatchObject({ received: 1, completed: 1 });
   expect(fs.existsSync(claim)).toBe(false);
+  expect(fs.readFileSync(file, "utf8")).toBe(retained);
 });
+
+it.skipIf(process.platform === "win32" || process.getuid?.() === 0).each([true, false])(
+  "preserves the retained cleanShutdown=%s marker when a read-only directory prevents claim creation",
+  async clean => {
+    const root = await directory(), file = path.join(root, "aggregate.json"), claim = file + ".writer";
+    const previous = observer(root);
+    if (clean) received(previous); else previous.begin(request);
+    previous.close();
+    const retained = fs.readFileSync(file, "utf8"), saved = JSON.parse(retained);
+    expect(saved.cleanShutdown).toBe(clean);
+    expect(fs.existsSync(claim)).toBe(false);
+    const mode = fs.statSync(root).mode & 0o777;
+    fs.chmodSync(root, 0o500);
+    restorers.push(() => fs.chmodSync(root, mode));
+    const value = observer(root);
+    expect(value.snapshot().coverage).toMatchObject({ persistence: "unavailable", repairRequired: true });
+    expect(value.snapshot().coverage.faults).toContain("state_unavailable");
+    expect(value.snapshot().coverage.faults).not.toContain("state_writer_locked");
+    expect(value.snapshot().history.gaps).toEqual([expect.objectContaining({
+      reason: clean ? "clean_restart_interval" : "unclean_restart",
+      from: saved.lastSavedAt, previousUnfinished: clean ? 0 : 1,
+    })]);
+    received(value); value.flush(); value.close();
+    expect(value.snapshot().totals).toMatchObject({ received: 1, completed: 1 });
+    expect(fs.existsSync(claim)).toBe(false);
+    expect(fs.readFileSync(file, "utf8")).toBe(retained);
+  },
+);
 
 it("does not publish a late completion after close released its descriptor", async () => {
   const root = await directory(), file = path.join(root, "aggregate.json");
