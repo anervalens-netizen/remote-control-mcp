@@ -333,6 +333,49 @@ it("a persistence failure before dispatch cannot start a job or fall back to Git
   expect(f.coordinator.inspect(f.resource).record?.state).toBe("released");
 });
 
+it.each([false, true])("rejects an over-budget request before execution and requires recovery only if fence release fails (%s)", releaseFails => {
+  return (async () => {
+    const f = fixture(); f.coordinator.settle(f.token);
+    vi.stubEnv("RCMCP_COORDINATION_DIR", f.root);
+    vi.spyOn(resources, "resolveCoordinationResource").mockResolvedValue(f.resource);
+    vi.spyOn(systemd, "jobCgroupIsolation").mockReturnValue({ ready: true, reason: "synthetic" });
+    const start = vi.spyOn(jobs, "jobStart"), bind = vi.spyOn(ResourceCoordinator.prototype, "bindExecution"), fallback = vi.fn();
+    if (releaseFails) {
+      const atomic = state.atomicWriteJson;
+      vi.spyOn(state, "atomicWriteJson").mockImplementation((file, value, mode) => {
+        if ((value as { state?: string }).state === "released") throw new Error("synthetic release persistence failure");
+        atomic(file, value, mode);
+      });
+    }
+    const app = Fastify(); const coordinate = registerCoordinationRoutes(app); close.push(() => app.close());
+    app.post("/v1/repo/fetch", (request, reply) => coordinate("/v1/repo/fetch", request, reply,
+      { path: f.root, refspecs: ["x".repeat(64 * 1024)] }, fallback));
+    const result = await app.inject({ method: "POST", url: "/v1/repo/fetch", payload: {} }), body = result.json();
+    expect(result.statusCode, result.body).toBe(500);
+    expect(body).toMatchObject({ error: releaseFails ? "repository_execution_requires_recovery" : "repository_operation_failed",
+      executionOutcome: "not_started", coordination: { state: releaseFails ? "active" : "released" }, recovery: { execution: null, resolution: null } });
+    if (!releaseFails) { expect(body.message).toContain("before dispatch"); expect(body.message).not.toContain("recovery"); }
+    expect(body).not.toHaveProperty("jobId"); expect(body).not.toHaveProperty("operationSucceeded");
+    expect(start).not.toHaveBeenCalled(); expect(bind).not.toHaveBeenCalled(); expect(fallback).not.toHaveBeenCalled();
+    expect(readdirSync(f.root)).not.toContain("repo-operations");
+    expect(f.coordinator.inspect(f.resource).record?.state).toBe(releaseFails ? "active" : "released");
+  })();
+});
+
+it("does not infer non-execution from a missing job reply after admission was attempted", async () => {
+  const f = fixture(); f.coordinator.settle(f.token);
+  vi.stubEnv("RCMCP_COORDINATION_DIR", f.root);
+  vi.spyOn(resources, "resolveCoordinationResource").mockResolvedValue(f.resource);
+  vi.spyOn(systemd, "jobCgroupIsolation").mockReturnValue({ ready: true, reason: "synthetic" });
+  const start = vi.spyOn(jobs, "jobStart").mockRejectedValue(new Error("synthetic missing admission reply")), fallback = vi.fn();
+  const app = Fastify(); const coordinate = registerCoordinationRoutes(app); close.push(() => app.close());
+  app.post("/v1/repo/fetch", (request, reply) => coordinate("/v1/repo/fetch", request, reply, { path: f.root }, fallback));
+  const result = await app.inject({ method: "POST", url: "/v1/repo/fetch", payload: {} }), body = result.json();
+  expect(result.statusCode, result.body).toBe(500);
+  expect(body).toMatchObject({ error: "repository_execution_requires_recovery", executionOutcome: "uncertain", noReplay: true, coordination: { state: "uncertain" }, recovery: { execution: { kind: "repo_job" } } });
+  expect(body).not.toHaveProperty("jobId"); expect(start).toHaveBeenCalledTimes(1); expect(fallback).not.toHaveBeenCalled();
+});
+
 it("refuses a new execution before dispatch when its future reconciliation store is already full", async () => {
   const f = fixture(); f.coordinator.settle(f.token);
   const archives = path.join(f.root, "reconciliations"); mkdirSync(archives);

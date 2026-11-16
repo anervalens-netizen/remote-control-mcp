@@ -137,10 +137,15 @@ export function registerCoordinationRoutes(app: FastifyInstance) {
         return result && typeof result === "object" ? { ...result, ...(repoMode ?? {}), coordination: { ...coordinationPublicRecord(record), token: coordinationToken(record) } } : result;
       } catch (error) {
         let failedRecord;
+        const executionNotStarted = Boolean(noEffectSubmittedProof(error, proofScope));
+        let releasedBeforeDispatch = false;
         if (token && began) {
           // Only this invocation's successful begin authorizes settlement. A
           // rejected duplicate must never settle the active invocation's token.
-          try { failedRecord = coordinator.settle(token, { uncertain: !noEffectSubmittedProof(error, proofScope) }); } catch { /* not active */ }
+          try {
+            failedRecord = coordinator.settle(token, { uncertain: !executionNotStarted });
+            releasedBeforeDispatch = executionNotStarted && failedRecord.state === "released";
+          } catch { /* not active */ }
         } else if (token && (automatic || error instanceof CoordinationError && error.reason === "cancelled_before_apply")) {
           // No invocation began an effect. Release only a matching reservation;
           // a stale/duplicate token cannot release an active or newer writer.
@@ -159,7 +164,8 @@ export function registerCoordinationRoutes(app: FastifyInstance) {
         }
         const recovery = repoMode && failedRecord ? {
           ...(originalReceipt?.jobId ? { jobId: originalReceipt.jobId } : {}),
-          ...(originalReceipt?.executionOutcome ? { executionOutcome: noEffectSubmittedProof(error, proofScope) ? "not_started" : originalReceipt.executionOutcome } : {}),
+          ...(originalReceipt && executionNotStarted ? { executionOutcome: "not_started" }
+            : originalReceipt?.executionOutcome ? { executionOutcome: originalReceipt.executionOutcome } : {}),
           ...(originalReceipt?.resultPublication ? { resultPublication: originalReceipt.resultPublication } : {}),
           ...(originalReceipt?.operationSucceeded !== undefined ? { operationSucceeded: originalReceipt.operationSucceeded } : {}),
           ...repoMode, noReplay: true, effectVerification: "unverified", coordination: { ...coordinationPublicRecord(failedRecord), token }, recovery: coordinationRecoveryView(failedRecord) } : undefined;
@@ -167,8 +173,9 @@ export function registerCoordinationRoutes(app: FastifyInstance) {
           // Post-dispatch coordination failures must retain the observed receipt
           // as well as the legacy conflict details. Neither permits replay.
           ...(originalReceipt?.record.execution ? recovery : {}) });
-        if (recovery) return reply.code(500).send({ error: recovery.recoveryMode === "durable_job" ? "repository_execution_requires_recovery" : "repository_operation_failed",
-          message: recovery.recoveryMode === "legacy" && error instanceof Error ? error.message : "Repository execution requires recovery; inspect the original receipt without replay.", ...recovery });
+        if (recovery) return reply.code(500).send({ error: recovery.recoveryMode === "durable_job" && !releasedBeforeDispatch ? "repository_execution_requires_recovery" : "repository_operation_failed",
+          message: recovery.recoveryMode === "durable_job" && releasedBeforeDispatch ? "Repository operation failed before dispatch; no execution was started and the coordination fence was released."
+            : recovery.recoveryMode === "legacy" && error instanceof Error ? error.message : "Repository execution requires recovery; inspect the original receipt without replay.", ...recovery });
         throw error;
       }
   };

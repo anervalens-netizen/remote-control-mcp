@@ -164,6 +164,39 @@ it("preserves the original recovery receipt through an HTTP 409 coordination con
   expect(counters()).toEqual({ repositoryDispatches: 1, statusReads: 1 });
 });
 
+it("delivers a proven pre-dispatch failure with null binding and no invented job or terminal authority", async () => {
+  const metadata = receipt("pull");
+  const { jobId: _jobId, ...record } = metadata.coordination;
+  const body = { error: "repository_operation_failed",
+    message: "Repository operation failed before dispatch; no execution was started and the coordination fence was released.",
+    executionOutcome: "not_started", recoveryMode: "durable_job", noReplay: true, effectVerification: "unverified",
+    coordination: { ...record, state: "released" }, recovery: { execution: null, resolution: null } };
+  const { call, client, agent, counters } = await connect("pull", 500, body);
+  const result = await call(), delivered = result.structuredContent as any;
+  expect(result.isError).toBe(true);
+  expect(delivered).toMatchObject({ ok: false, requestSucceeded: false, kind: "http", status: 500,
+    executionOutcome: "not_started", recoveryMode: "durable_job", noReplay: true, effectVerification: "unverified",
+    coordination: body.coordination, recovery: { execution: null, resolution: null } });
+  expect(delivered.error).toContain("repository_operation_failed");
+  expect(delivered.error).not.toContain("repository_execution_requires_recovery");
+  for (const field of ["jobId", "job", "operationSucceeded", "resultPublication"]) expect(delivered).not.toHaveProperty(field);
+  expect(delivered.coordination).not.toHaveProperty("jobId");
+  const observer = operationsFor(agent), traceId = delivered.operationTrace.traceId;
+  expect(await observer.inspect(traceId)).toMatchObject({ requestSucceeded: false, jobs: [] });
+  expect((await observer.inspect(traceId))?.terminalJobs).toBeUndefined();
+  const recovered = await client.callTool({ name: "result_recover", arguments: { id: delivered.resultRecovery.id } });
+  expect(recovered.isError).not.toBe(true);
+  const page = recovered.structuredContent as any;
+  expect(page.eof).toBe(true);
+  const original = JSON.parse(Buffer.from(page.data, "base64").toString("utf8"));
+  expect(original.isError).toBe(true);
+  expect(original.structuredContent).toMatchObject({ operationTrace: delivered.operationTrace, requestSucceeded: false,
+    executionOutcome: "not_started", noReplay: true, coordination: body.coordination, recovery: { execution: null, resolution: null } });
+  for (const field of ["jobId", "job", "operationSucceeded", "resultPublication"]) expect(original.structuredContent).not.toHaveProperty(field);
+  expect((await observer.inspect(traceId))?.terminalJobs).toBeUndefined();
+  expect(counters()).toEqual({ repositoryDispatches: 1, statusReads: 0 });
+});
+
 it("keeps binding-only failures recoverable without inventing a job locator", async () => {
   const metadata = receipt("fetch");
   const { jobId: _jobId, ...withoutTopJob } = metadata;
