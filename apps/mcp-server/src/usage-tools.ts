@@ -5,13 +5,44 @@ import { dispatchesFor } from "./agent-dispatch-observer.ts";
 import { executionInputSchema, executionLabel, resolveExecutionContext } from "./execution-identity.ts";
 import { ingressQueryFields } from "../../../packages/protocol/src/ingress-correlation.ts";
 
+const agentReadTimeoutMs = 5000;
+const agentSnapshotSchema = z.object({
+  version: z.literal(1), instanceId: z.string().uuid(),
+  totals: z.object({ received: z.number().int().nonnegative().safe() }).passthrough(),
+  history: z.record(z.string(), z.unknown()),
+}).passthrough();
+const agentStatusSchema = z.object({
+  state: z.enum(["available", "unsupported", "timeout", "error"]),
+  reason: z.enum(["route_unavailable", "unsupported_contract", "deadline_exceeded",
+    "http_error", "network_error", "protocol_error", "unavailable"]).optional(),
+  httpStatus: z.number().int().min(100).max(599).optional(),
+  timeoutMs: z.literal(agentReadTimeoutMs),
+});
+type AgentStatus = z.infer<typeof agentStatusSchema>;
+
+function failedAgentStatus(error: unknown): AgentStatus {
+  const failure = error as { kind?: unknown; name?: unknown; status?: unknown } | null;
+  const httpStatus = typeof failure?.status === "number" && Number.isInteger(failure.status) &&
+    failure.status >= 100 && failure.status <= 599 ? failure.status : undefined;
+  if (failure?.kind === "timeout" || failure?.name === "TimeoutError")
+    return { state: "timeout", reason: "deadline_exceeded", timeoutMs: agentReadTimeoutMs };
+  if (httpStatus !== undefined && [404, 405, 501].includes(httpStatus))
+    return { state: "unsupported", reason: "route_unavailable", httpStatus, timeoutMs: agentReadTimeoutMs };
+  // Fixed categories preserve diagnostic coverage without copying error bodies,
+  // endpoint URLs, credentials or arbitrary producer messages into telemetry.
+  return { state: "error", reason: httpStatus !== undefined ? "http_error" :
+    failure?.kind === "network" ? "network_error" : failure?.kind === "protocol" ? "protocol_error" : "unavailable",
+    ...(httpStatus === undefined ? {} : { httpStatus }), timeoutMs: agentReadTimeoutMs };
+}
+
 export function registerUsageTools(server: McpServer, client: AgentClient) {
   server.registerTool("usage_report", {
-    description: "Read bounded agent ingress counters, UTC daily history and optional trace/route pages for one execution identity. Includes direct and controller traffic; separates authenticated bearer possession from caller-declared correlation. Counts requests, not completed tasks or verified effects. History starts at collection and cannot reconstruct older weeks. Requires agent-ingress-v1; no workload execution or replay.",
+    description: "Read bounded agent ingress counters, UTC daily history and optional trace/route pages for one execution identity. Retains controller dispatch data when agent ingress is unsupported, unavailable or times out; agentStatus states that limit explicitly. Includes direct and controller traffic; separates authenticated bearer possession from caller-declared correlation. Counts requests, not completed tasks or verified effects. History starts at collection and cannot reconstruct older weeks. Agent detail requires agent-ingress-v1; no workload execution or replay.",
     inputSchema: executionInputSchema({ device: z.string().min(1), ...ingressQueryFields }),
     outputSchema: z.object({
       version: z.literal(1), device: z.string(), identity: z.enum(["root", "owner", "interactive"]),
-      agent: z.record(z.string(), z.unknown()), controller: z.record(z.string(), z.unknown()),
+      agent: z.record(z.string(), z.unknown()).nullable(), agentStatus: agentStatusSchema,
+      controller: z.record(z.string(), z.unknown()),
       comparison: z.object({ automaticSameWindowReconciliation: z.literal(false), reason: z.string() }),
     }),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
@@ -19,17 +50,34 @@ export function registerUsageTools(server: McpServer, client: AgentClient) {
     const target = resolveExecutionContext(client, device, { context, identity, elevation }, "system");
     const canonical = client.getDevice(device).name;
     const selected = executionLabel(target);
-    const agent = await client.requestRoute<Record<string, unknown>>(canonical, "/v1/observations/ingress", query, target,
-      { timeoutMs: 5000, signal: extra.signal, observeOperation: false });
-    if (!agent || agent.version !== 1 || typeof agent.instanceId !== "string" || !agent.totals || !agent.history) {
-      throw new Error("Agent ingress report has an unsupported or incomplete contract");
+    let agent: Record<string, unknown> | null = null;
+    let agentStatus: AgentStatus;
+    try {
+      // The endpoint's versioned contract avoids a second capability probe on
+      // the healthy path and keeps this diagnostic to one agent dispatch.
+      const response = await client.requestRoute<Record<string, unknown>>(canonical, "/v1/observations/ingress", query, target,
+        { timeoutMs: agentReadTimeoutMs, signal: extra.signal, observeOperation: false });
+      const parsed = agentSnapshotSchema.safeParse(response);
+      if (parsed.success) {
+        agent = parsed.data;
+        agentStatus = { state: "available", timeoutMs: agentReadTimeoutMs };
+      } else {
+        agentStatus = { state: "unsupported", reason: "unsupported_contract", timeoutMs: agentReadTimeoutMs };
+      }
+    } catch (error) {
+      // Caller cancellation still ends the tool. A failed producer read leaves
+      // its attempted dispatch and earlier controller observations available.
+      extra.signal.throwIfAborted();
+      agentStatus = failedAgentStatus(error);
     }
     const controller = dispatchesFor(client).snapshot(canonical, selected, { sampleOffset: query.sampleOffset, sampleLimit: query.sampleLimit ?? 16 });
     const value = {
-      version: 1 as const, device: canonical, identity: selected, agent, controller,
+      version: 1 as const, device: canonical, identity: selected, agent, agentStatus, controller,
       comparison: {
         automaticSameWindowReconciliation: false as const,
-        reason: "Agent and controller lifetimes and capture instants differ. Compare stable receipts or explicitly bracket a same-instance window; unmatched traffic remains unassigned. Current snapshots include this diagnostic request.",
+        reason: agent
+          ? "Agent and controller lifetimes and capture instants differ. Compare stable receipts or explicitly bracket a same-instance window; unmatched traffic remains unassigned. Current snapshots include this diagnostic request."
+          : "Agent ingress is unavailable for this read. Controller dispatch observations remain available; agent totals and same-window coverage are not inferred.",
       },
     };
     return { content: [{ type: "text" as const, text: JSON.stringify(value) }], structuredContent: value };

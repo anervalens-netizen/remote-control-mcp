@@ -79,10 +79,10 @@ export function registerTools(server: McpServer, client: AgentClient): void {
     inputSchema: z.object({
       device: z.string().min(1), ...fsReadFields, ...targetFields,
     }).superRefine(refineFsReadInput),
-  }, async ({ device, context, identity, elevation, ...input }) => {
+  }, async ({ device, context, identity, elevation, ...input }, extra) => {
     const target = resolveExecutionContext(client, device, { context, identity, elevation }, "system");
     assertAggregateBudget([input.length ?? input.tailBytes ?? input.maxBytes ?? 1024 * 1024]);
-    return text(await client.fsRead(device, input, target));
+    return text(await client.fsRead(device, input, target, { signal: extra.signal }));
   });
 
   server.registerTool("fs_write", {

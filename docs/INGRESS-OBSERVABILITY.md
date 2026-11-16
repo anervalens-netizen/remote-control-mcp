@@ -23,7 +23,7 @@ A controller-to-agent HTTP request sends bounded version-1 correlation in `x-rcm
 
 The agent authenticates the bearer independently. A shared bearer establishes credential possession. It does not identify a controller process, original client, person or task. Correlation is therefore labelled `controller_claimed`. Unauthenticated correlation cannot create that attribution, and no request label can replace the agent's configured execution identity.
 
-The authenticated response includes `x-rcmcp-ingress`, with the agent instance, monotonic request sequence, stable event ID and matching dispatch UUID. The controller validates the receipt before using it for correlation. Older agents without this header continue to work; their receipt state is explicitly missing.
+A request authenticated with the configured bearer receives `x-rcmcp-ingress`, with the agent instance, monotonic request sequence, stable event ID and matching dispatch UUID. The controller validates the schema and echoed dispatch before using the receipt for diagnostic correlation. This header is not a signed endpoint attestation. Endpoint authenticity still depends on the configured transport and credential boundary; a substituted endpoint that receives the bearer cannot be authenticated by adding a MAC based on that same bearer. Older agents without the header continue to work; their receipt state is explicitly missing. No diagnostic match authorizes an action, resolves an execution fence or verifies an external effect.
 
 These IDs are independent:
 
@@ -41,11 +41,13 @@ A new HTTP request can refer to the same durable job or operation. Propagating c
 
 ContextKeep correlation is copied only from the existing validated observation association. It contains no lease token. It is not a new attachment or a claim that ContextKeep accepted, verified or completed work.
 
+Detailed samples use the existing bearer-authorized diagnostic access boundary. Any holder of that credential can read the recent correlation UUIDs. These labels are not credentials or authenticated principals, and this endpoint does not promise per-caller isolation. Detailed diagnostics require authentication even when workload access is deliberately configured otherwise.
+
 ## Counters, history and bounds
 
 Agent hooks count arrivals before the authentication gate. They include successful, rejected, direct and controller-labelled traffic. Registered route templates and a fixed method/authentication/origin vocabulary bound cardinality. Unknown URLs collapse to `other`; query strings and arbitrary paths are not telemetry dimensions. Commands, arguments, environment values, secrets and raw output are not collected.
 
-Current process counters remain independent of the last-request sample window. A sample starts at revision 1 and finishes at revision 2 with the same event ID. Duplicate completion cannot increment totals. Repeated page delivery is not a new request.
+`counterScope: current_process` identifies totals, source buckets, route series and sequence. They reset with a new process/instance and remain independent of the last-request sample window. `history.scope: retained_utc_arrival_days` identifies the separately retained daily cohorts, while `coverage.persistenceScope: daily_aggregates` states what is written to disk. A sample starts at revision 1 and finishes at revision 2 with the same event ID. Duplicate completion cannot increment totals. Repeated page delivery is not a new request.
 
 | Setting or dimension | Default / bound |
 |---|---|
@@ -62,7 +64,9 @@ Current process counters remain independent of the last-request sample window. A
 
 Daily aggregates use the UTC arrival day. A late completion updates that arrival cohort while it is retained. Older completions are reported outside retention. Received minus completed means missing completion evidence, not proof of a currently running command. Daily route, execution outcome, effect verification and client acceptance dimensions remain explicitly unsupported.
 
-The aggregate file is `agent-ingress-v1/aggregate.json` under the configured agent state root. One agent owns that directory. Atomic snapshots are independent of operation/recovery retention and do not replay logs. Corrupt or incompatible evidence stays intact; collection continues in memory with unavailable persistence. No recovery journal is pruned to make room for a usage report.
+The aggregate file is `agent-ingress-v1/aggregate.json` under the configured agent state root. A writer must exclusively create `aggregate.json.writer`, retain its descriptor and verify its file identity before each publication. A second writer keeps current observations in memory and can read retained history, but reports unavailable persistence and required repair. A missing or replaced claim also blocks publication explicitly. Atomic snapshots are independent of operation/recovery retention and do not replay logs. Corrupt or incompatible evidence stays intact; collection continues in memory with unavailable persistence. No recovery journal is pruned to make room for a usage report.
+
+Normal SIGTERM/SIGINT shutdown closes the HTTP server, records its actual final observations and releases only the process's own claim. A clean restart interval still represents time without observation. An abrupt crash can leave an orphaned writer claim. It is preserved and never reclaimed automatically, even when a PID appears absent. Retained history stays readable; further durable collection requires ownership inspection. This is an explicit recovery limitation, not automatic crash recovery. The process UUID must be fresh for every boot; persisted `lastSequence` is a checkpoint of that instance, not a durable allocator for reused instance IDs.
 
 An abrupt shutdown can lose the unflushed tail. Storage failures and event-loop stalls can extend the debounce interval. Restart intervals, prior unfinished requests, persistence failures and omitted gap detail are reported. Increasing retention cannot restore missing history. A historical gap must not be presented as a current-process collection loss; current `processCountsComplete` and hook errors are reported separately. A hook failure invalidates that coverage claim without failing the requested workload.
 
@@ -70,13 +74,15 @@ Filesystem synchronization is platform-specific. The implementation synchronizes
 
 ## Reading a report
 
-`usage_report` selects one configured device and execution identity. It returns the agent's lifetime counters, source buckets, bounded history/series/sample pages, and the controller's separately scoped dispatch observations. Offsets are live views, not frozen snapshots; use stable event IDs and revisions when combining pages. A disabled page has a terminal null cursor.
+`usage_report` selects one configured device and execution identity. It returns the agent's current-process counters, source buckets, bounded history/series/sample pages, and the controller's separately scoped dispatch observations. Offsets are live views, not frozen snapshots; use stable event IDs and revisions when combining pages. A disabled page has a terminal null cursor.
 
-The report requires authenticated agent diagnostics even when an installation deliberately permits unauthenticated workload requests. An old agent that lacks `agent-ingress-v1` cannot supply historical data by inference.
+The report requires authenticated agent diagnostics even when an installation deliberately permits unauthenticated workload requests. Its agent read has a five-second timeout. If the agent is unreachable, returns an unsupported contract or lacks the diagnostic route, the result retains the controller snapshot with `agent: null` and an explicit `agentStatus` of `unsupported`, `timeout` or `error`. A healthy result reports `available` and uses one agent dispatch. Missing agent totals or history are never inferred from controller data. Explicit caller cancellation still ends the tool.
 
 The agent snapshot includes the diagnostic request currently producing it. Controller and agent process lifetimes and snapshot instants usually differ. The report therefore does not automatically divide one lifetime total by the other or present a controller success fraction as fleet workload success.
 
-For a private fixed-window reconciliation:
+The public tool currently returns bounded snapshots. It does not open, retain or reconcile an operator's complete window. The bounded public collection/reconciliation workflow remains open under OBS-04 and HIS-02.
+
+For an independently qualified fixed-window reconciliation:
 
 1. Capture agent instance, sequence, counters, coverage and UTC time at both boundaries. A restart or incomplete coverage changes the interpretation.
 2. Select events in that sequence/time window. Retain original pages and record which detail is absent or arrived late.
@@ -84,7 +90,11 @@ For a private fixed-window reconciliation:
 4. Keep conflicting records unassigned in either delivery order. Malformed diagnostic metadata must not abort the whole comparison.
 5. Report attributed requests plus explicitly unattributed requests against the agent denominator. Missing event detail can reflect sampling, collection gaps or late delivery; its cause is not inferred.
 
-`reconcileIngressSamples` implements this bounded comparison. Its conservation residual and conflict/invalid counts remain visible. The caller must supply the correct complete window; the helper does not reconstruct one from unrelated lifetimes.
+`reconcileIngressSamples` is a bounded library primitive available to tests and operator tooling; `usage_report` does not invoke it. Its conservation residual and conflict/invalid counts remain visible. The caller must supply the correct complete window and independently bind its configured peer and execution identity. The helper does not reconstruct a window from unrelated lifetimes or authenticate an endpoint.
+
+## Capability probe bounds
+
+`capability_report` accepts at most 64 device entries, including an implicit full-inventory selection. It resolves aliases and probes each canonical device once. The input limit is checked before any endpoint is contacted. The reported budget is a per-endpoint timeout, not a shared quota across callers. A timeout and an explicit caller cancellation have distinct outcomes; cancellation also prevents queued endpoints from starting.
 
 ## Controller HTTP delivery
 

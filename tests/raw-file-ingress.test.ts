@@ -79,14 +79,43 @@ it.each([
   expect(summary(client).total).toMatchObject({ started: 1, responses: 1, finished: 1, protocolErrors: 1 });
 });
 
-it("counts an early iterator return as cancelled even after yielding the advertised bytes", async () => {
+it("counts a consumer break after all advertised bytes as a completed read", async () => {
   vi.stubGlobal("fetch", vi.fn(async () => new Response("fixture", { headers: { "content-length": "7" } })));
   const client = fixture();
   const raw = await client.rawFile("fixture", "fixture");
   for await (const _chunk of raw.chunks) break;
   await raw.cancel();
-  expect(summary(client).total).toMatchObject({ started: 1, responses: 1, finished: 1, cancelled: 1, protocolErrors: 0 });
-  expect(summary(client).samples[0]?.outcome).toBe("cancelled");
+  expect(summary(client).total).toMatchObject({ started: 1, responses: 1, finished: 1, cancelled: 0, protocolErrors: 0 });
+  expect(summary(client).samples[0]?.outcome).toBe("success");
+});
+
+it("counts a consumer break before all advertised bytes as cancelled", async () => {
+  const cancelled = vi.fn();
+  vi.stubGlobal("fetch", vi.fn(async () => new Response(new ReadableStream<Uint8Array>({
+    start(controller) { controller.enqueue(Buffer.from("part")); }, cancel: cancelled,
+  }), { headers: { "content-length": "8" } })));
+  const client = fixture();
+  const raw = await client.rawFile("fixture", "fixture");
+  for await (const _chunk of raw.chunks) break;
+  await raw.cancel();
+  expect(cancelled).toHaveBeenCalledOnce();
+  expect(summary(client).total).toMatchObject({ started: 1, finished: 1, cancelled: 1, protocolErrors: 0 });
+});
+
+it("cancels a never-iterated body when its deadline expires", async () => {
+  vi.useFakeTimers();
+  const cancelled = vi.fn();
+  vi.stubGlobal("fetch", vi.fn(async () => new Response(new ReadableStream<Uint8Array>({ cancel: cancelled }), {
+    headers: { "content-length": "4" },
+  })));
+  const client = fixture();
+  const raw = await client.rawFile("fixture", "fixture", "system", 25);
+  await vi.advanceTimersByTimeAsync(25);
+  expect(cancelled).toHaveBeenCalledOnce();
+  expect(cancelled.mock.calls[0]?.[0]).toMatchObject({ name: "TimeoutError" });
+  await raw.cancel();
+  expect(cancelled).toHaveBeenCalledOnce();
+  expect(summary(client).total).toMatchObject({ started: 1, finished: 1, timeouts: 1, cancelled: 0, networkErrors: 0 });
 });
 
 it("counts explicit cancellation before iteration once", async () => {

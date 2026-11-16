@@ -4,6 +4,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createServer } from "node:http";
 import { afterEach, expect, it, vi } from "vitest";
 import { AgentClient } from "../apps/mcp-server/src/agent-client.ts";
+import { dispatchesFor } from "../apps/mcp-server/src/agent-dispatch-observer.ts";
 import { capabilityReport, registerCapabilityTools } from "../apps/mcp-server/src/capability-tools.ts";
 
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); });
@@ -96,9 +97,64 @@ it("aborts a real stalled HTTP response without borrowing the execution timeout"
   try {
     const [result] = await capabilityReport(client, undefined, 1, { probeTimeoutMs: 100, signal: caller.signal });
     expect(result).toMatchObject({ probeBudgetMs: 100, endpoints: { system: { ok: false, error: expect.stringContaining("budget") } } });
+    expect(dispatchesFor(client).snapshot().total).toMatchObject({ started: 1, timeouts: 1, cancelled: 0 });
   } finally {
     clearTimeout(emergency);
     http.closeAllConnections();
     await new Promise<void>(resolve => http.close(() => resolve()));
   }
 }, 2000);
+
+it("deduplicates aliases and canonical devices before issuing endpoint probes", async () => {
+  const client = new AgentClient([{ name: "fixture", aliases: ["fixture-alias"], url: "http://127.0.0.1:1", userUrl: "http://127.0.0.1:2" }]);
+  const info = vi.spyOn(client, "info").mockResolvedValue({ runtime: { ready: true } });
+  const rows = await capabilityReport(client, ["fixture-alias", "fixture", "fixture-alias"], 3);
+  expect(rows).toHaveLength(1);
+  expect(rows[0]).toMatchObject({ device: "fixture", probeBudgetScope: "per_endpoint_timeout", reportDeviceLimit: 64 });
+  expect(info.mock.calls.map(([name, context]) => [name, context])).toEqual([["fixture", "system"], ["fixture", "user"]]);
+});
+
+it("rejects oversized explicit and default target lists before any probe", async () => {
+  const client = new AgentClient(Array.from({ length: 65 }, (_, index) => ({ name: "fixture-" + index, url: "http://127.0.0.1:1" })));
+  const info = vi.spyOn(client, "info").mockResolvedValue({ runtime: { ready: true } });
+  await expect(capabilityReport(client)).rejects.toThrow("64");
+  await expect(capabilityReport(client, Array(65).fill("fixture-0"))).rejects.toThrow("64");
+  expect(info).not.toHaveBeenCalled();
+});
+
+it("rejects oversized capability fan-out through the actual SDK catalog before dispatch", async () => {
+  const client = new AgentClient([{ name: "fixture", url: "http://127.0.0.1:1" }]);
+  const info = vi.spyOn(client, "info").mockResolvedValue({ runtime: { ready: true } });
+  const server = new McpServer({ name: "fixture-capability-limit", version: "1" });
+  registerCapabilityTools(server, client);
+  const sdk = new Client({ name: "fixture-capability-limit-client", version: "1" });
+  const [st, ct] = InMemoryTransport.createLinkedPair();
+  try {
+    await Promise.all([server.connect(st), sdk.connect(ct)]);
+    const tool = (await sdk.listTools()).tools.find(item => item.name === "capability_report")!;
+    expect(tool.inputSchema.properties?.devices).toMatchObject({ maxItems: 64 });
+    const result = await sdk.callTool({ name: "capability_report", arguments: { devices: Array(65).fill("fixture") } });
+    expect(result.isError).toBe(true);
+    expect(info).not.toHaveBeenCalled();
+  } finally { await sdk.close(); await server.close(); }
+});
+
+it("keeps caller cancellation distinct from a capability endpoint timeout", async () => {
+  const entered = Promise.withResolvers<void>();
+  const http = createServer(() => { entered.resolve(); });
+  await new Promise<void>(resolve => http.listen(0, "127.0.0.1", resolve));
+  const client = new AgentClient([{ name: "fixture", url: "http://127.0.0.1:" + (http.address() as { port: number }).port }], undefined, 0);
+  const caller = new AbortController();
+  try {
+    const pending = capabilityReport(client, undefined, 1, { probeTimeoutMs: 1000, signal: caller.signal });
+    const rejected = expect(pending).rejects.toMatchObject({ name: "AbortError" });
+    await entered.promise;
+    caller.abort(new DOMException("Synthetic caller cancelled", "AbortError"));
+    await rejected;
+    expect(dispatchesFor(client).snapshot().total).toMatchObject({ started: 1, timeouts: 0, cancelled: 1 });
+  } finally {
+    caller.abort();
+    http.closeAllConnections();
+    await new Promise<void>(resolve => http.close(() => resolve()));
+  }
+});

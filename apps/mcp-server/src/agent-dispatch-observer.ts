@@ -16,9 +16,10 @@ export type DispatchHandle = { sample: DispatchSample; peer?: Peer; started: num
 const families = new Set(["coordination", "deploy", "desktop", "docker", "exec", "fs", "gpu", "info", "jobs", "network", "packages", "power", "processes", "project", "pty", "repo", "service", "storage", "metrics", "search", "browser", "observations", "wake"]);
 /** Fixed categories, never a path/query supplied by a caller. */
 function routeCategory(route: string) {
-  if (route === "/health" || route === "/health/details") return "/health";
-  const family = route.split("/")[2];
-  return route.startsWith("/v1/") && family && families.has(family) ? "/v1/" + family : "other";
+  const pathname = route.split(/[?#]/, 1)[0]!;
+  if (pathname === "/health" || pathname === "/health/details") return "/health";
+  const family = pathname.split("/")[2];
+  return pathname.startsWith("/v1/") && family && families.has(family) ? "/v1/" + family : "other";
 }
 
 /** All HTTP attempts count, even when the operation journal refuses admission.
@@ -89,7 +90,7 @@ export class AgentDispatchObserver {
       persistence: "process_memory" as const, maxPeers: this.maxPeers, sampleLimit: this.sampleLimit, overflowCalls: this.overflowCalls,
       scope: "Controller-to-agent HTTP attempts, including capability probes and raw reads; no execution/task/client acceptance inference.",
       timingScope: "Dispatch duration includes remote execution or wait and body consumption; pre-handler queue is unobserved.",
-      attributionScope: "Matched agent response receipts establish correlation, not the original human/client identity. Shared bearer holders can declare correlation.",
+      attributionScope: "Receipt matches are diagnostic correlation within the configured endpoint/shared-bearer trust domain. They do not attest endpoint identity or prove durable execution/effects/client acceptance. Credential holders can declare correlation and read its metadata.",
       total: structuredClone(this.totals), totalScope: "All controller targets; selected peer counters are separate.", peers: structuredClone(peers),
       samples: structuredClone(samples.slice(offset, offset + limit)),
       samplePage: { offset, limit, total: samples.length, nextOffset: limit > 0 && offset + limit < samples.length ? offset + limit : null },

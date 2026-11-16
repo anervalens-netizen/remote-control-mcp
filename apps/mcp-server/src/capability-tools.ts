@@ -9,6 +9,7 @@ const text = (value: unknown) => ({ content: [{ type: "text" as const, text: JSO
 
 type EndpointResult = { ok: true; info: unknown } | { ok: false; error: string };
 type CapabilityProbeOptions = { probeTimeoutMs?: number; signal?: AbortSignal };
+const maxCapabilityDevices = 64;
 
 async function endpointInfo(
   client: AgentClient, device: string, context: AgentEndpointContext,
@@ -33,9 +34,17 @@ async function endpointInfo(
 export async function capabilityReport(
   client: AgentClient, requestedDevices?: string[], concurrency?: number, options: CapabilityProbeOptions = {},
 ) {
-  const devices = requestedDevices?.length ? requestedDevices : client.devices.map((item) => item.name);
+  options.signal?.throwIfAborted();
+  // Match the finite fleet-status fan-out. Validate the entire selection before
+  // any endpoint starts, then collapse aliases onto their canonical identity.
+  const selected = requestedDevices?.length ? requestedDevices : client.devices;
+  if (selected.length > maxCapabilityDevices)
+    throw new RangeError("Capability reports support at most 64 device entries; select a bounded subset.");
+  const devices = [...new Set(requestedDevices?.length
+    ? requestedDevices.map(device => client.getDevice(device).name)
+    : client.devices.map(device => device.name))];
   const probeBudgetMs = fleetProbeBudget(options.probeTimeoutMs);
-  return mapLimit(devices, concurrency, async (device) => {
+  return mapLimit(devices, concurrency === undefined ? undefined : Math.min(32, concurrency), async (device) => {
     const started = performance.now();
     const configured = client.configuredContexts(device);
     const contexts: AgentEndpointContext[] = [];
@@ -46,15 +55,16 @@ export async function capabilityReport(
       async (context) => [context, await endpointInfo(client, device, context, probeBudgetMs, options.signal)] as const,
       options.signal);
     return { device, configured, endpoints: Object.fromEntries(entries),
-      probeBudgetMs, probeDurationMs: performance.now() - started, observedAt: new Date().toISOString() };
+      probeBudgetMs, probeBudgetScope: "per_endpoint_timeout" as const, reportDeviceLimit: maxCapabilityDevices,
+      probeDurationMs: performance.now() - started, observedAt: new Date().toISOString() };
   }, options.signal);
 }
 
 export function registerCapabilityTools(server: McpServer, client: AgentClient): void {
   server.registerTool("capability_report", {
-    description: "Probe configured agent endpoints within a finite read-only budget and report runtime SHA/version/context, privileges, readiness and capabilities with per-endpoint partial failures. A probe timeout does not establish physical power state.",
+    description: "Probe up to 64 configured device entries, resolving aliases and probing each canonical device once. Each endpoint has a finite read-only timeout; concurrent calls have independent limits, not a shared rate quota. Reports runtime SHA/version/context, privileges, readiness and capabilities with per-endpoint partial failures. A probe timeout does not establish physical power state.",
     inputSchema: {
-      devices: z.array(z.string().min(1)).optional(),
+      devices: z.array(z.string().min(1)).max(maxCapabilityDevices).optional().describe("At most 64 entries; aliases and repeated canonical devices are deduplicated before probing. Omitted or empty selects the configured inventory, which must also fit the limit."),
       concurrency: z.number().int().min(1).max(32).optional(),
       probeTimeoutMs: z.number().int().min(100).max(30_000).optional().describe("Per-endpoint read-only probe budget. Uses RCMCP_HEALTH_PROBE_TIMEOUT_MS or 1500 ms by default; does not change command execution deadlines."),
     },

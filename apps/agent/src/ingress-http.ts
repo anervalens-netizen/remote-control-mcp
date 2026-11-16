@@ -1,5 +1,5 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
-import { IngressObserver, type IngressHandle, type IngressIdentity } from "./ingress-observer.ts";
+import { IngressObserver, type IngressHandle, type IngressIdentity, type IngressCompletion } from "./ingress-observer.ts";
 import { encodeIngressHeader, ingressCorrelationHeader, ingressReceiptHeader, parseIngressCorrelation, ingressQuerySchema } from "../../../packages/protocol/src/ingress-correlation.ts";
 
 export type AgentIngressOptions = {
@@ -18,6 +18,14 @@ export function registerAgentIngress(app: FastifyInstance, options: AgentIngress
   const handles = new WeakMap<FastifyRequest, IngressHandle>();
   let hookErrors = 0;
   const guarded = (action: () => void) => { try { action(); } catch { hookErrors++; } };
+  const finishOnce = (request: FastifyRequest, completion: IngressCompletion) => {
+    const handle = handles.get(request);
+    if (!handle) return;
+    // Fastify abort/timeout and the raw response close can describe the same
+    // lifecycle end. Only a distinct direct observer retry is a duplicate.
+    handles.delete(request);
+    guarded(() => observer.finish(handle, completion));
+  };
   const verified = (request: FastifyRequest) => Boolean(options.token) && request.headers.authorization === "Bearer " + options.token;
   app.addHook("onRoute", route => { observer.addKnownRoute(route.url); });
   app.addHook("onRequest", async (request, reply) => {
@@ -37,21 +45,18 @@ export function registerAgentIngress(app: FastifyInstance, options: AgentIngress
         ...(correlation.value ? { dispatchId: correlation.value.dispatchId } : {}),
       }));
       reply.raw.once("close", () => {
-        if (!reply.raw.writableFinished) guarded(() => observer.finish(handle, { outcome: "disconnected" }));
+        if (!reply.raw.writableFinished) finishOnce(request, { outcome: "disconnected" });
       });
     });
   });
   app.addHook("onResponse", async (request, reply) => {
-    const handle = handles.get(request);
-    if (handle) guarded(() => observer.finish(handle, { statusCode: reply.statusCode, outcome: "response" }));
+    finishOnce(request, { statusCode: reply.statusCode, outcome: "response" });
   });
   app.addHook("onTimeout", async request => {
-    const handle = handles.get(request);
-    if (handle) guarded(() => observer.finish(handle, { outcome: "timeout" }));
+    finishOnce(request, { outcome: "timeout" });
   });
   app.addHook("onRequestAbort", async request => {
-    const handle = handles.get(request);
-    if (handle) guarded(() => observer.finish(handle, { outcome: "disconnected" }));
+    finishOnce(request, { outcome: "disconnected" });
   });
   app.addHook("onClose", async () => { observer.close(); });
   app.post("/v1/observations/ingress", async (request, reply) => {

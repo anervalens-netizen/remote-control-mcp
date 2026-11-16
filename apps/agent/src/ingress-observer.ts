@@ -1,4 +1,4 @@
-import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
+import { closeSync, constants, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readSync, unlinkSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
@@ -20,9 +20,11 @@ export type IngressCompletion = { statusCode?: number; outcome?: "response" | "d
 type Outcome = NonNullable<IngressCompletion["outcome"]>;
 type StatusClass = "informational" | "success" | "redirect" | "clientError" | "serverError" | "unknown";
 type Fault = "state_unavailable" | "state_corrupt" | "state_identity_mismatch" | "persistence_failed" |
-  "state_over_budget" | "clock_regressed" | "counter_saturated" | "invalid_duration" | "closed_with_inflight";
+  "state_over_budget" | "clock_regressed" | "counter_saturated" | "invalid_duration" | "closed_with_inflight" |
+  "state_writer_locked" | "state_writer_lost";
 const faultSchema = z.enum(["state_unavailable", "state_corrupt", "state_identity_mismatch", "persistence_failed",
-  "state_over_budget", "clock_regressed", "counter_saturated", "invalid_duration", "closed_with_inflight"]);
+  "state_over_budget", "clock_regressed", "counter_saturated", "invalid_duration", "closed_with_inflight",
+  "state_writer_locked", "state_writer_lost"]);
 const count = z.number().int().nonnegative().safe();
 const duration = z.number().nonnegative().finite().max(Number.MAX_SAFE_INTEGER);
 const statusSchema = z.object({
@@ -60,7 +62,7 @@ const stateSchema = z.object({
   collectionStartedAt: utcTimestampSchema, lastSavedAt: utcTimestampSchema,
   lastInstanceId: uuid, lastSequence: count, previousUnfinished: count, cleanShutdown: z.boolean(),
   days: z.array(daySchema).max(90), gaps: z.array(gapSchema).max(16), omittedGaps: count,
-  faults: z.array(faultSchema).max(9), greatestObservedAt: z.number().finite(),
+  faults: z.array(faultSchema).max(11), greatestObservedAt: z.number().finite(),
 }).strict();
 type Series = Totals & { route: string; method: string; entryPoint: IngressEntryPoint; authentication: IngressAuthentication };
 type Sample = IngressHandle & {
@@ -74,7 +76,9 @@ type Pending = {
   authentication: IngressAuthentication; series?: Series; sample?: Sample;
 };
 export type IngressObserverOptions = {
-  stateDirectory?: string; instanceId?: string; identity: IngressIdentity; knownRoutes?: string[];
+  stateDirectory?: string;
+  /** Unique for this observer lifetime. Pass the current agent boot UUID, never a persisted/reused ID. */
+  instanceId?: string; identity: IngressIdentity; knownRoutes?: string[];
   retentionDays?: number; maxSeries?: number; sampleLimit?: number; maxStateBytes?: number;
   flushIntervalMs?: number; now?: () => number; monotonicNow?: () => number;
 };
@@ -104,6 +108,7 @@ export class IngressObserver {
   readonly maxStateBytes: number;
   readonly flushIntervalMs: number;
   private readonly file?: string;
+  private writerFd?: number;
   private readonly now: () => number;
   private readonly monotonicNow: () => number;
   private readonly knownRoutes = new Set<string>();
@@ -153,11 +158,72 @@ export class IngressObserver {
     this.collectionStartedAt = this.processStartedAt = new Date(now).toISOString();
     for (const route of options.knownRoutes ?? []) this.addKnownRoute(route);
     if (options.stateDirectory) this.file = path.join(options.stateDirectory, "aggregate.json");
+    this.acquireWriter();
     this.load();
     this.changed();
     // Establish the new instance's unclean marker before requests are admitted.
     // A failure here is reported and never prevents application startup.
     this.flush();
+  }
+
+  private acquireWriter(): void {
+    if (!this.file) return;
+    try {
+      mkdirSync(path.dirname(this.file), { recursive: true, mode: 0o700 });
+      // No PID-based takeover: another observer can be live, or this can be
+      // preserved orphan evidence. Only an exclusive create admits a writer.
+      this.writerFd = openSync(this.file + ".writer", constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL |
+        (constants.O_NOFOLLOW ?? 0), 0o600);
+      writeFileSync(this.writerFd, JSON.stringify({
+        version: 1, instanceId: this.instanceId, pid: process.pid, createdAt: this.processStartedAt,
+      }) + "\n");
+      fsyncSync(this.writerFd);
+    } catch (error) {
+      this.persistenceDisabled = true;
+      this.faults.add((error as NodeJS.ErrnoException).code === "EEXIST" ? "state_writer_locked" : "state_unavailable");
+    }
+  }
+
+  private assertWriter(): void {
+    if (!this.file || this.writerFd === undefined) {
+      this.persistenceDisabled = true; this.faults.add("state_writer_lost");
+      throw new Error("aggregate writer is unavailable");
+    }
+    try {
+      const current = lstatSync(this.file + ".writer");
+      const owned = fstatSync(this.writerFd);
+      if (!current.isFile() || current.dev !== owned.dev || current.ino !== owned.ino) {
+        this.persistenceDisabled = true; this.faults.add("state_writer_lost");
+        throw new Error("aggregate writer ownership changed");
+      }
+    } catch (error) {
+      // Missing ownership or an invalid held descriptor is not a retryable
+      // publication failure. Never create or reclaim a replacement claim.
+      if (["ENOENT", "EBADF"].includes((error as NodeJS.ErrnoException).code ?? "")) {
+        this.persistenceDisabled = true; this.faults.add("state_writer_lost");
+      }
+      throw error;
+    }
+  }
+
+  private releaseWriter(): void {
+    if (!this.file || this.writerFd === undefined) return;
+    const fd = this.writerFd;
+    try {
+      this.assertWriter();
+      unlinkSync(this.file + ".writer");
+      if (process.platform !== "win32") {
+        const directoryFd = openSync(path.dirname(this.file), "r");
+        try { fsyncSync(directoryFd); } finally { closeSync(directoryFd); }
+      }
+    } catch {
+      // Never remove another owner's claim or hide a failed release. A leftover
+      // claim blocks future publication until its ownership is inspected.
+      this.persistenceDisabled = true; this.faults.add("state_unavailable");
+    } finally {
+      this.writerFd = undefined;
+      try { closeSync(fd); } catch { this.faults.add("state_unavailable"); }
+    }
   }
 
   addKnownRoute(route: string): boolean {
@@ -336,10 +402,13 @@ export class IngressObserver {
       if (!validUtcDay(cutoff)) throw new Error("invalid retention calendar");
       const faults = new Set<Fault>(parsed.faults);
       if (parsed.greatestObservedAt > this.greatestObservedAt) faults.add("clock_regressed");
-      const gaps: Gap[] = [...parsed.gaps, {
+      const gaps: Gap[] = [...parsed.gaps];
+      // A read-only observer may be competing with a live writer. It can read
+      // retained history, but cannot infer that the previous owner restarted.
+      if (!this.persistenceDisabled) gaps.push({
         reason: parsed.cleanShutdown ? "clean_restart_interval" : "unclean_restart",
         from: parsed.lastSavedAt, to: this.processStartedAt, previousUnfinished: parsed.previousUnfinished,
-      }];
+      });
       const omittedGaps = parsed.omittedGaps + Math.max(0, gaps.length - 16);
       if (omittedGaps > Number.MAX_SAFE_INTEGER) faults.add("counter_saturated");
       loaded = {
@@ -391,6 +460,7 @@ export class IngressObserver {
       };
       const serialized = JSON.stringify(state) + "\n";
       if (Buffer.byteLength(serialized) > this.maxStateBytes) { this.faults.add("state_over_budget"); throw new Error("aggregate over budget"); }
+      this.assertWriter();
       atomicWriteText(this.file, serialized, 0o600);
       this.retainedBytes = Buffer.byteLength(serialized);
       this.lastSavedAt = savedAt; this.lastSavedSequence = this.sequence; this.savedRevision = this.revision;
@@ -410,7 +480,7 @@ export class IngressObserver {
     const days = [...this.days.values()].filter(day => day.date >= cutoff).sort((a, b) => a.date.localeCompare(b.date));
     const relevantGaps = this.gaps.filter(gap => gap.to.slice(0, 10) >= cutoff);
     return structuredClone({
-      version: 1 as const, observedAt,
+      version: 1 as const, observedAt, counterScope: "current_process" as const,
       instanceId: this.instanceId, identity: this.identity, processStartedAt: this.processStartedAt,
       sequence: this.sequence, totals: { ...this.totals, inFlight: this.totals.received - this.totals.completed },
       sources: this.sources, series: [...this.series.values()], seriesOverflowRequests: this.seriesOverflowRequests,
@@ -422,6 +492,7 @@ export class IngressObserver {
         semantics: "Last received requests in this process. Stable eventId deduplicates delivery; revision replaces an earlier sample. Totals are independent of samples.",
       },
       history: {
+        scope: "retained_utc_arrival_days" as const,
         timezone: "UTC", retentionDays: this.retentionDays, collectionStartedAt: this.collectionStartedAt,
         startDate: cutoff, endDate: new Date(this.greatestObservedAt).toISOString().slice(0, 10),
         days, gaps: relevantGaps, omittedGaps: this.omittedGaps,
@@ -435,6 +506,9 @@ export class IngressObserver {
         processCountsComplete: !this.faults.has("counter_saturated"),
         scope: "Requests admitted to agent HTTP hooks; not TCP attempts, workload success, or original caller identity. Shared bearer proves credential possession only.",
         persistence: !this.file ? "memory_only" : this.persistenceDisabled ? "unavailable" : this.savedRevision === this.revision ? "confirmed" : "pending",
+        persistenceScope: "daily_aggregates" as const,
+        writerProtection: this.file ? "exclusive_claim_no_automatic_takeover" : "not_configured",
+        writerRecovery: "An existing claim may be live or orphaned. Retained history stays readable and current requests stay in memory. Publication requires inspected ownership; claims are never reclaimed automatically.",
         persistenceFailures: this.persistenceFailures, faults: [...this.faults], lastSavedAt: this.lastSavedAt,
         lastSavedSequence: this.lastSavedSequence, pendingChanges: this.revision - this.savedRevision,
         flushIntervalMs: this.flushIntervalMs,
@@ -454,5 +528,6 @@ export class IngressObserver {
     if (this.totals.received !== this.totals.completed) this.faults.add("closed_with_inflight");
     this.changed();
     this.flush();
+    this.releaseWriter();
   }
 }

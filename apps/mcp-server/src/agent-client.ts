@@ -239,45 +239,51 @@ export class AgentClient {
         const detail = recovery ? " job_recovery_required" : diagnostic ? ` ${diagnostic}` : "";
         throw new AgentRequestError(`${name} ${context} ${route} failed: HTTP ${response.status}${detail}`, name, context, route, "http", response.status, recovery, truncated, jobStartFailure, agentCode, coordinationConflict, repositoryRecovery);
       }
+      let result: T;
       try {
-        const result = await response.json() as T;
-        const value = result as any;
-        const candidate = route === "/v1/jobs/start" || route === "/v1/jobs/status" || route === "/v1/jobs/follow"
-          ? value?.id ?? value?.job?.id
-          : route === "/v1/project/run" ? value?.result?.id : route === "/v1/deploy/run" ? value?.job?.id : repoRecoveryReceipt(route, value)?.jobId;
-        const returnedJob = typeof candidate === "string" ? candidate : knownJobId;
-        const deviceName = this.getDevice(name).name;
-        if (options.observeOperation !== false) await observeAgent("agent_response", deviceName, context, true, returnedJob);
-        // Only authoritative job routes carry lifecycle evidence. Output EOF,
-        // missing receipts and a cancellation request do not prove termination.
-        if (["/v1/jobs/start", "/v1/jobs/status", "/v1/jobs/follow", "/v1/jobs/cancel"].includes(route)) {
-          const status = value?.state === "resolved" ? value.job : value;
-          if (typeof returnedJob === "string" && status?.id === returnedJob) {
-            await operationsFor(this).reconcileJob({ device: deviceName,
-              identity: context === "system" ? "root" : context === "user" ? "owner" : "interactive",
-              jobId: returnedJob }, status.state);
-          }
-        }
-        dispatchObserver.finish(dispatch, "success");
-        return result;
+        result = await response.json() as T;
       } catch (error) {
-        if (signal?.aborted) throw error;
-        const detail = error instanceof Error ? error.message : String(error);
-        throw new AgentRequestError(`${name} ${context} ${route} invalid JSON response: ${detail}`, name, context, route, "protocol");
+        // Fetch can fail while reading an otherwise successful response body.
+        // Only a completed body with invalid JSON is a protocol failure.
+        if (signal?.aborted || !(error instanceof SyntaxError)) throw error;
+        throw new AgentRequestError(`${name} ${context} ${route} invalid JSON response: ${error.message}`, name, context, route, "protocol");
       }
+      const value = result as any;
+      const candidate = route === "/v1/jobs/start" || route === "/v1/jobs/status" || route === "/v1/jobs/follow"
+        ? value?.id ?? value?.job?.id
+        : route === "/v1/project/run" ? value?.result?.id : route === "/v1/deploy/run" ? value?.job?.id : repoRecoveryReceipt(route, value)?.jobId;
+      const returnedJob = typeof candidate === "string" ? candidate : knownJobId;
+      const deviceName = this.getDevice(name).name;
+      if (options.observeOperation !== false) await observeAgent("agent_response", deviceName, context, true, returnedJob);
+      // Only authoritative job routes carry lifecycle evidence. Output EOF,
+      // missing receipts and a cancellation request do not prove termination.
+      if (["/v1/jobs/start", "/v1/jobs/status", "/v1/jobs/follow", "/v1/jobs/cancel"].includes(route)) {
+        const status = value?.state === "resolved" ? value.job : value;
+        if (typeof returnedJob === "string" && status?.id === returnedJob) {
+          await operationsFor(this).reconcileJob({ device: deviceName,
+            identity: context === "system" ? "root" : context === "user" ? "owner" : "interactive",
+            jobId: returnedJob }, status.state);
+        }
+      }
+      dispatchObserver.finish(dispatch, "success");
+      return result;
     } catch (error) {
       if (options.observeOperation !== false) await observeAgent("agent_response", this.getDevice(name).name, context, false,
         error instanceof AgentRequestError ? error.repositoryRecovery?.jobId : undefined);
-      const kind = error instanceof AgentRequestError ? error.kind : options.signal?.aborted && !deadline.timedOut() ? "cancelled" : deadline.timedOut() ? "timeout" : "network";
+      // The combined signal preserves the first abort reason, including an
+      // outer capability budget that expires before this request's own timer.
+      const abortedKind = signal?.aborted ? signal.reason?.name === "TimeoutError" ? "timeout" : "cancelled" : undefined;
+      const kind = error instanceof AgentRequestError ? error.kind : abortedKind ?? "network";
       dispatchObserver.finish(dispatch, kind === "context" ? "network" : kind);
       const trace = diagnosticContext.getStore();
       if (trace) trace.agentErrors[kind] = (trace.agentErrors[kind] ?? 0) + 1;
       if (error instanceof AgentRequestError) throw error;
-      if (options.signal?.aborted && !deadline.timedOut()) {
+      if (kind === "cancelled") {
         throw new AgentRequestError(`${name} ${context} ${route} cancelled by caller`, name, context, route, "cancelled");
       }
-      if (deadline.timedOut()) {
-        throw new AgentRequestError(`${name} ${context} ${route} timed out after ${timeoutMs}ms`, name, context, route, "timeout");
+      if (kind === "timeout") {
+        const detail = deadline.timedOut() && !options.signal?.aborted ? ` after ${timeoutMs}ms` : " (request deadline expired)";
+        throw new AgentRequestError(`${name} ${context} ${route} timed out${detail}`, name, context, route, "timeout");
       }
       const detail = error instanceof Error ? error.message : String(error);
       throw new AgentRequestError(`${name} ${context} ${route} network failure: ${detail}`, name, context, route, "network");
@@ -396,16 +402,19 @@ export class AgentClient {
     const dispatch = dispatchObserver.begin(this.getDevice(name).name, context, "/v1/fs/raw", correlation);
     const headers: Record<string, string> = { [ingressCorrelationHeader]: encodeIngressHeader(correlation) };
     if (endpoint.token) headers.authorization = `Bearer ${endpoint.token}`;
+    let response: Response;
     const finish = (outcome: Parameters<typeof dispatchObserver.finish>[1]) => {
       dispatchObserver.finish(dispatch, outcome);
       deadline.signal?.removeEventListener("abort", onDeadline);
     };
-    const onDeadline = () => finish("timeout");
+    const onDeadline = () => {
+      finish("timeout");
+      void response?.body?.cancel(deadline.signal?.reason).catch(() => undefined);
+    };
     // A caller can retain the returned stream without starting its iterator.
-    // The deadline must still close that dispatch when the response aborts.
+    // The deadline must still close its body and dispatch without an iterator.
     deadline.signal?.addEventListener("abort", onDeadline, { once: true });
 
-    let response: Response;
     try {
       response = await fetch(url, { headers, redirect: "error", ...(deadline.signal ? { signal: deadline.signal } : {}) });
       dispatchObserver.response(dispatch, response.status, response.headers.get(ingressReceiptHeader));
@@ -477,8 +486,9 @@ export class AgentClient {
         finish(deadline.timedOut() ? "timeout" : protocolFailure ? "protocol" : "network");
         throw error;
       } finally {
-        // Returning from a suspended iterator is an abandoned read, not EOF.
-        if (!complete) finish(deadline.timedOut() ? "timeout" : "cancelled");
+        // A consumer may stop at its known Content-Length without requesting
+        // another iterator result. Only a shorter read is abandoned here.
+        if (!complete) finish(deadline.timedOut() ? "timeout" : bytes === size ? "success" : "cancelled");
         deadline.dispose();
         await response.body?.cancel().catch(() => undefined);
       }

@@ -80,3 +80,52 @@ it("deduplicates finish then close and never stores unknown URLs, headers or cal
   expect(snapshot.samples[0]).toMatchObject({ route: "other", bearerVerified: true });
   expect(JSON.stringify(snapshot)).not.toMatch(/private-path|fixture-secret|fixture-token|private-caller-id/);
 });
+
+it("records one response_finished for a complete response from the actual MCP HTTP server", async () => {
+  const client = new AgentClient([{ name: "fixture", url: "http://fixture.invalid" }]);
+  const base = await listen(createMcpHttpServer(client, {
+    token: "fixture-controller", sessionMode: "stateless", enableJsonResponse: true,
+  }));
+  const response = await fetch(base + "/mcp", { method: "POST", headers: {
+    authorization: "Bearer fixture-controller", "content-type": "application/json",
+    accept: "application/json, text/event-stream", "mcp-protocol-version": "2025-03-26",
+  }, body: JSON.stringify({ jsonrpc: "2.0", id: 701, method: "tools/list", params: {} }) });
+  expect(response.status).toBe(200);
+  const body = await response.json() as any;
+  expect(body).toMatchObject({ jsonrpc: "2.0", id: 701 });
+  expect(body.result.tools.length).toBeGreaterThan(0);
+  const deliveryId = response.headers.get("x-rcmcp-delivery-id");
+  const snapshot = httpDeliveryFor(client).snapshot();
+  expect(snapshot).toMatchObject({ started: 1, finished: 1, inFlight: 0, responseFinished: 1, connectionsClosed: 0, requestsAborted: 0 });
+  expect(snapshot.samples).toHaveLength(1);
+  expect(snapshot.samples[0]).toMatchObject({ requestId: deliveryId, route: "/mcp", method: "POST", bearerVerified: true, statusCode: 200, outcome: "response_finished" });
+  expect(snapshot.clientAcceptance).toBe("unknown");
+});
+
+it("records request_aborted once when an actual MCP request ends before its declared body", async () => {
+  const client = new AgentClient([{ name: "fixture", url: "http://fixture.invalid" }]);
+  const server = createMcpHttpServer(client, { token: "fixture-controller", sessionMode: "stateless" });
+  let received!: () => void;
+  const partialBodyReceived = new Promise<void>(resolve => { received = resolve; });
+  server.on("request", req => { if (req.url === "/mcp") req.once("data", received); });
+  const base = await listen(server);
+  const body = JSON.stringify({ jsonrpc: "2.0", id: 702, method: "tools/list", params: {} });
+  await new Promise<void>((resolve, reject) => {
+    let destroying = false;
+    const req = request(base + "/mcp", { method: "POST", headers: {
+      authorization: "Bearer fixture-controller", "content-type": "application/json",
+      accept: "application/json, text/event-stream", "content-length": Buffer.byteLength(body),
+      "mcp-protocol-version": "2025-03-26",
+    } });
+    req.once("error", error => { if (!destroying) reject(error); });
+    req.setTimeout(1500, () => { req.destroy(); reject(new Error("Synthetic partial request was not admitted")); });
+    req.write(body.slice(0, 12));
+    void partialBodyReceived.then(() => { destroying = true; req.destroy(); resolve(); });
+  });
+  for (let attempt = 0; attempt < 40 && httpDeliveryFor(client).snapshot().requestsAborted === 0; attempt++) await pause(10);
+  const snapshot = httpDeliveryFor(client).snapshot();
+  expect(snapshot).toMatchObject({ started: 1, finished: 1, inFlight: 0, requestsAborted: 1, responseFinished: 0, connectionsClosed: 0 });
+  expect(snapshot.samples).toHaveLength(1);
+  expect(snapshot.samples[0]).toMatchObject({ route: "/mcp", method: "POST", bearerVerified: true, outcome: "request_aborted" });
+  expect(snapshot.clientAcceptance).toBe("unknown");
+});

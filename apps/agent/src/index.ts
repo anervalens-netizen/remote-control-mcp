@@ -207,4 +207,21 @@ registerExtraRoutes(app);
 registerBrowserRoutes(app);
 if (process.env.RCMCP_DESKTOP_ENABLED === "1") registerDesktopRoutes(app);
 if (semanticDesktopConfigured()) registerSemanticDesktopRoutes(app);
-await app.listen({ host, port });
+let closing: Promise<void> | undefined;
+const requestClose = () => {
+  closing ??= app.close().catch(error => {
+    // A failed shutdown remains a process failure. The ingress onClose hook
+    // persists only the HTTP observations it actually completed.
+    app.log.error({ err: error }, "Agent shutdown failed");
+    process.exitCode = 1;
+  });
+};
+process.once("SIGTERM", requestClose);
+process.once("SIGINT", requestClose);
+try {
+  await app.listen({ host, port });
+} catch (error) {
+  // A failed bind must release this process's new telemetry claim as well.
+  await app.close();
+  throw error;
+}
