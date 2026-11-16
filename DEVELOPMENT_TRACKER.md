@@ -2,6 +2,10 @@
 
 This file describes reusable engineering requirements, not deployment state or an operator work report. Private project memory, validation receipts, active release manifests and rollback records belong in private operator storage.
 
+## Improvement plan and implementation tracker
+
+The [reliability and usability plan](docs/plans/2026-11-16-improvement-plan.md) defines the full improvement scope, dependencies, acceptance criteria and source comparisons. Use its [60-item implementation tracker](docs/plans/2026-11-16-improvement-tracker.md) to record engineering progress and justified experiment decisions. Existing requirements below remain applicable. Keep live measurements, device details and deployment evidence in private project memory under the matching stable work-item ID.
+
 ## Acceptance requirements
 
 - RPC and raw-file calls reject redirects without replaying effects; raw error consumption and response lifetime are bounded.
