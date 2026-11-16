@@ -1,0 +1,55 @@
+# Lot 2 engineering evidence
+
+Status: source candidate, before exact-head external review, merge and deployment. The previous qualified runtime source is still `9682af5bd2e6e4ae658dfdbcd55532f9ba5cdd32`. This file contains synthetic engineering evidence only. Actual inventories, measurements, execution IDs and operational receipts remain private.
+
+## Changes and finite scope
+
+| Work item | Change | Remaining acceptance |
+|---|---|---|
+| OBS-01 | Mapped controller HTTP/stdio, direct clients, raw streaming, direct transfers, relays/proxies and Android boundaries. | Unknown original callers and uninstrumented proxy hops remain explicitly unassigned. |
+| OBS-02/03 | Strict correlation, response receipts, all-ingress counters and HTTP lifecycle separation. | Deployed correlation/identity checks; agent-to-agent parent propagation is not added. |
+| OBS-04 | Same-window sample reconciliation with duplicate/conflicting binding handling and conservation residuals. | Private deployed window with original receipts and known collection bounds. |
+| OBS-06 | Existing ContextKeep association propagates as diagnostic UUIDs without lease tokens or new attachments. | Deployed task-linked read canary. |
+| HIS-01/02/04 | Independent bounded daily aggregates, restart/corruption coverage and authenticated usage_report pages. | Console extension, operational pressure measurements and the complete history acceptance. Unsupported dimensions stay explicit. |
+| HIS-03 | Bounded private assessment distinguishes existing terminal evidence, stale running metadata, lost references, missing metadata and uninspected identities. | This is a retained-history snapshot; it does not establish historical quiescence or automatically reconcile every reference. |
+| INV-03 | Finite capability endpoint budgets and caller cancellation, including queued work. | Private bounded fleet qualification and measured backoff decision. |
+| INV-04 | Generic source/worktree/immutable-release guide and private preserved-workspace mapping. | Final publication and handoff synchronization. |
+| UX-03/MCP-03 | Shared fs_read/batch_read mode validation and advertised field meanings. | Deployed connector read qualification; broader usability/discovery acceptance remains open. |
+
+See [ingress observation contracts](../INGRESS-OBSERVABILITY.md) and [workspace/release evidence](../WORKSPACE-AND-RELEASES.md). The original historical REC-05 incident, its uncertain fence and saved recovery intent remain separate. No result here establishes historical quiescence or authorizes replay.
+
+## Reproduced defects and regressions
+
+- Six incompatible versioned/expectedVersion line/tail combinations returned HTTP500 before the correction. Shared schema checks now return agent HTTP400 before file access, and SDK single/batch calls reject them before dispatch. Valid byte paging, zero-byte metadata, sourceVersion, eof, UTF-8 and line continuation remain covered.
+- The capability report lacked a finite endpoint budget and ignored caller cancellation. A real stalled HTTP fixture with generic deadlines disabled now returns bounded partial evidence. Cancellation prevents queued devices from starting.
+- A local HTTP close with status200 was previously counted using only the status code. Actual MCP SSE interruption now records incomplete connection closure and increments the failure count. Normal finish followed by close counts once; client acceptance remains unknown.
+- Disabled sample detail could return a repeated zero cursor. The report now returns a terminal null cursor.
+- Conflicting duplicate event/dispatch bindings could depend on delivery order. They now remain unattributed, with explicit conflicts and unchanged request totals. Malformed dispatch metadata is rejected without aborting reconciliation.
+- A FIFO aggregate path could block agent startup. The reader opens nonblocking where supported, then rejects nonregular files. Corrupt temporal state and descriptor-close failures are contained before loaded state is applied. Original evidence remains untouched and memory counting continues.
+- A hook exception no longer leaves a misleading complete-coverage claim. The workload response remains available while the report identifies the missing observation.
+
+## Synthetic verification
+
+| Suite or scenario | Evidence at this source checkpoint |
+|---|---|
+| fs_read mode/relay/usability checks | 59 targeted tests passed; actual agent and stateful/stateless JSON/SSE SDK paths exercised. |
+| Actual spawned agent ingress | Fourteen fixture reads: nine HTTP400 and five HTTP200, matching runtime instance/identity; no path payload leakage. |
+| Aggregate persistence core | 22 tests passed, including reproduced FIFO, invalid timestamp/calendar and close-error cases, rollover, restart and publication failure. |
+| Ingress HTTP/SDK integration | 20 tests passed; sampling rollover, denied/direct requests, batch dispatch, conflict ordering, cancellation, usage pages and hook failure covered. |
+| Raw streaming | 17 new cases plus ten existing raw-read regressions passed. |
+| Capability probes and related inventory/runtime regressions | 46 targeted tests passed. |
+| Controller HTTP delivery | Actual SSE interruption and finish/close deduplication passed. |
+| Modern SDK input validation | One supplementary regression passed using the official modern client and protocol 2026-07-28: invalid single/batch inputs dispatch zero requests; valid versioned paging dispatches exactly once. Application source is unchanged from the combined gate. |
+| Initial complete local run | Privacy/build/typecheck passed. Twelve tests failed: two expected catalog-count updates and ten timeout cases under unrestricted parallelism; an associated timed-out cleanup also reported an error. The original logs are preserved. |
+| Failure qualification | All 115 tests in those ten files passed with four workers, unchanged timeouts and assertions. Exact catalog count is now 105 and usage_report presence is asserted. |
+| Final combined local gate | Passed: privacy guard, console build, typecheck, 1,396 tests passed and 88 explicitly skipped across 187 files, staged/full-history privacy checks and diff checks. Two workers bounded resource contention; no timeouts or assertions were weakened. All 486 non-Markdown source files were unchanged during the gate. |
+| Codex and DSH review, current-head CI | Pending. |
+| Deployed behavior and same-window report | Pending. |
+
+Test counts are scoped runs and must not be added together: suites overlap. Skipped native/platform tests are not passes. The final source identity and qualification summary must be recorded before rollout.
+
+## Preservation and rollout requirements
+
+Keep both author and committer on noreply identities. Preserve the normal staged/full-history publication checks. Use the shared review-cycle helper, current head/base bindings and explicit dispositions for both review sources; verify the grouped private review task after closure.
+
+Promote an immutable, manifest-verified release through a new guarded attempt with independently recoverable receipts. Preserve recovery journals and state roots. Verify selected process paths, agent/controller identity, fs_read validation, correlation receipts, bounded report coverage and original uncertain evidence after restart. Do not reuse old rollout plans or infer completion from an interrupted tool response.

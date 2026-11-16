@@ -45,7 +45,7 @@ export type ExecResult = {
   terminationReason?: string;
 };
 
-export { execRequestFields, executionRouteFields, execResultSchema, fsReadFields, fsReadResultSchema, batchFailureSchema, batchResultSchema } from "./execution.ts";
+export { execRequestFields, executionRouteFields, execResultSchema, fsReadFields, fsReadSchema, fsReadModeIssues, refineFsReadInput, fsReadResultSchema, batchFailureSchema, batchResultSchema } from "./execution.ts";
 export { DEFAULT_HTTP_TIMEOUT_MS, DEFAULT_TRANSFER_TIMEOUT_MS, HTTP_GRACE_MS, MAX_DEADLINE_MS, NODE_TIMER_MAX_MS, createDeadline, timeoutMsField, withTimeoutGrace } from "./deadline.ts";
 export {
   androidCommandRequestSchema, androidGlobalActionRequestSchema, androidImageSchema,

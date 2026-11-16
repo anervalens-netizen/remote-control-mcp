@@ -1,7 +1,9 @@
 import { ExecReceiptStore } from "./exec-receipts.ts";
-import { ensureStateDir } from "./state.ts";
+import { ensureStateDir, stateRoot } from "./state.ts";
+import path from "node:path";
+import { registerAgentIngress } from "./ingress-http.ts";
 import { filesystemReadResponse } from "./filesystem-read-response.ts";
-import { fsReadFields } from "../../../packages/protocol/src/execution.ts";
+import { fsReadSchema } from "../../../packages/protocol/src/execution.ts";
 import { registerFilesystemManageRoute } from "./filesystem-routes.ts";
 import { timeoutMsField } from "../../../packages/protocol/src/deadline.ts";
 import { registerBrowserRoutes } from "./browser-routes.ts";
@@ -36,18 +38,6 @@ if (!token && !allowUnauthenticated) {
 }
 
 const execReceipts = new ExecReceiptStore(ensureStateDir("exec-receipts-v1"));
-const fsReadSchema = z.object({
-  ...fsReadFields,
-}).superRefine((value, ctx) => {
-  const lineMode = value.startLine !== undefined || value.lineCount !== undefined || value.maxBytes !== undefined;
-  if (value.tailBytes !== undefined && (value.offset !== undefined || value.length !== undefined || lineMode)) {
-    ctx.addIssue({ code: "custom", message: "tailBytes cannot be combined with byte or line-range options" });
-  }
-  if (lineMode && (value.length !== undefined || value.tailBytes !== undefined)) {
-    ctx.addIssue({ code: "custom", message: "line-range options cannot be combined with length/tail options" });
-  }
-  if (lineMode && value.encoding === "base64") ctx.addIssue({ code: "custom", message: "line-range reads require UTF-8 encoding" });
-});
 const fsWriteSchema = z.object({
   path: z.string().min(1),
   data: z.string(),
@@ -96,6 +86,14 @@ if (configuredBodyLimitBytes !== null && (!Number.isSafeInteger(configuredBodyLi
 // a numeric parser limit, so MAX_SAFE_INTEGER is the practical no-fixed-cap value.
 const bodyLimit = configuredBodyLimitBytes ?? Number.MAX_SAFE_INTEGER;
 const app = Fastify({ logger: true, bodyLimit });
+const ingressRuntime = runtimeStatus();
+const retentionDays = Number(process.env.RCMCP_INGRESS_RETENTION_DAYS ?? 90);
+const ingress = registerAgentIngress(app, {
+  token, allowUnauthenticated, instanceId: ingressRuntime.instanceId,
+  identity: ingressRuntime.context === "system" ? "root" : ingressRuntime.context === "user" ? "owner" : ingressRuntime.context === "desktop" ? "interactive" : "unknown",
+  stateDirectory: path.join(stateRoot, "agent-ingress-v1"),
+  retentionDays: Number.isSafeInteger(retentionDays) && retentionDays >= 60 && retentionDays <= 90 ? retentionDays : 90,
+});
 const runtimeWithHttpLimits = () => ({ ...runtimeStatus(), maxBodyBytes: configuredBodyLimitBytes, transferStagingVersion: 1, relaySourceVersion: 1, pathResolutionVersion: 1 });
 
 app.addHook("onRequest", async (request, reply) => {

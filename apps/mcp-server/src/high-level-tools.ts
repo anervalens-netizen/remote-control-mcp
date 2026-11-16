@@ -10,7 +10,7 @@ import { withToolErrors } from "./tool-errors.ts";
 import { repoPendingResultSchema } from "./repo-recovery-receipt.ts";
 import { projectRunFields, deployFields } from "../../../packages/protocol/src/project.ts";
 import { repoCheckpointFields, repoPatchFields, fsEditFields } from "../../../packages/protocol/src/editing.ts";
-import { batchResultSchema, execRequestFields, execResultSchema, fsReadFields, fsReadResultSchema } from "../../../packages/protocol/src/execution.ts";
+import { batchResultSchema, execRequestFields, execResultSchema, fsReadFields, fsReadResultSchema, refineFsReadInput } from "../../../packages/protocol/src/execution.ts";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { AgentClient } from "./agent-client.ts";
@@ -99,9 +99,9 @@ export function registerHighLevelTools(server: McpServer, client: AgentClient): 
   }, async (input, extra) => structured(await configuredBatchStore(client).recover(input, extra.signal)));
 
   server.registerTool("batch_read", {
-    description: "Read many files in parallel. Each item supports explicit owner/root/interactive routing and returns a typed structured envelope.",
+    description: "Read many files in parallel. Each item uses the fs_read mode contract, supports explicit owner/root/interactive routing and returns a typed structured envelope. Invalid modes reject the batch before dispatch.",
     inputSchema: z.object({
-      items: z.array(executionInputSchema({ device: z.string().min(1), ...fsReadFields })).min(1).max(64),
+      items: z.array(executionInputSchema({ device: z.string().min(1), ...fsReadFields }).superRefine(refineFsReadInput)).min(1).max(64),
       concurrency: z.number().int().min(1).max(32).optional(),
     }).strict(),
     outputSchema: batchResultSchema(fsReadResultSchema),

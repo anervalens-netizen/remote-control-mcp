@@ -72,6 +72,19 @@ snapshot isolation against uncoordinated namespace changes.
 
 **Execution facts:** batch `ok`/`partial` describe agent requests. Additive `summary`/`executionPartial` cover all items, even omitted previews; exit status, signal, timeout, cancellation, uncertainty and effect verification remain distinct. A successful read of a failed job is still a successful read. Client acceptance is unknown to the controller.
 
+**Filesystem read modes:** for `fs_read` and each `batch_read` item, use
+`length` for byte paging. `maxBytes`, `startLine` or `lineCount` selects
+UTF-8 line mode. Versioned reads and `expectedVersion` require byte paging and
+reject line/tail options before dispatch. A line read can continue with its
+returned `nextOffset` while retaining line-range options.
+
+**Usage reporting:** `usage_report` returns bounded agent ingress counts,
+90-day configurable UTC aggregates and correlation detail. Counts include
+direct traffic and remain independent of sampled traces. Controller HTTP finish,
+premature close and request abort remain distinct; client consumption stays
+unknown. See [ingress observations](docs/INGRESS-OBSERVABILITY.md) for attribution,
+coverage, retention, paging and direct-transfer limits.
+
 **RPC and raw-file reads:** redirects are rejected, including redirects to the same origin. A caller selects a configured endpoint; a redirect is not permission to send commands or import bytes elsewhere. Raw HTTP error bodies are consumed only up to a bounded read budget (64 KiB plus at most an incoming stream chunk), then cancelled. Diagnostics retain selected error fields, not unrelated credentials. HTTP errors are not automatically retried.
 
 **Secret installation:** activation must return an explicit successful receipt. `secret_install_failed` and `secret_install_uncertain` are structured errors, also used by template rendering. After activation is attempted, staging/recovery material is retained: inspect `destination`, `temporaryPath` and the optional `recovery` metadata before cleanup or retry. The response never includes secret bytes or arbitrary activation exception text. A staging failure before activation attempts cleanup and reports when cleanup remains pending.
@@ -121,7 +134,9 @@ Public workflows run only on GitHub-hosted Linux/Windows. Never register a persi
 
 The publication guard scans current/index content, all distinct historical paths and modes, commit messages, selected secret formats, and UTF-8/UTF-16 text. A PASS is not a universal secret-detection guarantee. Hooks run before publication; full-history CI is an independent backstop, not prevention of the first public exposure. If private material is detected, stop publication and preserve/remediate it privately rather than posting the matching values in an issue.
 
-Read `AGENTS.md` and `DEVELOPMENT_TRACKER.md`. Use GitHub noreply addresses for both author and committer, including merges and imported commits. Keep public issues, test fixtures and reports wholly synthetic. Never copy private operational reports into this repository.
+Read `AGENTS.md` and `DEVELOPMENT_TRACKER.md`. See
+[workspaces and immutable releases](docs/WORKSPACE-AND-RELEASES.md) for source,
+startup and running-version evidence. Use GitHub noreply addresses for both author and committer, including merges and imported commits. Keep public issues, test fixtures and reports wholly synthetic. Never copy private operational reports into this repository.
 
 ## Optional ContextKeep result bridge
 
@@ -180,7 +195,8 @@ Recovery restores only the captured receipt, never bytes discarded by the agent.
 Observed tools expose an `operationTrace` with a unique trace and controller
 instance ID. Selected starting tools accept optional `diagnosticScopeId` (UUID)
 for client-declared association, independently of durable effect keys. This
-metadata is removed before agent dispatch. Observations preserve bounded metadata
+metadata is removed from the tool body; validated diagnostic IDs can propagate
+in the separate caller-declared ingress correlation header. Observations preserve bounded metadata
 only under `RCMCP_STATE_DIR/operation-observations-v1`; without a configured state
 root they are memory-only. Keep that directory private and owned by one controller.
 Default limits are 20,000 entries, 64 MiB and seven days for terminal observations. Active
@@ -241,7 +257,7 @@ and `RCMCP_COORDINATION_FILE_MODE=0660` on each agent. The default file mode is
 private `0600`; directory permissions/group ownership are never changed. Arbitrary shell/external edits
 remain outside fencing; see [bounds and recovery](docs/RELIABILITY.md#high-level-resource-coordination-r10).
 
-SDK 1.31.0 remains pinned. Authenticated health reports observed initialize
+The legacy SDK 1.32.2 remains pinned. Authenticated health reports observed initialize
 protocol versions and session/JSON/SSE modes, without inferring negotiation from
 headers or documentation. The synthetic compatibility matrix covers the
 installed client and production HTTP path, including discovery, validation,

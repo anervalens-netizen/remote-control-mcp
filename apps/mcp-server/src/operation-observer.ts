@@ -433,6 +433,15 @@ export class OperationObserver {
     const read = effect !== undefined ? effect === "read" : record.state === "returned" && (readOnlyTools.has(record.tool) || markedReadFailure(record));
     return record.requestSucceeded === false && read ? { observationOutcome: "failed" as const } : {};
   }
+  /** Bounded correlation only. Never export effect keys, leases or arguments. */
+  correlation(id: string) {
+    const record = this.entries.get(id);
+    return record ? {
+      traceId: record.traceId,
+      ...(record.diagnosticScopeId ? { diagnosticScopeId: record.diagnosticScopeId } : {}),
+      ...(record.contextKeep ? { contextKeep: { ...record.contextKeep } } : {}),
+    } : {};
+  }
   async health() { await this.ready; await this.queue; return this.coverage(); }
   async inspect(id: string) {
     await this.ready; await this.queue;
