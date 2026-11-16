@@ -1,9 +1,9 @@
-import { closeSync, constants, fstatSync, mkdirSync, openSync, readFileSync } from "node:fs";
+import { closeSync, constants, fstatSync, openSync, readFileSync } from "node:fs";
 import { realpath } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { CoordinationRecordView as CoordinationRecord, CoordinationToken } from "../../../packages/protocol/src/coordination.ts";
-import { CoordinationError, coordinationHash, coordinationPublicRecord, coordinationRecoveryView, type ReconciliationJobEvidence, type ResourceCoordinator, type ResourceVersion } from "./coordination.ts";
+import { CoordinationError, coordinationHash, coordinationPublicRecord, coordinationRecoveryView, ensureCoordinationDirectory, type ReconciliationJobEvidence, type ResourceCoordinator, type ResourceVersion } from "./coordination.ts";
 import { executionBoundary } from "./execution-boundary.ts";
 import { jobStart, jobStartKeyStatus, jobCoordinationStatus } from "./jobs.ts";
 import { jobFollow } from "./job-follow.ts";
@@ -91,8 +91,8 @@ export async function runCoordinatedRepo(options: {
     const remember = (facts: Omit<CoordinatedRepoReceipt, "record" | "jobId"> = {}) => options.onReceipt?.({ record, ...(jobId ? { jobId } : {}), ...facts });
     remember();
     try {
-      mkdirSync(directory, { recursive: true, mode: 0o700 });
-      atomicWriteJson(requestFile, request);
+      ensureCoordinationDirectory(directory, coordinator.fileMode);
+      atomicWriteJson(requestFile, request, coordinator.fileMode);
       // The complete operation is one existing durable job. Once reserved, an
       // admission failure or missing reply never falls back to direct Git/spawn.
       submit();

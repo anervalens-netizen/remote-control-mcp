@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { chmodSync, mkdtempSync, readFileSync, readdirSync, writeFileSync, unlinkSync, symlinkSync, rmSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync, unlinkSync, symlinkSync, rmSync } from "node:fs";
 import path from "node:path";
 import Fastify from "fastify";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -52,6 +52,21 @@ async function fixture(indexLock: boolean) {
 }
 
 describe.skipIf(!containment.ready)(`coordinated repository systemd integration (${containment.ready ? "available" : "SKIP: " + containment.reason})`, () => {
+  it.each([undefined, "0660"].flatMap(configured => [false, true].map(indexLock => ({ configured, indexLock }))))(
+    "keeps repository request and result receipts inside the configured sharing boundary (mode $configured, failure $indexLock)", async ({ configured, indexLock }) => {
+      vi.stubEnv("RCMCP_COORDINATION_FILE_MODE", configured);
+      const f = await fixture(indexLock);
+      const result = await f.app.inject({ method: "POST", url: "/v1/repo/pull", payload: { path: f.working, timeoutMs: 5000 } });
+      const { record } = await f.snapshot(), directoryMode = configured ? 0o770 : 0o700, fileMode = configured ? 0o660 : 0o600;
+      expect(result.statusCode, result.body).toBe(indexLock ? 500 : 200);
+      const operationDir = path.join(f.coordinationRoot, "repo-operations", record.operationId);
+      for (const directory of [f.coordinationRoot, path.join(f.coordinationRoot, "executions"), path.join(f.coordinationRoot, "reconciliations"), path.dirname(operationDir), operationDir]) {
+        expect(statSync(directory).mode & 0o777).toBe(directoryMode);
+      }
+      for (const file of ["request.json", "result.json"]) expect(statSync(path.join(operationDir, file)).mode & 0o777).toBe(fileMode);
+      expect(JSON.parse(readFileSync(path.join(operationDir, "result.json"), "utf8")).ok).toBe(!indexLock);
+    }, 25_000);
+
   it("revalidates the base in the admitted worker before any Git effect", async () => {
     const f = await fixture(false), admit = systemd.admitJobUnit;
     vi.spyOn(systemd, "admitJobUnit").mockImplementation(async (...args) => {

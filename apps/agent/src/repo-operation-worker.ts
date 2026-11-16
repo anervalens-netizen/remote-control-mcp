@@ -1,6 +1,6 @@
 import { closeSync, constants, fstatSync, openSync, readFileSync } from "node:fs";
 import path from "node:path";
-import { coordinationHash, coordinationDevice, coordinationIdentity, coordinationToken, ResourceCoordinator } from "./coordination.ts";
+import { coordinationHash, coordinationDevice, coordinationIdentity, coordinationToken, coordinationFileMode, ResourceCoordinator } from "./coordination.ts";
 import { resolveCoordinationResource } from "./coordination-resource.ts";
 import { JobStartDeduplicator } from "./job-start-dedup.ts";
 import { repoFetch, repoPull, repoPush, redactGitText } from "./repo.ts";
@@ -19,12 +19,13 @@ try {
   request = repoOperationRequestSchema.parse(JSON.parse(readFileSync(fd, "utf8")));
 } finally { closeSync(fd); }
 if (coordinationHash(request) !== expectedHash || request.device !== coordinationDevice || request.identity !== coordinationIdentity) throw new Error("Repository operation binding mismatch");
+const fileMode = coordinationFileMode(process.env.RCMCP_COORDINATION_FILE_MODE);
 try {
   // Admission is asynchronous. Revalidate the pinned path and original fence in
   // this worker immediately before the high-level operation, not only in HTTP.
   const observed = await resolveCoordinationResource({ kind: "repo", path: request.input.path });
   if (observed.device !== request.device || observed.identity !== request.identity || observed.canonicalKey !== request.canonicalKey || observed.baseVersion !== request.token.baseVersion) throw new Error("Repository resource or base changed before execution");
-  const coordinator = new ResourceCoordinator(path.resolve(path.dirname(requestFile), "../.."));
+  const coordinator = new ResourceCoordinator(path.resolve(path.dirname(requestFile), "../.."), 4, Date.now, fileMode);
   const record = coordinator.current(observed);
   if (!record || record.state !== "active" || coordinationHash(coordinationToken(record)) !== coordinationHash(request.token)
     || record.execution?.requestHash !== expectedHash || record.execution.key !== "coordination-repo:" + request.token.operationId) throw new Error("Repository execution fence changed before execution");
@@ -33,9 +34,9 @@ try {
     || record.jobId && record.jobId !== reservation.jobId) throw new Error("Repository durable job binding changed before execution");
   const run = request.operation === "fetch" ? repoFetch : request.operation === "pull" ? repoPull : repoPush;
   const result = await run(request.input);
-  atomicWriteJson(resultFile, repoOperationResultSchema.parse({ version: 1, requestHash: expectedHash, ok: true, result }));
+  atomicWriteJson(resultFile, repoOperationResultSchema.parse({ version: 1, requestHash: expectedHash, ok: true, result }), fileMode);
 } catch (error) {
   const detail = redactGitText(error instanceof Error ? error.message : String(error)).slice(0, 40 * 1024);
-  atomicWriteJson(resultFile, repoOperationResultSchema.parse({ version: 1, requestHash: expectedHash, ok: false, error: detail }));
+  atomicWriteJson(resultFile, repoOperationResultSchema.parse({ version: 1, requestHash: expectedHash, ok: false, error: detail }), fileMode);
   process.exitCode = 1;
 }

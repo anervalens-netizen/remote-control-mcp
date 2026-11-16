@@ -43,6 +43,28 @@ Back up the main journals and slots, `executions/`, `recovery-intents/`,
 `reconciliations/`, `repo-operations/` and the corresponding existing job/key
 stores together. A checkout or release-directory rollback is not a state migration.
 
+### Sharing between trusted Unix identities
+
+Coordination state is private by default: new files use `0600` and new directories
+use `0700`. Sharing is an explicit opt-in for trusted participating agents. Provision
+the common root, its ancestor access and group membership externally, normally with
+setgid group inheritance, then configure `RCMCP_COORDINATION_FILE_MODE=0660` on every
+participant. New coordination directories use `0770`; the inherited setgid bit and
+group remain intact. Their permissions are applied after creation so a restrictive
+umask does not silently remove the configured group access.
+
+This policy covers execution sidecars, recovery intents, reconciliations and nested
+`repo-operations/` directories. Repository request and result receipts use the same
+configured file mode on both successful and failed worker paths. The existing job
+state remains separate and keeps its own permissions and execution identity.
+
+Existing directories, ownership, group membership and ACLs are never automatically
+rewritten. An existing private or incompatible recovery directory needs an explicit
+operator-managed permission migration before cross-identity sharing can work. An
+upgrade does not silently widen those directories or grant a group access to earlier
+private receipts. Keep the original journals and recovery evidence intact during
+that migration.
+
 ## Repository execution
 
 For `repo_fetch`, `repo_pull` and non-dry-run `repo_push`, the agent chooses its

@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { closeSync, constants, fchmodSync, fstatSync, mkdirSync, openSync, readFileSync, readdirSync, unlinkSync, writeFileSync, fsyncSync } from "node:fs";
+import { closeSync, constants, fchmodSync, fstatSync, mkdirSync, openSync, readFileSync, readdirSync, statSync, unlinkSync, writeFileSync, fsyncSync } from "node:fs";
 import path from "node:path";
 import { hostname, userInfo } from "node:os";
 import { z } from "zod";
@@ -40,6 +40,27 @@ export function coordinationFileMode(value?: string): number {
   throw new Error("RCMCP_COORDINATION_FILE_MODE must be 0600 or 0660");
 }
 
+/** Configure only newly created directories; existing ownership, ACLs and modes
+ * remain the operator's responsibility. Keep inherited setgid for later writers. */
+export function ensureCoordinationDirectory(directory: string, fileMode = 0o600): string {
+  if (fileMode !== 0o600 && fileMode !== 0o660) throw new Error("Invalid coordination file mode");
+  const mode = fileMode === 0o660 ? 0o770 : 0o700;
+  try { mkdirSync(directory, { mode }); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT" && path.dirname(directory) !== directory) {
+      ensureCoordinationDirectory(path.dirname(directory), fileMode);
+      return ensureCoordinationDirectory(directory, fileMode);
+    }
+    if ((error as NodeJS.ErrnoException).code === "EEXIST" && statSync(directory).isDirectory()) return directory;
+    throw error;
+  }
+  if (process.platform !== "win32") {
+    const fd = openSync(directory, constants.O_RDONLY | (constants.O_DIRECTORY ?? 0) | (constants.O_NOFOLLOW ?? 0));
+    try { fchmodSync(fd, mode | (fstatSync(fd).mode & 0o2000)); } finally { closeSync(fd); }
+  }
+  return directory;
+}
+
 /** Short, fail-fast per-resource disk transactions; never hold a resource lock during I/O or execution.
  * Active/uncertain evidence is never expired or evicted. A crash-held admission lock
  * requires inspection, not a PID/age heuristic that could admit two writers. */
@@ -47,7 +68,7 @@ export class ResourceCoordinator {
   readonly instanceId = randomUUID();
   readonly root: string; readonly activeBudget: number; readonly fileMode: number; private now: () => number;
   private bootIdentity: () => string | null;
-  constructor(root: string, activeBudget = 4, now = Date.now, fileMode = 0o600, bootIdentity = coordinationBootIdentity) { if (fileMode !== 0o600 && fileMode !== 0o660) throw new Error("Invalid coordination file mode"); if (!Number.isInteger(activeBudget) || activeBudget < 1 || activeBudget > 4) throw new Error("Invalid coordination budget"); this.fileMode = fileMode; this.root = root; this.activeBudget = activeBudget; this.now = now; this.bootIdentity = bootIdentity; mkdirSync(root, { recursive: true, mode: 0o700 }); }
+  constructor(root: string, activeBudget = 4, now = Date.now, fileMode = 0o600, bootIdentity = coordinationBootIdentity) { if (fileMode !== 0o600 && fileMode !== 0o660) throw new Error("Invalid coordination file mode"); if (!Number.isInteger(activeBudget) || activeBudget < 1 || activeBudget > 4) throw new Error("Invalid coordination budget"); this.fileMode = fileMode; this.root = root; this.activeBudget = activeBudget; this.now = now; this.bootIdentity = bootIdentity; ensureCoordinationDirectory(root, fileMode); }
   resourceId(resource: ResourceVersion) { return coordinationHash([resource.device, resource.canonicalKey]); }
   private file(id: string) { if (!hash.safeParse(id).success) throw new CoordinationError("invalid_resource"); return path.join(this.root, id + ".json"); }
   private read(id: string): CoordinationRecord | null {
@@ -96,7 +117,7 @@ export class ResourceCoordinator {
     catch { throw new CoordinationError("recovery_evidence_invalid"); }
     finally { closeSync(fd); }
   }
-  private artifactDirectory(name: string) { const dir = path.join(this.root, name); mkdirSync(dir, { recursive: true, mode: 0o700 }); return dir; }
+  private artifactDirectory(name: string) { return ensureCoordinationDirectory(path.join(this.root, name), this.fileMode); }
   private archiveFile(token: CoordinationToken) { coordinationTokenSchema.parse(token); return path.join(this.root, "reconciliations", `${token.resourceId}-${token.operationId}.json`); }
   private executionFile(token: CoordinationToken) { coordinationTokenSchema.parse(token); return path.join(this.root, "executions", `${token.resourceId}-${token.operationId}.json`); }
   private checkRecoveryCapacity(name: string) { if (readdirSync(this.artifactDirectory(name)).length >= 4096) throw new CoordinationError("recovery_retention_full"); }
