@@ -25,7 +25,7 @@ try {
   const record=c.acquire(resource),token=coordinationToken(record),id=randomUUID();c.begin(token,resource);
   const execution={kind:'repo_job',key:'synthetic:'+token.operationId,fingerprint:coordinationHash('input'),requestHash:coordinationHash('request')};
   c.bindExecution(token,execution);c.attachJob(token,id);
-  const operationDir=ensureCoordinationDirectory(path.join(root,'repo-operations',token.operationId),c.fileMode);
+  const operationDir=ensureCoordinationDirectory(path.join(root,'repo-operations',token.operationId),c.fileMode,c.root);
   for(const name of ['request.json','result.json'])atomicWriteJson(path.join(operationDir,name),{synthetic:true},c.fileMode);
   c.reconcileJob(token,resource,resource.baseVersion,{id,device:resource.device,identity:resource.identity,state:'completed',containmentVerified:true,evidenceHash:coordinationHash('synthetic unit evidence'),key:execution.key,fingerprint:execution.fingerprint});
   const legacy={...resource,canonicalKey:coordinationHash('synthetic legacy '+coordinationIdentity)};
@@ -59,6 +59,22 @@ function run(root: string, mask: number, mode: string, phase = "create", uid?: n
   });
 }
 const directoryIdentity = (root: string) => { const s = statSync(root); return { uid: s.uid, gid: s.gid, mode: s.mode & 0o7777, ino: s.ino }; };
+
+it.runIf(process.platform === "linux").each([0o022, 0o077])("shared configuration keeps missing ancestors outside its root private (umask %s)", mask => {
+  const outer = fixture(), existing = path.join(outer, "provisioned");
+  mkdirSync(existing); chmodSync(existing, 0o2771);
+  const before = [outer, existing].map(directoryIdentity);
+  const parent = path.join(existing, "private-parent"), nested = path.join(parent, "private-nested"), root = path.join(nested, "coordination");
+  const result = run(root, mask, "0660");
+  expect(result.status, result.stderr).toBe(0);
+  for (const outside of [parent, nested]) expect(directoryIdentity(outside)).toMatchObject({ mode: 0o2700, gid: before[1]!.gid });
+  expect(directoryIdentity(root)).toMatchObject({ mode: 0o2770, gid: before[1]!.gid });
+  const output = JSON.parse(result.stdout);
+  for (const directory of output.directories) expect(directory).toMatchObject({ mode: 0o2770, gid: before[1]!.gid });
+  expect(output.operationsRoot).toEqual({ mode: 0o2770, gid: before[1]!.gid });
+  expect(output.operations[0]).toMatchObject({ mode: 0o2770, gid: before[1]!.gid });
+  expect([outer, existing].map(directoryIdentity)).toEqual(before);
+});
 
 it.runIf(process.platform === "linux").each(["0600", "0660"])("new recovery directories honor %s through a restrictive umask without changing the provisioned root", mode => {
   const root = fixture(), before = directoryIdentity(root);

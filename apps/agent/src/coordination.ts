@@ -41,15 +41,18 @@ export function coordinationFileMode(value?: string): number {
 }
 
 /** Configure only newly created directories; existing ownership, ACLs and modes
- * remain the operator's responsibility. Keep inherited setgid for later writers. */
-export function ensureCoordinationDirectory(directory: string, fileMode = 0o600): string {
+ * remain the operator's responsibility. Keep inherited setgid for later writers.
+ * Shared access stops at sharingRoot; missing ancestors outside it stay private. */
+export function ensureCoordinationDirectory(directory: string, fileMode = 0o600, sharingRoot = directory): string {
   if (fileMode !== 0o600 && fileMode !== 0o660) throw new Error("Invalid coordination file mode");
-  const mode = fileMode === 0o660 ? 0o770 : 0o700;
+  const relative = path.relative(sharingRoot, directory);
+  const insideRoot = relative === "" || relative !== ".." && !relative.startsWith(".." + path.sep) && !path.isAbsolute(relative);
+  const mode = fileMode === 0o660 && insideRoot ? 0o770 : 0o700;
   try { mkdirSync(directory, { mode }); }
   catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT" && path.dirname(directory) !== directory) {
-      ensureCoordinationDirectory(path.dirname(directory), fileMode);
-      return ensureCoordinationDirectory(directory, fileMode);
+      ensureCoordinationDirectory(path.dirname(directory), fileMode, sharingRoot);
+      return ensureCoordinationDirectory(directory, fileMode, sharingRoot);
     }
     if ((error as NodeJS.ErrnoException).code === "EEXIST" && statSync(directory).isDirectory()) return directory;
     throw error;
@@ -117,7 +120,7 @@ export class ResourceCoordinator {
     catch { throw new CoordinationError("recovery_evidence_invalid"); }
     finally { closeSync(fd); }
   }
-  private artifactDirectory(name: string) { return ensureCoordinationDirectory(path.join(this.root, name), this.fileMode); }
+  private artifactDirectory(name: string) { return ensureCoordinationDirectory(path.join(this.root, name), this.fileMode, this.root); }
   private archiveFile(token: CoordinationToken) { coordinationTokenSchema.parse(token); return path.join(this.root, "reconciliations", `${token.resourceId}-${token.operationId}.json`); }
   private executionFile(token: CoordinationToken) { coordinationTokenSchema.parse(token); return path.join(this.root, "executions", `${token.resourceId}-${token.operationId}.json`); }
   private checkRecoveryCapacity(name: string) { if (readdirSync(this.artifactDirectory(name)).length >= 4096) throw new CoordinationError("recovery_retention_full"); }

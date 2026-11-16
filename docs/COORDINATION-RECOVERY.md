@@ -49,9 +49,12 @@ Coordination state is private by default: new files use `0600` and new directori
 use `0700`. Sharing is an explicit opt-in for trusted participating agents. Provision
 the common root, its ancestor access and group membership externally, normally with
 setgid group inheritance, then configure `RCMCP_COORDINATION_FILE_MODE=0660` on every
-participant. New coordination directories use `0770`; the inherited setgid bit and
-group remain intact. Their permissions are applied after creation so a restrictive
-umask does not silently remove the configured group access.
+participant. New directories inside the coordination root use `0770`; the inherited
+setgid bit and group remain intact. Their permissions are applied after creation so
+a restrictive umask does not silently remove the configured group access. Missing
+ancestors outside that root retain private `0700` access bits, plus any inherited
+setgid bit. Creating them does not grant another identity traversal access; shared
+ancestors still need external provisioning.
 
 This policy covers execution sidecars, recovery intents, reconciliations and nested
 `repo-operations/` directories. Repository request and result receipts use the same
@@ -86,10 +89,17 @@ repeat the repository request.
 
 Before job reservation or dispatch, the agent publishes a binding containing the
 operation token, device, identity, deterministic job key, input fingerprint and
-request digest. A failed or ambiguous admission never falls back to direct Git or
-a second job. The worker uses a pinned canonical path and revalidates the resource,
-base, active token, execution sidecar and durable job reservation immediately
-before invoking the repository helper. This closes the asynchronous admission gap;
+request digest. A binding records intended execution identity, not proof that a
+job was admitted. If request publication fails after this binding but before
+dispatch, trusted
+invocation-scoped evidence can still report `executionOutcome: "not_started"` and
+a released fence. The existing binding remains as audit evidence, without a job ID
+or invented result. A null binding is expected only when failure precedes binding.
+A failed release still requires recovery; an attempted admission with a lost reply
+remains uncertain even when no job ID was observed. A failed or ambiguous admission
+never falls back to direct Git or a second job. The worker uses a pinned canonical
+path and revalidates the resource, base, active token, execution sidecar and
+durable job reservation immediately before invoking the repository helper. This closes the asynchronous admission gap;
 it does not make unrelated raw filesystem writers participate in the resource
 fence. The ordinary Git locks and fresh resource checks still apply.
 
@@ -106,9 +116,10 @@ new recovery path.
 The API preserves separate facts:
 
 * `operationSucceeded` describes the result published by the repository worker.
-* `executionOutcome` comes from the durable job's actual terminal evidence. A
-  published successful result does not manufacture `exit_zero` if the worker later
-  fails or its exit outcome is lost.
+* For an admitted job, `executionOutcome` comes from its actual terminal evidence.
+  A proved pre-dispatch failure can instead report `not_started`. A published
+  successful result does not manufacture `exit_zero` if the worker later fails or
+  its exit outcome is lost.
 * `resultPublication` states whether the original result is available.
 * `effectVerification` remains `unverified`; successful execution does not prove
   that the user's intended repository state was achieved.
@@ -165,7 +176,9 @@ unverified writer. Binding also checks the reconciliation store before dispatch,
 even when execution storage has space, because that future disposition must be
 retained. This is a preflight check, not a reservation against concurrent archive
 writers; later saturation still fails closed and preserves the writer and evidence.
-Unresolved evidence is not expired to create capacity.
+Retained bindings for proved pre-dispatch failures also count toward the execution
+store limit; they are not silently deleted after release. Unresolved evidence is
+not expired to create capacity.
 Do not delete journals, sidecars, intents, archives or job keys to retry a command.
 Monitor capacity and preserve evidence for a separately qualified retention
 change; that maintenance remains part of RC26-HIS-04 in the improvement plan.

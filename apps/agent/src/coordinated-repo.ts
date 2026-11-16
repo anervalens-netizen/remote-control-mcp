@@ -91,7 +91,7 @@ export async function runCoordinatedRepo(options: {
     const remember = (facts: Omit<CoordinatedRepoReceipt, "record" | "jobId"> = {}) => options.onReceipt?.({ record, ...(jobId ? { jobId } : {}), ...facts });
     remember();
     try {
-      ensureCoordinationDirectory(directory, coordinator.fileMode);
+      ensureCoordinationDirectory(directory, coordinator.fileMode, coordinator.root);
       atomicWriteJson(requestFile, request, coordinator.fileMode);
       // The complete operation is one existing durable job. Once reserved, an
       // admission failure or missing reply never falls back to direct Git/spawn.

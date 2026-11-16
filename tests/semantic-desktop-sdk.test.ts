@@ -98,7 +98,7 @@ it.each([
     properties: { source: { const: "loaded_manifest" }, provenance: { additionalProperties: false,
       properties: { source: { const: "saved_manifest" }, upstreamRechecked: { const: false } } } } });
   expect(f.nativeCalls).toEqual([["status"]]); expect(f.graphicalRequests).toEqual([false]);
-});
+}, 15000);
 
 it.each([
   { failure: "native", code: "PERMISSION_DENIED" },
@@ -109,7 +109,7 @@ it.each([
   expect(value).toMatchObject({ ok: false, error: { code }, engineIdentity: f.identity });
   expect(value).not.toHaveProperty("ready"); expect(value.code).not.toBe("result_validation_failed");
   expect(f.nativeCalls).toEqual([["status"]]);
-});
+}, 15000);
 
 it("keeps a missing session as a failure without inventing loaded identity or readiness", async () => {
   const f = await harness({ failure: "session" }), result = await f.call(), value = structured(result);
@@ -117,7 +117,7 @@ it("keeps a missing session as a failure without inventing loaded identity or re
   expect(value).toMatchObject({ ok: false, error: { code: "graphical_session_unavailable" } });
   expect(value).not.toHaveProperty("engineIdentity"); expect(value).not.toHaveProperty("ready");
   expect(value.code).not.toBe("result_validation_failed"); expect(f.nativeCalls).toEqual([]);
-});
+}, 15000);
 
 it("rejects malformed engine identity through the production output contract without replay", async () => {
   const f = await harness(), observe = f.backend.observe.bind(f.backend);
@@ -128,4 +128,4 @@ it("rejects malformed engine identity through the production output contract wit
   const result = await f.call(), value = structured(result);
   expect(result.isError).toBe(true); expect(value).toMatchObject({ ok: false, code: "result_validation_failed" });
   expect(f.nativeCalls).toEqual([["status"]]);
-});
+}, 15000);

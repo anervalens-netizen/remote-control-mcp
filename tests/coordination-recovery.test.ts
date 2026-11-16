@@ -376,6 +376,44 @@ it("does not infer non-execution from a missing job reply after admission was at
   expect(body).not.toHaveProperty("jobId"); expect(start).toHaveBeenCalledTimes(1); expect(fallback).not.toHaveBeenCalled();
 });
 
+it("retains a bounded audit binding after a pre-dispatch request-write failure without blocking a new generation", async () => {
+  const f = fixture(); f.coordinator.settle(f.token);
+  vi.stubEnv("RCMCP_COORDINATION_DIR", f.root);
+  vi.spyOn(resources, "resolveCoordinationResource").mockResolvedValue(f.resource);
+  vi.spyOn(systemd, "jobCgroupIsolation").mockReturnValue({ ready: true, reason: "synthetic" });
+  const start = vi.spyOn(jobs, "jobStart"), fallback = vi.fn(), atomic = state.atomicWriteJson;
+  let bindingFile = "", bindingBytes = "";
+  vi.spyOn(state, "atomicWriteJson").mockImplementation((file, value, mode) => {
+    if (path.basename(file) === "request.json") {
+      const record = f.coordinator.current(f.resource)!;
+      bindingFile = path.join(f.root, "executions", `${record.resourceId}-${record.operationId}.json`);
+      bindingBytes = readFileSync(bindingFile, "utf8");
+      throw new Error("synthetic request write failure after binding");
+    }
+    atomic(file, value, mode);
+  });
+  const app = Fastify(); const coordinate = registerCoordinationRoutes(app); close.push(() => app.close());
+  app.post("/v1/repo/fetch", (request, reply) => coordinate("/v1/repo/fetch", request, reply, { path: f.root }, fallback));
+  const result = await app.inject({ method: "POST", url: "/v1/repo/fetch", payload: {} }), body = result.json();
+  expect(result.statusCode, result.body).toBe(500);
+  expect(body).toMatchObject({ error: "repository_operation_failed", executionOutcome: "not_started", coordination: { state: "released" }, recovery: { execution: { kind: "repo_job" }, resolution: null } });
+  expect(body).not.toHaveProperty("jobId"); expect(body).not.toHaveProperty("operationSucceeded");
+  expect(start).not.toHaveBeenCalled(); expect(fallback).not.toHaveBeenCalled(); expect(bindingBytes).not.toBe("");
+  const readback = f.restart().inspectRecovery(f.resource);
+  expect(readback.record?.state).toBe("released"); expect(readback.recovery.execution).toEqual(body.recovery.execution);
+  expect(await jobs.jobStartKeyStatus(body.recovery.execution.key)).toMatchObject({ state: "not_found" });
+  const next = f.coordinator.acquire(f.resource);
+  expect(next.generation).toBe(body.coordination.generation + 1); expect(next.execution).toBeUndefined();
+  expect(readFileSync(bindingFile, "utf8")).toBe(bindingBytes);
+  // Retained pre-dispatch bindings consume the same bounded audit store; a
+  // newer generation never reclaims them implicitly to admit another effect.
+  const executions = path.join(f.root, "executions");
+  for (let i = 1; i < 4096; i++) writeFileSync(path.join(executions, `synthetic-capacity-${i}.json`), "preserved synthetic evidence\n");
+  const nextToken = coordinationToken(next); f.coordinator.begin(nextToken, f.resource);
+  expect(() => f.coordinator.bindExecution(nextToken, { ...body.recovery.execution, key: "coordination-repo:" + next.operationId })).toThrow("recovery_retention_full");
+  expect(readdirSync(executions)).toHaveLength(4096); expect(readFileSync(bindingFile, "utf8")).toBe(bindingBytes);
+});
+
 it("refuses a new execution before dispatch when its future reconciliation store is already full", async () => {
   const f = fixture(); f.coordinator.settle(f.token);
   const archives = path.join(f.root, "reconciliations"); mkdirSync(archives);
