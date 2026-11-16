@@ -21,6 +21,26 @@ The inspected public baseline is `b4e1ac7334f42246f219a0a29bc082dcc505b1c5`. Its
 
 The baseline refresh includes current code, selected live runtime, graphical-session prerequisites, relevant task state and release targets. Historical reports remain labeled as historical; unavailable platforms remain unverified. Reuse existing durable jobs, process containment, release verification and managed engine qualification instead of creating parallel mechanisms.
 
+## Reviewed application and scoped runtime qualification
+
+PR54's application reviews completed against `71956e868c96fca01506b46f3dbf06911d2b6383`; Codex reported no findings and the [published disposition](https://github.com/anervalens-netizen/remote-control-mcp/pull/54#issuecomment-6924549788) covers all 21 findings. The [merge commit](https://github.com/anervalens-netizen/remote-control-mcp/commit/9682af5bd2e6e4ae658dfdbcd55532f9ba5cdd32) has the same tree and four passing merge checks. The deployed source identity is `9682af5bd2e6e4ae658dfdbcd55532f9ba5cdd32`; a later documentation commit does not change installed bytes or that runtime identity.
+
+| Qualified scope | Observed result | Limit |
+|---|---|---|
+| Selected Linux controller/root/owner routes | Actual HTTP MCP returned the expected merge release, matching manifest pins and distinct expected UIDs. The deployed harness completed with its requested assertions passing. | This is the selected deployment scope, not an assertion about every fleet endpoint. |
+| Managed engine identity | Status was successful; the loaded manifest's declared engine binary hash matched the supplied expected binary hash. | `engineIdentity.sha256` is the binary digest, not the digest of the manifest JSON. Saved provenance was reported without a new upstream check. |
+| Failed read versus failed write | Actual MCP and observation inspection preserved the original read error while classifying the failed read as an observation failure. The failed synthetic write remained unknown. | Strict journal v1 and historical retention limits still apply; no historical records were rewritten. |
+| Delayed repository operation | The original pending receipt was observed while the job was running and its fence active. The same job terminated with exit 1; reconciliation released its original token/key/fingerprint, and repeat reconciliation returned the same disposition. | The initial pending response does not observe operation/publication outcomes. Terminal process evidence remains separate from effect verification. |
+| Immediate repository operation | The original tool-error receipt preserved `operationSucceeded=false`, `executionOutcome=exit_nonzero` and `resultPublication=available`. | Failed Git work can have partial effects; an HTTP error alone does not determine the process outcome or replay safety. |
+| No replay and partial effects | Both synthetic operations had one initial dispatch and one local transport invocation. Fetch effects persisted while HEAD/worktree remained unchanged. | Both owned Git fixtures were subsequently removed and their absence verified. Original evidence artifacts and all job/coordination/observer records were preserved. |
+| Desktop before controlled relaunch | Actual MCP changed a synthetic value, independently confirmed by the fixture. A click was reported `delivered_unverified`; an independent count then established one click. Status and repeat execute recovered the original command with `replayed=false`, leaving the count at one. | These are pre-restart observations. They do not qualify continuity after a service restart or a change of graphical session. |
+| Controlled owner relaunch | The owner process identity changed; configuration, executable, state roots and engine digest were preserved, while root/controller identities stayed unchanged. Actual MCP confirmed the pinned source and recovered the original canary/command receipts without replay. Fresh value/click effects matched independent fixture readback. The owned canary then stopped with identity-bound whole-tree termination evidence, and its window was absent. | This is observed service-relaunch behavior. No graphical logout occurred; session/fingerprint negatives remain source-test coverage. It does not qualify physical Windows/Android hosts or a machine reboot. |
+| Unknown observation rejection | The deliberate unknown observation was refused with `not_delivered` and `stale_observation_or_session_unavailable`. A fresh independent fixture read confirmed the original value and count of one unchanged. | Source tests cover changed session/fingerprint cases. This runtime case does not claim an actual logout or a physical-host session transition. |
+
+A guarded activation failure also exercised configuration-only rollback. The previous service configuration and running entrypoints were verified after rollback, with state journals preserved and no operation replay. This qualifies the observed rollback path; it does not establish full-state restore or power-loss recovery.
+
+The existing source/native suites cover the reviewed implementation's fault, concurrency, restart and journal-compatibility cases. Those results are reused for the identical merge tree; they are not represented as fresh runtime fault injection. Hosted Windows CI qualifies only its test runner. Physical Windows/Android hosts and unobserved graphical-session transitions remain unqualified. The controlled owner relaunch and post-relaunch actual MCP desktop checks are qualified for the selected Linux route. The historical incident's required quiescence evidence and final task/documentation readback remain pending.
+
 ## Comparable measurement contract (BASE-02)
 
 Every exported measurement must carry:
@@ -82,6 +102,18 @@ Native rows require the actual adapter/client route. A direct backend test is us
 Each run must retain: scenario/version, baseline or candidate full commit, actual running identity, relevant dependency versions, platform/client, fixture seed, start/end/cutoff, request and execution counts, returned UTF-8 bytes, elapsed milliseconds, expected/observed result, diagnostics, recovery identity, coverage and limitations. Private evidence may retain the exact remote paths and IDs; public results must stay synthetic.
 
 B01–B07 are a finite test contract. The tracker stays active until equivalent measurements are recorded. Source tests and individual native qualification can close their explicitly scoped REC/EFF/DEP items without claiming the complete ergonomics benchmark has run.
+
+## Review follow-up boundaries
+
+The [DSHv4 report](https://github.com/anervalens-netizen/remote-control-mcp/pull/54#issuecomment-6924341173) reviewed `71956e868c96fca01506b46f3dbf06911d2b6383`. Its [published disposition](https://github.com/anervalens-netizen/remote-control-mcp/pull/54#issuecomment-6924549788) records the following residuals under existing work items. A deferred hardening scenario is not a passing result or owner risk acceptance.
+
+| Review item | Current limit and scope | Evidence required to close |
+|---|---|---|
+| PR54-DSH4-01 · REC-04/HIS-04/MCP-04 | Sharing-root containment is lexical. A trusted participant can redirect a nested path through a writable symlinked parent; the physical target can receive shared directory access outside the configured root. Ordinary missing-ancestor mode correction remains distinct. | A temporary symlink/retarget fixture, an explicit physical-containment policy and qualified traversal behavior. Preserve private defaults, existing ownership/group/setgid, bounded publication and no-replay identities. |
+| PR54-DSH4-N1 · HIS-04/REC-04/MCP-04 | An externally removed, pre-created receipt parent can be recreated by the generic atomic writer with the umask default. Normal pre-creation and file-mode checks do not cover that window. | Inject parent deletion between configured creation and receipt publication. Verify the chosen directory policy, recoverable original evidence and conservative failure behavior through the actual result contract. |
+| PR54-DSH4-N2 · REC-03/REC-04 | A null binding only describes availability in the returned record view. It cannot prove that no artifact was published or that admission did not occur, and cannot authorize replay. | The conservative contract clarification is included in this documentation update. Bind published closure to its exact commit after publication. `not_started` still requires invocation-bound pre-dispatch proof; no new execution claim follows from a missing field. |
+
+The new post-binding failure regression already passed when run against the `7504ac4` implementation. Only the two directory-boundary regressions failed in that comparison. The contrary sentence in the DSHv4 report must not be used as before/after evidence for a post-binding runtime fix. The [recovery](../../tests/coordination-recovery.test.ts) and [sharing](../../tests/coordination-sharing.test.ts) cases retain their separate scopes. This clarification adds no new runtime measurement, promotion result or native-platform qualification.
 
 ## Lot 1 promotion and rollback evidence
 

@@ -49,12 +49,30 @@ Coordination state is private by default: new files use `0600` and new directori
 use `0700`. Sharing is an explicit opt-in for trusted participating agents. Provision
 the common root, its ancestor access and group membership externally, normally with
 setgid group inheritance, then configure `RCMCP_COORDINATION_FILE_MODE=0660` on every
-participant. New directories inside the coordination root use `0770`; the inherited
+participant. New directories lexically inside the coordination root use `0770`; the inherited
 setgid bit and group remain intact. Their permissions are applied after creation so
 a restrictive umask does not silently remove the configured group access. Missing
 ancestors outside that root retain private `0700` access bits, plus any inherited
 setgid bit. Creating them does not grant another identity traversal access; shared
 ancestors still need external provisioning.
+
+The current boundary compares path names lexically; it is not a guarantee of
+physical containment through symlinked parent components. A trusted participant
+with write access inside the shared root can place a symlink that redirects a
+lexically nested directory outside the physical root, where creation can still
+apply the shared mode. Keep the provisioned directory topology stable during
+active writes. Symlink-aware traversal and containment hardening remain deferred
+under REC-04/HIS-04/MCP-04; private defaults and the trusted-participant sharing
+model remain unchanged.
+
+Normal coordination flows pre-create receipt parents with the configured mode.
+If an external actor removes a parent between that step and an atomic write, the
+generic atomic writer can recreate the missing directory with the process umask
+default instead of the configured `0700` or `0770`. Configured directory access is
+therefore not guaranteed across that external deletion window. Parent-recreation
+hardening and fault coverage remain deferred under HIS-04/REC-04/MCP-04. This
+limitation concerns recreated directories; it does not change the configured
+mode of the receipt file being written.
 
 This policy covers execution sidecars, recovery intents, reconciliations and nested
 `repo-operations/` directories. Repository request and result receipts use the same
@@ -94,7 +112,11 @@ job was admitted. If request publication fails after this binding but before
 dispatch, trusted
 invocation-scoped evidence can still report `executionOutcome: "not_started"` and
 a released fence. The existing binding remains as audit evidence, without a job ID
-or invented result. A null binding is expected only when failure precedes binding.
+or invented result. A null binding means only that no binding is available in
+the returned record view. It does not prove that no artifact was published or that
+admission was never attempted or completed, and it never authorizes replay.
+`not_started` requires invocation-bound evidence that the failure preceded dispatch;
+neither a null binding nor a missing job ID supplies that proof.
 A failed release still requires recovery; an attempted admission with a lost reply
 remains uncertain even when no job ID was observed. A failed or ambiguous admission
 never falls back to direct Git or a second job. The worker uses a pinned canonical

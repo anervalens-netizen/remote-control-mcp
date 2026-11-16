@@ -1,8 +1,8 @@
 # Reliability and usability improvement plan
 
-Plan version: 2026-11-16. Status: proposed implementation backlog.
+Plan version: 2026-11-16. Status: implementation backlog; current states are recorded in the linked tracker.
 
-The [implementation tracker](2026-11-16-improvement-tracker.md) is the single checklist for this plan. It contains 60 stable work-item IDs. This document defines their purpose, dependencies, acceptance criteria and required evidence. Creating these documents does not implement or qualify the planned changes.
+The [implementation tracker](2026-11-16-improvement-tracker.md) is the single checklist for this plan. It contains 60 stable work-item IDs. This document defines their purpose, dependencies, acceptance criteria and required evidence. The initial-state labels below preserve the planning baseline; they are not current completion claims. The tracker separates accepted source changes, qualified runtime behavior and unresolved operational work.
 
 ## Objective and scope
 
@@ -181,6 +181,8 @@ Dependencies: RC26-REC-02. Sources: F01.
 
 Implement the smallest protocol/agent/controller change needed to attach and inspect terminal synchronous evidence and reconcile a reservation. Reuse existing durable receipts where appropriate. Preserve inspect/acquire/release compatibility and clearly advertise new agent capabilities.
 
+A null execution binding reports only that the returned record view has no binding available. It is not proof of absent artifact publication, absent admission or permission to replay. Report `not_started` only from invocation-bound pre-dispatch proof; a failed or unreadable publication view cannot supply that proof.
+
 **Acceptance:** An eligible completed synchronous operation can be reconciled without replay. A partial repository effect remains described rather than overwritten as success. Unsupported agents fail clearly before an unsupported mutation. Retained state survives the documented restart boundary.
 
 **Evidence to retain:** Scoped code diff; protocol/schema tests; synthetic MCP calls and recovery receipts.
@@ -194,6 +196,8 @@ Lot 1 · P1 · verify · Initial state: `planned`.
 Dependencies: RC26-REC-03. Sources: F01; E01, E05; M06.
 
 Exercise concurrent writers, reused tokens, stale generations, agent/controller restart, loss of response after effect, malformed or missing terminal evidence and incompatible agents. Cover the original partial-fetch/index-lock sequence and inspect the same operation after interruption.
+
+The DSHv4 directory follow-ups remain deferred under REC-04/HIS-04/MCP-04. The current sharing-root comparison is lexical: a symlinked parent can redirect a shared-mode directory outside the physical root. Separately, external deletion of a pre-created receipt parent can make the generic atomic writer recreate it using the umask default. A future hardening change must qualify both boundaries with temporary fixtures, preserve existing ownership/group/setgid and private defaults, and keep incomplete publication evidence protected without replay. Existing normal-path permission tests do not close these follow-ups.
 
 **Acceptance:** No duplicate execution occurs. A live writer is never evicted. Missing evidence remains explicit uncertainty. A valid reconciliation releases only the intended resource generation and preserves its audit history. Termination claims retain the existing containment limits.
 
