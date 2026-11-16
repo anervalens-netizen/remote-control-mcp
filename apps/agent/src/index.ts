@@ -1,6 +1,7 @@
 import { ExecReceiptStore } from "./exec-receipts.ts";
 import { ensureStateDir, stateRoot } from "./state.ts";
 import path from "node:path";
+import type { Socket } from "node:net";
 import { registerAgentIngress } from "./ingress-http.ts";
 import { filesystemReadResponse } from "./filesystem-read-response.ts";
 import { fsReadSchema } from "../../../packages/protocol/src/execution.ts";
@@ -86,6 +87,13 @@ if (configuredBodyLimitBytes !== null && (!Number.isSafeInteger(configuredBodyLi
 // a numeric parser limit, so MAX_SAFE_INTEGER is the practical no-fixed-cap value.
 const bodyLimit = configuredBodyLimitBytes ?? Number.MAX_SAFE_INTEGER;
 const app = Fastify({ logger: true, bodyLimit });
+// Track only this server's accepted sockets, including connections upgraded
+// outside the ordinary HTTP lifecycle. Outbound and durable-job handles differ.
+const connections = new Set<Socket>();
+app.server.on("connection", socket => {
+  connections.add(socket);
+  socket.once("close", () => connections.delete(socket));
+});
 const ingressRuntime = runtimeStatus();
 const retentionDays = Number(process.env.RCMCP_INGRESS_RETENTION_DAYS ?? 90);
 const ingress = registerAgentIngress(app, {
@@ -208,16 +216,60 @@ registerBrowserRoutes(app);
 if (process.env.RCMCP_DESKTOP_ENABLED === "1") registerDesktopRoutes(app);
 if (semanticDesktopConfigured()) registerSemanticDesktopRoutes(app);
 let closing: Promise<void> | undefined;
-const requestClose = () => {
-  closing ??= app.close().catch(error => {
-    // A failed shutdown remains a process failure. The ingress onClose hook
-    // persists only the HTTP observations it actually completed.
-    app.log.error({ err: error }, "Agent shutdown failed");
-    process.exitCode = 1;
-  });
+const SHUTDOWN_GRACE_MS = 5000;
+const SHUTDOWN_DRAIN_MS = 3000;
+const closeConnections = () => {
+  for (const socket of connections) {
+    try { socket.destroy(); }
+    catch { process.exitCode = 1; }
+  }
 };
-process.once("SIGTERM", requestClose);
-process.once("SIGINT", requestClose);
+const requestClose = () => {
+  closing ??= (async () => {
+    let cancelGrace = () => {};
+    let closeSettled = false;
+    try {
+      const closed = app.close().catch(error => {
+        process.exitCode = 1;
+        app.log.error({ err: error }, "Agent shutdown failed");
+      }).finally(() => { closeSettled = true; });
+      const grace = new Promise<void>(resolve => {
+        const timer = setTimeout(() => resolve(), SHUTDOWN_GRACE_MS);
+        cancelGrace = () => clearTimeout(timer);
+      });
+      await Promise.race([closed, grace]);
+      cancelGrace();
+      if (!closeSettled) {
+        closeConnections();
+        // Socket closure starts existing request-owned cancellation. Fastify
+        // may close before that async cleanup settles, so retain its drain time.
+        await new Promise<void>(resolve => setTimeout(resolve, SHUTDOWN_DRAIN_MS));
+        if (!closeSettled) {
+          process.exitCode = 1;
+          app.log.error("Agent shutdown cleanup exceeded its drain deadline");
+        }
+      }
+    } catch (error) {
+      process.exitCode = 1;
+      app.log.error({ err: error }, "Agent shutdown failed");
+    } finally {
+      cancelGrace();
+      closeConnections();
+      // Idempotent after onClose; otherwise persist only observed HTTP endings.
+      // Unfinished requests remain unfinished, not successful workload effects.
+      try { ingress.close(); }
+      catch (error) {
+        process.exitCode = 1;
+        app.log.error({ err: error }, "Agent ingress shutdown failed");
+      }
+      // Bounds the responsive event loop, not a stalled kernel/filesystem call.
+      // Exits this process without terminating detached durable jobs.
+      process.exit(process.exitCode ?? 0);
+    }
+  })();
+};
+process.on("SIGTERM", requestClose);
+process.on("SIGINT", requestClose);
 try {
   await app.listen({ host, port });
 } catch (error) {

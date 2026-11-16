@@ -136,3 +136,11 @@ queued probes when their caller cancels.
 Add or tune persistent probe backoff only after measuring repeated unnecessary
 requests. Keep explicit fresh diagnostics available and retain observation times
 so a cached result cannot appear current.
+
+## Isolate review and test processes
+
+Run reproduction probes in an isolated state directory, with synthetic credentials and explicit resource limits. Capture every child process identity when it is created, including a creation/start identity or an equivalent owned execution handle. A matching executable or command line is not ownership proof.
+
+Cleanup may terminate only those captured fixture identities after rechecking the binding. Never use global command-line matching, broad process-name matching, service restarts or active production state as a test cleanup shortcut. Give long-lived synthetic children a finite self-expiry so a failed fixture identification cannot leave an indefinite process behind.
+
+If a probe affects an installed component, record the incident privately, inspect that component's current process and configured startup, and preserve uncertain execution evidence. A service responding again does not prove that all earlier work was unaffected. Keep review-source validation and deployed-contract qualification separate.

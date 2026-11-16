@@ -37,7 +37,9 @@ it("refuses a competing aggregate writer while retaining readable history and wo
     expect(snapshot.coverage.faults).toContain("state_writer_locked");
     expect(snapshot.history.partial).toBe(true);
     expect(snapshot.history.days[0].received).toBe(2); // Retained baseline plus this process's unsaved request.
-    expect(snapshot.history.gaps).toEqual([]); // A live competing writer is not an inferred restart.
+    expect(snapshot.history.gaps).toEqual([expect.objectContaining({
+      reason: "writer_continuity_unknown", previousUnfinished: 0,
+    })]); // Unknown continuity does not assert that a live competing writer restarted.
     expect(await readFile(path.join(root, "aggregate.json"), "utf8")).toBe(before);
     count(first); first.flush();
     expect(JSON.parse(await readFile(path.join(root, "aggregate.json"), "utf8")).days[0].received).toBe(2);
@@ -52,19 +54,27 @@ it.skipIf(process.platform === "win32")("preserves an orphan writer claim after 
   let second: IngressObserver | undefined;
   try {
     const child = spawnSync(process.execPath, ["--input-type=module", "-e",
-      [...childSource, "value.flush(); process.kill(process.pid, 'SIGKILL');"].join("\n"), root],
+      [...childSource, "value.begin({ route: '/health', method: 'GET', entryPoint: 'unattributed', authentication: 'bearer_verified' }); value.flush(); process.kill(process.pid, 'SIGKILL');"].join("\n"), root],
       { encoding: "utf8", timeout: 5000, killSignal: "SIGKILL", maxBuffer: 65536 });
     expect(child.error).toBeUndefined();
     expect(child.signal).toBe("SIGKILL");
     const file = path.join(root, "aggregate.json");
     const before = await readFile(file, "utf8");
-    second = new IngressObserver({ identity: "owner", stateDirectory: root });
-    expect(second.snapshot().history.days[0]?.received).toBe(1);
+    const prior = JSON.parse(before);
+    const beforeClaim = await readFile(file + ".writer", "utf8");
+    const restartedAt = new Date(Date.parse(prior.lastSavedAt) + 30_000).toISOString();
+    second = new IngressObserver({ identity: "owner", stateDirectory: root, now: () => Date.parse(restartedAt) });
+    expect(second.snapshot().history.days[0]?.received).toBe(2);
+    expect(second.snapshot().history.gaps).toContainEqual({
+      reason: "writer_continuity_unknown", from: prior.lastSavedAt, to: restartedAt, previousUnfinished: 1,
+    });
+    expect(second.snapshot().totals.inFlight).toBe(0);
     count(second); second.flush(); second.close();
     expect(second.snapshot().coverage).toMatchObject({ persistence: "unavailable", repairRequired: true });
     expect(second.snapshot().coverage.faults).toContain("state_writer_locked");
     expect(second.snapshot().totals.received).toBe(1);
     expect(await readFile(file, "utf8")).toBe(before);
+    expect(await readFile(file + ".writer", "utf8")).toBe(beforeClaim);
   } finally {
     second?.close();
     await rm(root, { recursive: true, force: true });

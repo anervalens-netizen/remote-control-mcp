@@ -158,3 +158,31 @@ it("keeps caller cancellation distinct from a capability endpoint timeout", asyn
     await new Promise<void>(resolve => http.close(() => resolve()));
   }
 });
+
+it("caps active device probes at 32 even for a larger direct-call concurrency request", async () => {
+  const devices = Array.from({ length: 64 }, (_, index) => ({ name: "fixture-" + index, url: "http://fixture.invalid" }));
+  const client = new AgentClient(devices);
+  const release = Promise.withResolvers<void>();
+  let active = 0, peak = 0;
+  const names: string[] = [];
+  const info = vi.spyOn(client, "info").mockImplementation(async name => {
+    names.push(name); active++; peak = Math.max(peak, active);
+    try { await release.promise; return { runtime: { ready: true } }; }
+    finally { active--; }
+  });
+  const pending = capabilityReport(client, undefined, 128, { probeTimeoutMs: 1000 });
+  try {
+    await vi.waitFor(() => expect(info).toHaveBeenCalledTimes(32), { timeout: 200, interval: 5 });
+    expect(active).toBe(32);
+    expect(peak).toBe(32);
+  } finally {
+    release.resolve();
+    await pending;
+  }
+  const rows = await pending;
+  expect(rows).toHaveLength(64);
+  expect(new Set(names).size).toBe(64);
+  expect(info).toHaveBeenCalledTimes(64);
+  expect(peak).toBe(32);
+  expect(active).toBe(0);
+});

@@ -21,10 +21,10 @@ type Outcome = NonNullable<IngressCompletion["outcome"]>;
 type StatusClass = "informational" | "success" | "redirect" | "clientError" | "serverError" | "unknown";
 type Fault = "state_unavailable" | "state_corrupt" | "state_identity_mismatch" | "persistence_failed" |
   "state_over_budget" | "clock_regressed" | "counter_saturated" | "invalid_duration" | "closed_with_inflight" |
-  "state_writer_locked" | "state_writer_lost";
+  "state_writer_locked" | "state_writer_lost" | "state_writer_release_failed";
 const faultSchema = z.enum(["state_unavailable", "state_corrupt", "state_identity_mismatch", "persistence_failed",
   "state_over_budget", "clock_regressed", "counter_saturated", "invalid_duration", "closed_with_inflight",
-  "state_writer_locked", "state_writer_lost"]);
+  "state_writer_locked", "state_writer_lost", "state_writer_release_failed"]);
 const count = z.number().int().nonnegative().safe();
 const duration = z.number().nonnegative().finite().max(Number.MAX_SAFE_INTEGER);
 const statusSchema = z.object({
@@ -53,7 +53,7 @@ const daySchema = totalsSchema.extend({
 }).strict();
 type Day = z.infer<typeof daySchema>;
 const gapSchema = z.object({
-  reason: z.enum(["unclean_restart", "clean_restart_interval"]),
+  reason: z.enum(["unclean_restart", "clean_restart_interval", "writer_continuity_unknown"]),
   from: utcTimestampSchema, to: utcTimestampSchema, previousUnfinished: count,
 }).strict();
 type Gap = z.infer<typeof gapSchema>;
@@ -62,7 +62,7 @@ const stateSchema = z.object({
   collectionStartedAt: utcTimestampSchema, lastSavedAt: utcTimestampSchema,
   lastInstanceId: uuid, lastSequence: count, previousUnfinished: count, cleanShutdown: z.boolean(),
   days: z.array(daySchema).max(90), gaps: z.array(gapSchema).max(16), omittedGaps: count,
-  faults: z.array(faultSchema).max(11), greatestObservedAt: z.number().finite(),
+  faults: z.array(faultSchema).max(12), greatestObservedAt: z.number().finite(),
 }).strict();
 type Series = Totals & { route: string; method: string; entryPoint: IngressEntryPoint; authentication: IngressAuthentication };
 type Sample = IngressHandle & {
@@ -98,6 +98,8 @@ const statusClass = (status: number | undefined): StatusClass => status === unde
  * Bounded request observations, never execution/recovery state. Counts come from
  * ingress hooks, not sampled traces or replayed logs. One agent owns a directory.
  * Failure to collect/persist telemetry must not fail or replay the request.
+ * Claims exclude cooperative writers in a private directory; they do not provide
+ * snapshot isolation against administrative namespace replacement.
  */
 export class IngressObserver {
   readonly instanceId: string;
@@ -109,6 +111,7 @@ export class IngressObserver {
   readonly flushIntervalMs: number;
   private readonly file?: string;
   private writerFd?: number;
+  private writerIdentity?: { dev: number; ino: number };
   private readonly now: () => number;
   private readonly monotonicNow: () => number;
   private readonly knownRoutes = new Set<string>();
@@ -174,6 +177,8 @@ export class IngressObserver {
       // preserved orphan evidence. Only an exclusive create admits a writer.
       this.writerFd = openSync(this.file + ".writer", constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL |
         (constants.O_NOFOLLOW ?? 0), 0o600);
+      const owned = fstatSync(this.writerFd);
+      this.writerIdentity = { dev: owned.dev, ino: owned.ino };
       writeFileSync(this.writerFd, JSON.stringify({
         version: 1, instanceId: this.instanceId, pid: process.pid, createdAt: this.processStartedAt,
       }) + "\n");
@@ -181,18 +186,23 @@ export class IngressObserver {
     } catch (error) {
       this.persistenceDisabled = true;
       this.faults.add((error as NodeJS.ErrnoException).code === "EEXIST" ? "state_writer_locked" : "state_unavailable");
+      // Partial creation is not a successfully acquired claim. Remove only the
+      // inode captured immediately after our exclusive open, then close the fd.
+      // If ownership cannot be checked, preserve the path for inspection.
+      this.releaseWriter();
     }
   }
 
   private assertWriter(): void {
-    if (!this.file || this.writerFd === undefined) {
+    if (!this.file || this.writerFd === undefined || !this.writerIdentity) {
       this.persistenceDisabled = true; this.faults.add("state_writer_lost");
       throw new Error("aggregate writer is unavailable");
     }
     try {
       const current = lstatSync(this.file + ".writer");
       const owned = fstatSync(this.writerFd);
-      if (!current.isFile() || current.dev !== owned.dev || current.ino !== owned.ino) {
+      if (!current.isFile() || owned.dev !== this.writerIdentity.dev || owned.ino !== this.writerIdentity.ino ||
+        current.dev !== owned.dev || current.ino !== owned.ino) {
         this.persistenceDisabled = true; this.faults.add("state_writer_lost");
         throw new Error("aggregate writer ownership changed");
       }
@@ -217,12 +227,14 @@ export class IngressObserver {
         try { fsyncSync(directoryFd); } finally { closeSync(directoryFd); }
       }
     } catch {
-      // Never remove another owner's claim or hide a failed release. A leftover
-      // claim blocks future publication until its ownership is inspected.
-      this.persistenceDisabled = true; this.faults.add("state_unavailable");
+      // A release or its durability could not be established. A remaining claim
+      // requires inspection; a replaced claim is never removed.
+      this.persistenceDisabled = true; this.faults.add("state_writer_release_failed");
     } finally {
-      this.writerFd = undefined;
-      try { closeSync(fd); } catch { this.faults.add("state_unavailable"); }
+      this.writerFd = undefined; this.writerIdentity = undefined;
+      try { closeSync(fd); } catch {
+        this.persistenceDisabled = true; this.faults.add("state_writer_release_failed");
+      }
     }
   }
 
@@ -403,10 +415,12 @@ export class IngressObserver {
       const faults = new Set<Fault>(parsed.faults);
       if (parsed.greatestObservedAt > this.greatestObservedAt) faults.add("clock_regressed");
       const gaps: Gap[] = [...parsed.gaps];
-      // A read-only observer may be competing with a live writer. It can read
-      // retained history, but cannot infer that the previous owner restarted.
-      if (!this.persistenceDisabled) gaps.push({
-        reason: parsed.cleanShutdown ? "clean_restart_interval" : "unclean_restart",
+      // Retain the unobserved interval even without write ownership. A blocked
+      // observer cannot distinguish an orphan from a live competing writer, so
+      // it reports unknown continuity instead of inferring a process restart.
+      gaps.push({
+        reason: this.persistenceDisabled ? "writer_continuity_unknown"
+          : parsed.cleanShutdown ? "clean_restart_interval" : "unclean_restart",
         from: parsed.lastSavedAt, to: this.processStartedAt, previousUnfinished: parsed.previousUnfinished,
       });
       const omittedGaps = parsed.omittedGaps + Math.max(0, gaps.length - 16);

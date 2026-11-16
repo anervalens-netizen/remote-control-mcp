@@ -35,8 +35,9 @@ export async function capabilityReport(
   client: AgentClient, requestedDevices?: string[], concurrency?: number, options: CapabilityProbeOptions = {},
 ) {
   options.signal?.throwIfAborted();
-  // Match the finite fleet-status fan-out. Validate the entire selection before
-  // any endpoint starts, then collapse aliases onto their canonical identity.
+  // Apply this report's 64-entry limit to explicit selections and the configured
+  // inventory. Validate before any endpoint starts, then collapse aliases onto
+  // their canonical identity.
   const selected = requestedDevices?.length ? requestedDevices : client.devices;
   if (selected.length > maxCapabilityDevices)
     throw new RangeError("Capability reports support at most 64 device entries; select a bounded subset.");
