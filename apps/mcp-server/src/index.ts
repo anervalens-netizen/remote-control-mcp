@@ -1,6 +1,7 @@
 import "./error-reporting.ts";
 import { configuredContextKeepBridge,closeContextKeepBridges } from "./contextkeep-bridge.ts";
 import { execFileSync } from 'node:child_process';
+import { runtimeReleaseIdentity } from "../../../packages/shared/src/release-manifest.ts";
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 import { AgentClient } from './agent-client.ts';
@@ -11,10 +12,17 @@ const host = process.env.RCMCP_MCP_HOST ?? '127.0.0.1';
 const port = Number(process.env.RCMCP_MCP_PORT ?? '45230');
 const allowUnauthenticated = process.env.RCMCP_ALLOW_UNAUTHENTICATED === '1';
 assertMcpHttpAuth(process.env.RCMCP_MCP_TOKEN, allowUnauthenticated);
-const sha = process.env.RCMCP_RUNTIME_SHA ?? (() => {
-  try { return execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fileURLToPath(new URL('../../../', import.meta.url)), encoding: 'utf8', timeout: 2000, windowsHide: true }).trim(); }
+const releaseRoot = fileURLToPath(new URL('../../../', import.meta.url));
+const legacySha = process.env.RCMCP_RUNTIME_SHA ?? (() => {
+  try { return execFileSync('git', ['rev-parse', 'HEAD'], { cwd: releaseRoot, encoding: 'utf8', timeout: 2000, windowsHide: true }).trim(); }
   catch { return null; }
 })();
+const releaseIdentity = runtimeReleaseIdentity(releaseRoot, {
+  legacySha,
+  legacySource: process.env.RCMCP_RUNTIME_SHA !== undefined ? "environment" : legacySha ? "git_checkout" : "unknown",
+  expectedManifestSha256: process.env.RCMCP_RELEASE_MANIFEST_SHA256,
+});
+const sha = releaseIdentity.sha;
 const configuredSessionIdleMs = process.env.RCMCP_SESSION_IDLE_MS === undefined
   ? undefined
   : Number(process.env.RCMCP_SESSION_IDLE_MS);
@@ -37,6 +45,7 @@ const http = createMcpHttpServer(client, {
   sessionMode: process.env.RCMCP_MCP_SESSION_MODE === "stateless" ? "stateless" : "stateful",
   enableJsonResponse: process.env.RCMCP_MCP_JSON_RESPONSE === "1",
   sha,
+  releaseIdentity,
   ...(configuredSessionIdleMs === undefined ? {} : { sessionIdleMs: configuredSessionIdleMs }),
   maxBodyBytes: configuredMaxBodyBytes,
 });

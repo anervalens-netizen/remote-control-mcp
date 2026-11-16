@@ -7,6 +7,7 @@ import { randomUUID } from "node:crypto";
 import { executionFacts, summarizeExecution } from "../../../packages/protocol/src/execution-outcome.ts";
 import { settledExecution } from "./settled-execution.ts";
 import { withToolErrors } from "./tool-errors.ts";
+import { repoPendingResultSchema } from "./repo-recovery-receipt.ts";
 import { projectRunFields, deployFields } from "../../../packages/protocol/src/project.ts";
 import { repoCheckpointFields, repoPatchFields, fsEditFields } from "../../../packages/protocol/src/editing.ts";
 import { batchResultSchema, execRequestFields, execResultSchema, fsReadFields, fsReadResultSchema } from "../../../packages/protocol/src/execution.ts";
@@ -205,7 +206,7 @@ export function registerHighLevelTools(server: McpServer, client: AgentClient): 
   });
 
   server.registerTool("repo_fetch", {
-    description: "Fetch Git remote refs through the owner endpoint with interactive credential prompts disabled and a bounded timeout. Fails fast if owner identity is unavailable; raw exec remains available for explicit root/SYSTEM Git.",
+    description: "Fetch Git remote refs through the owner endpoint with interactive credential prompts disabled and a bounded timeout. Fails fast if owner identity is unavailable; raw exec remains available for explicit root/SYSTEM Git. If executionPending is true, inspect jobId and reconcile the original coordination token; never redispatch the operation.",
     inputSchema: executionInputSchema({
       ...coordinationFields, device: z.string().min(1), path: z.string().min(1), remote: z.string().min(1).optional(),
       refspecs: z.array(z.string().min(1)).max(32).optional(), prune: z.boolean().optional(), tags: z.boolean().optional(),
@@ -213,7 +214,7 @@ export function registerHighLevelTools(server: McpServer, client: AgentClient): 
     }),
     outputSchema: {
       ...gitRouteSchema,
-      result: z.object({ ...gitNetworkCommonSchema, operation: z.literal("fetch"), remote: z.string() }).passthrough(),
+      result: z.union([z.object({ ...gitNetworkCommonSchema, operation: z.literal("fetch"), remote: z.string() }).passthrough(), repoPendingResultSchema("fetch")]),
     },
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
   }, async ({ device, context, identity, elevation, ...input }) => {
@@ -222,7 +223,7 @@ export function registerHighLevelTools(server: McpServer, client: AgentClient): 
   });
 
   server.registerTool("repo_pull", {
-    description: "Pull through the owner endpoint with non-interactive credentials. Fast-forward-only by default; set ffOnly=false for normal Git pull behavior. Raw exec remains available for explicit root/SYSTEM Git.",
+    description: "Pull through the owner endpoint with non-interactive credentials. Fast-forward-only by default; set ffOnly=false for normal Git pull behavior. Raw exec remains available for explicit root/SYSTEM Git. If executionPending is true, inspect jobId and reconcile the original coordination token; never redispatch the operation.",
     inputSchema: executionInputSchema({
       ...coordinationFields, device: z.string().min(1), path: z.string().min(1), remote: z.string().min(1).optional(),
       refspecs: z.array(z.string().min(1)).max(32).optional(), ffOnly: z.boolean().optional(), tags: z.boolean().optional(),
@@ -230,13 +231,13 @@ export function registerHighLevelTools(server: McpServer, client: AgentClient): 
     }),
     outputSchema: {
       ...gitRouteSchema,
-      result: z.object({
+      result: z.union([z.object({
         ...gitNetworkCommonSchema,
         operation: z.literal("pull"),
         beforeHead: z.string().nullable(),
         afterHead: z.string().nullable(),
         headChanged: z.boolean(),
-      }).passthrough(),
+      }).passthrough(), repoPendingResultSchema("pull")]),
     },
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
   }, async ({ device, context, identity, elevation, ...input }) => {
@@ -245,7 +246,7 @@ export function registerHighLevelTools(server: McpServer, client: AgentClient): 
   });
 
   server.registerTool("repo_push", {
-    description: "Push through the owner endpoint with non-interactive credentials and bounded timeout. Supports normal push, upstream setup, tags and dry-run; raw exec retains unrestricted Git including explicit root/SYSTEM workflows.",
+    description: "Push through the owner endpoint with non-interactive credentials and bounded timeout. Supports normal push, upstream setup, tags and dry-run; raw exec retains unrestricted Git including explicit root/SYSTEM workflows. If executionPending is true, inspect jobId and reconcile the original coordination token; never redispatch the operation.",
     inputSchema: executionInputSchema({
       ...coordinationFields, device: z.string().min(1), path: z.string().min(1), remote: z.string().min(1).optional(),
       refspecs: z.array(z.string().min(1)).max(32).optional(), setUpstream: z.boolean().optional(), tags: z.boolean().optional(),
@@ -253,7 +254,7 @@ export function registerHighLevelTools(server: McpServer, client: AgentClient): 
     }),
     outputSchema: {
       ...gitRouteSchema,
-      result: z.object({ ...gitNetworkCommonSchema, operation: z.literal("push"), remote: z.string() }).passthrough(),
+      result: z.union([z.object({ ...gitNetworkCommonSchema, operation: z.literal("push"), remote: z.string() }).passthrough(), repoPendingResultSchema("push")]),
     },
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
   }, async ({ device, context, identity, elevation, ...input }) => {

@@ -20,7 +20,7 @@ const installedServers = new WeakSet<object>();
 const controlTools = new Set(["job_status", "job_output", "job_output_since", "job_wait", "job_cancel", "job_list", "job_history", "job_lineage", "job_find", "batch_recover", "pty_output", "pty_terminate", "search_stop", "search_results", "android_command_status", "android_cancel"]);
 const scopedTools = new Set(["exec", "batch_exec", "job_start", "job_start_many", "project_run", "deploy_run", "repo_apply_patch", "fs_edit", "service_action"]);
 
-import { readOnlyTools } from "./tool-effects.ts";
+import { classifyToolEffect, toolEffectAnnotations } from "./tool-effects.ts";
 
 export const STRUCTURED_CONTENT_MAX_BYTES = 64 * 1024;
 
@@ -171,7 +171,8 @@ export function installDefaultToolOutputContracts(server: McpServer, diagnostics
       try {
         if (explicitRecovery !== undefined && metadataRecovery !== undefined && explicitRecovery !== metadataRecovery) throw new Error("Conflicting resultRecoveryId arguments; no dispatch occurred");
         if (scope !== undefined) z.string().uuid().parse(scope);
-        operationId = await observer?.begin(name, scope, extra?.requestId, extra?.sessionId, args[0]?.contextKeep);
+        operationId = await observer?.begin(name, scope, extra?.requestId, extra?.sessionId, args[0]?.contextKeep,
+          classifyToolEffect(name, args[0], config?.annotations));
         if (!name.startsWith("result_recover") && !consoleReadTools.has(name)) {
           // A caller can reserve the ID before effects. Unknown/reused IDs fail
           // closed; recovery is never an execution retry mechanism.
@@ -276,10 +277,8 @@ export function installDefaultToolOutputContracts(server: McpServer, diagnostics
       }
       });
     };
-    const annotations = readOnlyTools.has(name)
-      ? { readOnlyHint: true, destructiveHint: false, idempotentHint: true, ...config?.annotations }
-      : config?.annotations;
-    return original(name, { ...config, ...(annotations ? { annotations } : {}), outputSchema: advertisedSchema }, wrappedCallback);
+    const annotations = toolEffectAnnotations(name, config?.annotations);
+    return original(name, { ...config, annotations, outputSchema: advertisedSchema }, wrappedCallback);
   };
   installedServers.add(server);
   registerResultRecovery(server, recovery);

@@ -1,4 +1,5 @@
 import { z } from "zod";
+const hash = z.string().regex(/^[a-f0-9]{64}$/);
 export const coordinationTokenSchema = z.object({
   resourceId: z.string().regex(/^[a-f0-9]{64}$/), operationId: z.string().uuid(),
   generation: z.number().int().positive(), baseVersion: z.string().regex(/^[a-f0-9]{64}$/),
@@ -9,14 +10,31 @@ export const coordinationResourceSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("service"), name: z.string().min(1).max(256), scope: z.enum(["user", "system"]).optional() }).strict(),
 ]);
 export const coordinationRequestSchema = z.object({
-  resource: coordinationResourceSchema, action: z.enum(["inspect", "acquire", "release"]),
+  resource: coordinationResourceSchema, action: z.enum(["inspect", "inspect_recovery", "acquire", "release", "prepare_recovery", "reconcile"]),
   token: coordinationTokenSchema.optional(), leaseMs: z.number().int().min(100).max(300_000).optional(),
   ownerOverride: z.object({ expectedGeneration: z.number().int().nonnegative(), expectedBaseVersion: z.string().regex(/^[a-f0-9]{64}$/), reason: z.enum(["abandoned_reservation", "owner_takeover"]) }).strict().optional(),
+  expectedCurrentBaseVersion: hash.optional(), recoveryIntentId: hash.optional(),
 }).strict();
 export type CoordinationToken = z.infer<typeof coordinationTokenSchema>;
 export type CoordinationResource = z.infer<typeof coordinationResourceSchema>;
 
-const hash = z.string().regex(/^[a-f0-9]{64}$/);
+export const coordinationExecutionSchema = z.object({
+  kind: z.literal("repo_job"), key: z.string().min(1).max(200), fingerprint: hash, requestHash: hash,
+}).strict();
+export const coordinationResolutionSchema = z.object({
+  kind: z.enum(["durable_job", "boot_transition"]), at: z.string().datetime(),
+  originalRecordHash: hash, originalJournalHash: hash, observedBaseVersion: hash, evidenceHash: hash,
+  jobId: z.string().uuid().optional(), recoveryIntentId: hash.optional(),
+  preparedBaseVersion: hash.optional(),
+  outcome: z.enum(["completed", "cancelled", "unknown"]),
+  effectVerification: z.literal("unverified"), noReplay: z.literal(true),
+}).strict();
+export const coordinationRecoveryIntentSchema = z.object({
+  version: z.literal(1), id: hash, token: coordinationTokenSchema,
+  device: hash, identity: hash, canonicalKey: hash, originalRecordHash: hash, originalJournalHash: hash,
+  observedBaseVersion: hash, bootIdentity: z.string().regex(/^linux:[a-f0-9-]{36}$/),
+  createdAt: z.string().datetime(), noReplay: z.literal(true),
+}).strict();
 export const coordinationRecordSchema = coordinationTokenSchema.extend({
   version: z.literal(1), budgetSlot: z.number().int().min(0).max(3), device: hash, identity: hash, canonicalKey: hash,
   state: z.enum(["reserved", "active", "released", "uncertain"]),
@@ -25,6 +43,13 @@ export const coordinationRecordSchema = coordinationTokenSchema.extend({
   overrides: z.array(z.object({ operationId: z.string().uuid(), previousOperationId: z.string().uuid(), at: z.string().datetime(), reason: z.enum(["abandoned_reservation", "owner_takeover"]) })).max(32),
 }).strict();
 export type CoordinationRecord = z.infer<typeof coordinationRecordSchema>;
+/** Recovery metadata is a sidecar; the v1 disk journal and legacy wire record stay unchanged. */
+export const coordinationRecoveryViewSchema = z.object({ execution: coordinationExecutionSchema.nullable(), resolution: coordinationResolutionSchema.nullable() }).strict();
+export const coordinationRecordViewSchema = coordinationRecordSchema.extend({ execution: coordinationExecutionSchema.optional(), resolution: coordinationResolutionSchema.optional() });
+export type CoordinationRecordView = z.infer<typeof coordinationRecordViewSchema>;
+export type CoordinationExecution = z.infer<typeof coordinationExecutionSchema>;
+export type CoordinationResolution = z.infer<typeof coordinationResolutionSchema>;
+export type CoordinationRecoveryIntent = z.infer<typeof coordinationRecoveryIntentSchema>;
 
 /** Exemptions mirror only flags supported by each route's execution schema. */
 export function isCoordinationReadOnly(route: string, input: Record<string, unknown>): boolean {

@@ -34,6 +34,11 @@ describe("runtime identity SHA", () => {
     expect(statusBody).not.toContain("windowsAdmin()");
     expect(statusBody).not.toContain("canElevate(");
     expect(statusBody).not.toContain("probeInteractiveSessionSync(");
+    expect(statusBody).not.toContain("runtimeReleaseIdentity(");
+    const identity = runtimeStatus().releaseIdentity;
+    expect(runtimeStatus().releaseIdentity).toBe(identity);
+    expect(identity.release.upstreamVerified).toBe(false);
+    expect(identity.release.verificationScope).toBe("listed_files_at_startup");
 
     const started = performance.now();
     for (let i = 0; i < 250; i += 1) runtimeStatus();

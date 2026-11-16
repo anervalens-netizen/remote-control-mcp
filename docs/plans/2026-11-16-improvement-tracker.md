@@ -6,6 +6,12 @@ This is the single implementation checklist for the improvement plan. It covers 
 
 The public tracker records engineering status and sanitized evidence only. Operational measurements, real device details, private task/execution IDs and deployment/rollback receipts stay in private project memory under the same stable work-item ID. Do not copy the operational audit into this repository.
 
+## Current implementation checkpoint
+
+2026-11-16: lot 1 is in progress. 4 active, 2 blocked, 5 conditional, 7 implemented, 37 planned, 5 verified. Source/configuration implementation is distinct from exact-head review, runtime promotion and complete lot acceptance. The original incident remains protected until qualified recovery evidence exists.
+
+[Evidence index, metric definitions and finite scenarios](2026-11-16-implementation-evidence.md).
+
 ## How to execute and update
 
 1. Read the linked acceptance contract, current source and corresponding private evidence/task. Confirm that the item is still applicable.
@@ -37,22 +43,22 @@ Lots: 0 baseline; 1 recovery/desktop/effect semantics; 2 observation/history/inv
 
 | ID and acceptance criteria | Work item | Lot | Priority | State | Dependencies (RC26-) | Owner | Evidence / PR / decision |
 |---|---|---:|---|---|---|---|---|
-| [RC26-BASE-01](2026-11-16-improvement-plan.md#rc26-base-01) | Refresh the baseline and bind the evidence | 0 | P1 | planned | — | — | — |
-| [RC26-BASE-02](2026-11-16-improvement-plan.md#rc26-base-02) | Define comparable usage and outcome measurements | 0 | P1 | planned | BASE-01 | — | — |
-| [RC26-BASE-03](2026-11-16-improvement-plan.md#rc26-base-03) | Create a small repeatable behavior and ergonomics benchmark | 0 | P2 | planned | BASE-02 | — | — |
-| [RC26-REC-01](2026-11-16-improvement-plan.md#rc26-rec-01) | Reproduce partial synchronous repository failure | 1 | P1 | planned | BASE-01 | — | — |
-| [RC26-REC-02](2026-11-16-improvement-plan.md#rc26-rec-02) | Specify evidence-bound synchronous reconciliation | 1 | P1 | planned | REC-01 | — | — |
-| [RC26-REC-03](2026-11-16-improvement-plan.md#rc26-rec-03) | Implement supported reconciliation for synchronous operations | 1 | P1 | planned | REC-02 | — | — |
-| [RC26-REC-04](2026-11-16-improvement-plan.md#rc26-rec-04) | Qualify recovery under concurrency and interrupted delivery | 1 | P1 | planned | REC-03 | — | — |
-| [RC26-REC-05](2026-11-16-improvement-plan.md#rc26-rec-05) | Resolve the existing incident through the qualified path | 1 | P1 | planned | REC-04 | — | — |
-| [RC26-DEP-01](2026-11-16-improvement-plan.md#rc26-dep-01) | Report verifiable archive release identity | 1 | P1 | planned | BASE-01 | — | — |
-| [RC26-DEP-02](2026-11-16-improvement-plan.md#rc26-dep-02) | Complete the owner route and graphical-session integration | 1 | P1 | planned | BASE-01 | — | — |
-| [RC26-DEP-03](2026-11-16-improvement-plan.md#rc26-dep-03) | Bind the adapter to the managed desktop engine | 1 | P1 | planned | DEP-02 | — | — |
-| [RC26-DEP-04](2026-11-16-improvement-plan.md#rc26-dep-04) | Verify desktop behavior through the actual MCP route | 1 | P1 | planned | DEP-01, DEP-03 | — | — |
-| [RC26-DEP-05](2026-11-16-improvement-plan.md#rc26-dep-05) | Verify startup persistence and a reversible rollout | 1 | P1 | planned | DEP-04 | — | — |
-| [RC26-EFF-01](2026-11-16-improvement-plan.md#rc26-eff-01) | Centralize tool effect classification | 1 | P1 | planned | BASE-01 | — | — |
-| [RC26-EFF-02](2026-11-16-improvement-plan.md#rc26-eff-02) | Separate failed observation from uncertain effect | 1 | P1 | planned | EFF-01 | — | — |
-| [RC26-EFF-03](2026-11-16-improvement-plan.md#rc26-eff-03) | Reconcile historical classification without fabricating proof | 1 | P2 | planned | EFF-02 | — | — |
+| [RC26-BASE-01](2026-11-16-improvement-plan.md#rc26-base-01) | Refresh the baseline and bind the evidence | 0 | P1 | verified | — | Implementation agent | Dated source/runtime/task baseline and F01–F08 evidence index in [implementation evidence](2026-11-16-implementation-evidence.md). Native values remain private; unavailable platforms are unverified. |
+| [RC26-BASE-02](2026-11-16-improvement-plan.md#rc26-base-02) | Define comparable usage and outcome measurements | 0 | P1 | verified | BASE-01 | Implementation agent | Measurement contract, outcome separation and complete/partial synthetic examples in [implementation evidence](2026-11-16-implementation-evidence.md). This verifies definitions, not future aggregate reporting. |
+| [RC26-BASE-03](2026-11-16-improvement-plan.md#rc26-base-03) | Create a small repeatable behavior and ergonomics benchmark | 0 | P2 | active | BASE-02 | Implementation agent | B01–B07 finite scenarios defined in [implementation evidence](2026-11-16-implementation-evidence.md); equivalent baseline/candidate measurements remain pending. |
+| [RC26-REC-01](2026-11-16-improvement-plan.md#rc26-rec-01) | Reproduce partial synchronous repository failure | 1 | P1 | verified | BASE-01 | Implementation agent | Synthetic fetch-then-index-lock pull failure reproduced once and persisted across restart. Runtime proof retained privately; regression tests are in the candidate. |
+| [RC26-REC-02](2026-11-16-improvement-plan.md#rc26-rec-02) | Specify evidence-bound synchronous reconciliation | 1 | P1 | verified | REC-01 | Implementation agent | [Recovery contract](../COORDINATION-RECOVERY.md); sidecar design, base/identity fences, no-replay and strict v1 rollback tests. Native and historical proof limits are explicit. |
+| [RC26-REC-03](2026-11-16-improvement-plan.md#rc26-rec-03) | Implement supported reconciliation for synchronous operations | 1 | P1 | implemented | REC-02 | Implementation agent | Whole-operation durable job and supported recovery actions implemented. Local unit/MCP/native checks passed; exact-head reviews, CI and promotion pending. |
+| [RC26-REC-04](2026-11-16-improvement-plan.md#rc26-rec-04) | Qualify recovery under concurrency and interrupted delivery | 1 | P1 | implemented | REC-03 | Implementation agent | 31 new unit/MCP and 8 native systemd cases passed in component checks. Stable integrated Linux gate: 1,313 passed, 61 platform/qualification cases skipped; typecheck and console build passed. Exact-head review, hosted CI and runtime gates pending. |
+| [RC26-REC-05](2026-11-16-improvement-plan.md#rc26-rec-05) | Resolve the existing incident through the qualified path | 1 | P1 | blocked | REC-04 | Implementation agent | Original legacy record preserved. Missing original process receipt requires qualifying quiescence after a saved intent; unrelated live workloads prevent an unplanned boot transition. No forced release or replay. |
+| [RC26-DEP-01](2026-11-16-improvement-plan.md#rc26-dep-01) | Report verifiable archive release identity | 1 | P1 | implemented | BASE-01 | Implementation agent | Full-tree manifest, generated-artifact hashes and authenticated release diagnostics implemented. Focused integrity/health/runtime tests passed; exact-head gates and native promotion pending. |
+| [RC26-DEP-02](2026-11-16-improvement-plan.md#rc26-dep-02) | Complete the owner route and graphical-session integration | 1 | P1 | implemented | BASE-01 | Implementation agent | Separate owner service installed and authenticated direct diagnostics passed. Controller inventory activation and actual MCP route verification pending; private receipts retained. |
+| [RC26-DEP-03](2026-11-16-improvement-plan.md#rc26-dep-03) | Bind the adapter to the managed desktop engine | 1 | P1 | implemented | DEP-02 | Implementation agent | Official managed engine provenance and native value/click/no-replay qualification passed. Effective engine identity diagnostics and MCP readback pending. |
+| [RC26-DEP-04](2026-11-16-improvement-plan.md#rc26-dep-04) | Verify desktop behavior through the actual MCP route | 1 | P1 | active | DEP-01, DEP-03 | Implementation agent | Direct native fixture passed; actual MCP before/action/after and stale/session cases remain required after activation. |
+| [RC26-DEP-05](2026-11-16-improvement-plan.md#rc26-dep-05) | Verify startup persistence and a reversible rollout | 1 | P1 | active | DEP-04 | Implementation agent | Previous release/configuration preserved and owner startup installed. Candidate relaunch, rollback compatibility and MCP recheck pending. |
+| [RC26-EFF-01](2026-11-16-improvement-plan.md#rc26-eff-01) | Centralize tool effect classification | 1 | P1 | implemented | BASE-01 | Implementation agent | Shared effect classification and audited mixed-tool predicates in candidate; focused regression suite passed. Exact-head review/CI pending. |
+| [RC26-EFF-02](2026-11-16-improvement-plan.md#rc26-eff-02) | Separate failed observation from uncertain effect | 1 | P1 | implemented | EFF-01 | Implementation agent | Failed observations retain journal v1 compatibility; effectful unknown outcomes remain protected. SDK/restart/retention regressions passed; promotion pending. |
+| [RC26-EFF-03](2026-11-16-improvement-plan.md#rc26-eff-03) | Reconcile historical classification without fabricating proof | 1 | P2 | verified | EFF-02 | Implementation agent | Read-only historical assessment completed with identical before/after file inventory and digests. Decision: no automatic rewrite; even pure-read candidates require deployed-version review, and mixed historical calls stay protected. Private counts/receipts retained. |
 | [RC26-OBS-01](2026-11-16-improvement-plan.md#rc26-obs-01) | Inventory every agent entry point | 2 | P1 | planned | BASE-01 | — | — |
 | [RC26-OBS-02](2026-11-16-improvement-plan.md#rc26-obs-02) | Propagate trace and origin without changing effect identity | 2 | P1 | planned | OBS-01 | — | — |
 | [RC26-OBS-03](2026-11-16-improvement-plan.md#rc26-obs-03) | Count all ingress independently of sampled traces | 2 | P1 | planned | OBS-02, EFF-02 | — | — |
@@ -76,7 +82,7 @@ Lots: 0 baseline; 1 recovery/desktop/effect semantics; 2 observation/history/inv
 | [RC26-UX-07](2026-11-16-improvement-plan.md#rc26-ux-07) | Extend the existing MCP Apps console with the same contracts | 3 | P2 | planned | UX-01, UX-06, HIS-02 | — | — |
 | [RC26-GOV-01](2026-11-16-improvement-plan.md#rc26-gov-01) | Reconcile review evidence against the exact repository head | 3 | P2 | planned | BASE-01 | — | — |
 | [RC26-GOV-02](2026-11-16-improvement-plan.md#rc26-gov-02) | Preserve complementary Codex and DSH review workflow | 3 | P2 | planned | BASE-01 | — | — |
-| [RC26-GOV-03](2026-11-16-improvement-plan.md#rc26-gov-03) | Keep tracker state and private handoffs synchronized | 0 | P1 | planned | — | — | — |
+| [RC26-GOV-03](2026-11-16-improvement-plan.md#rc26-gov-03) | Keep tracker state and private handoffs synchronized | 0 | P1 | active | — | Implementation agent | Repository status and private checkpoints updated together throughout this lot. Final readback and handoff remain required. |
 | [RC26-MCP-01](2026-11-16-improvement-plan.md#rc26-mcp-01) | Build the actual client and protocol compatibility matrix | 3 | P2 | planned | BASE-01 | — | — |
 | [RC26-MCP-02](2026-11-16-improvement-plan.md#rc26-mcp-02) | Run relevant official protocol conformance cases | 3 | P2 | planned | MCP-01 | — | — |
 | [RC26-MCP-03](2026-11-16-improvement-plan.md#rc26-mcp-03) | Verify modern discovery and catalog/result parity | 3 | P2 | planned | MCP-01 | — | — |
@@ -93,7 +99,7 @@ Lots: 0 baseline; 1 recovery/desktop/effect semantics; 2 observation/history/inv
 | [RC26-PERF-02](2026-11-16-improvement-plan.md#rc26-perf-02) | Optimize only the measured limiting path | 4 | P3 | conditional | PERF-01 | — | — |
 | [RC26-PERF-03](2026-11-16-improvement-plan.md#rc26-perf-03) | Set measured regression budgets | 4 | P3 | planned | PERF-01, BASE-03 | — | — |
 | [RC26-DOC-01](2026-11-16-improvement-plan.md#rc26-doc-01) | Reconcile version claims and operational documentation | 3 | P2 | planned | BASE-01, MCP-01, INV-02 | — | — |
-| [RC26-DEL-01](2026-11-16-improvement-plan.md#rc26-del-01) | Close the recovery and desktop lot with behavior evidence | 1 | P1 | planned | REC-05, DEP-05, EFF-03 | — | — |
+| [RC26-DEL-01](2026-11-16-improvement-plan.md#rc26-del-01) | Close the recovery and desktop lot with behavior evidence | 1 | P1 | blocked | REC-05, DEP-05, EFF-03 | Implementation agent | Source changes and component qualification do not close this lot. REC-05 quiescence, actual MCP activation and controlled relaunch acceptance remain pending. |
 | [RC26-DEL-02](2026-11-16-improvement-plan.md#rc26-del-02) | Close the telemetry, history and inventory lot | 2 | P2 | planned | OBS-04, OBS-05, OBS-06, HIS-04, INV-02, INV-03, INV-04 | — | — |
 | [RC26-DEL-03](2026-11-16-improvement-plan.md#rc26-del-03) | Close usability and compatibility with real workflows | 3 | P2 | planned | UX-02, UX-03, UX-04, UX-07, GOV-01, GOV-02, MCP-05, TMO-01, TMO-02, DOC-01 | — | — |
 | [RC26-DEL-04](2026-11-16-improvement-plan.md#rc26-del-04) | Record a decision for every experiment and the remaining backlog | 4 | P3 | planned | EXP-01, EXP-02, EXP-03, EXP-04, EXP-05, PERF-02, PERF-03 | — | — |

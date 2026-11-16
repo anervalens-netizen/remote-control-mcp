@@ -2,7 +2,7 @@ import { afterEach, expect, it } from "vitest";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { collectRefs, SemanticDesktop } from "../apps/agent/src/semantic-desktop.ts";
 import { semanticActSchema, type SemanticManifest } from "../packages/protocol/src/semantic-desktop.ts";
 import Fastify from "fastify";
@@ -22,6 +22,7 @@ function setup(contract: "2.5" | "2.6" = "2.5") {
   const manifest: SemanticManifest = { version: 1, engineVersion: "1.0.2", jsonVersion: contract, binary: path.join(root, "native"), sha256: "a".repeat(64), files: [], provenanceVerified: true };
   const deps = { root, manifest: () => manifest, session: async () => ({ env: {}, fingerprint: binding }), invoke: async (_: unknown, args: string[]) => {
     calls.push(args);
+    if (args[0] === "status") return { version: contract, ok: true, data: { version: manifest.engineVersion, permissions: { accessibility: { state: "granted" } } } };
     if (args[0] === "snapshot") return { version: contract, ok: true, data: { complete, tree: { name: "Synthetic entry", ref_id: "@synthetic:e1" } } };
     effects++;
     if (uncertain) throw new Error("transport lost after effect");
@@ -109,6 +110,11 @@ it.each(["user", "desktop"] as const)("routes actual MCP calls through the %s en
   const [st, ct] = InMemoryTransport.createLinkedPair();
   try {
     await Promise.all([server.connect(st), client.connect(ct)]);
+    const status: any = await client.callTool({ name: "desktop_observe", arguments: { device: "fixture", kind: "status" } });
+    expect(JSON.parse(status.content[0].text)).toMatchObject({
+      ok: true,
+      engineIdentity: { source: "loaded_manifest", binary: s.deps.manifest().binary, sha256: s.deps.manifest().sha256, jsonVersion: "2.5" },
+    });
     const result: any = await client.callTool({ name: "desktop_observe", arguments: { device: "fixture", app: "Synthetic fixture" } });
     const obs = JSON.parse(result.content[0].text);
     expect(obs.observationId).toBeTruthy();
@@ -167,4 +173,65 @@ it("keeps proven refs usable in a presentation-truncated snapshot", async () => 
   const input = await actionInput(s, { observeAfter: false });
   expect(await s.backend.act(input)).toMatchObject({ ok: true });
   expect(s.effects()).toBe(1);
+});
+
+it("reports the effective managed binary and saved provenance without an upstream verification claim", async () => {
+  const s = setup("2.6"), binary = path.join(s.root, "managed-native");
+  const bytes = Buffer.from("synthetic native binary");
+  writeFileSync(binary, bytes);
+  const manifest = { ...s.deps.manifest(), binary, sha256: createHash("sha256").update(bytes).digest("hex"),
+    upstreamCommit: "b".repeat(40), archiveSha256: "c".repeat(64), provenanceVerified: true };
+  const manifestPath = path.join(s.root, "active.json"); writeFileSync(manifestPath, JSON.stringify(manifest));
+  const previous = process.env.RCMCP_AGENT_DESKTOP_MANIFEST;
+  let selectedBinary: string | undefined, invocations = 0;
+  try {
+    process.env.RCMCP_AGENT_DESKTOP_MANIFEST = manifestPath;
+    const backend = new SemanticDesktop({ root: s.root, session: s.deps.session, invoke: async (ctx) => {
+      selectedBinary = ctx.manifest.binary; invocations++;
+      return { version: "2.6", ok: true, command: "status", data: { permissions: { accessibility: { state: "granted" } } } };
+    } });
+    const result = await backend.observe({ kind: "status" });
+    expect(result).toMatchObject({
+      ok: true, engineVersion: manifest.engineVersion,
+      engineIdentity: { source: "loaded_manifest", binary, sha256: manifest.sha256,
+        engineVersion: manifest.engineVersion, jsonVersion: "2.6", upstreamCommit: manifest.upstreamCommit,
+        archiveSha256: manifest.archiveSha256, files: [],
+        provenance: { source: "saved_manifest", verified: true, upstreamRechecked: false } },
+    });
+    expect(selectedBinary).toBe(result.engineIdentity.binary);
+    expect(result).not.toHaveProperty("ready");
+    writeFileSync(binary, "modified synthetic binary");
+    const drift = await backend.observe({ kind: "status" });
+    expect(drift).toMatchObject({ ok: false, error: { code: "agent_desktop_integrity_mismatch" } });
+    expect(drift).not.toHaveProperty("engineIdentity");
+    expect(invocations).toBe(1);
+  } finally {
+    if (previous === undefined) delete process.env.RCMCP_AGENT_DESKTOP_MANIFEST;
+    else process.env.RCMCP_AGENT_DESKTOP_MANIFEST = previous;
+  }
+});
+it("preserves failed status and missing-session outcomes when adding engine diagnostics", async () => {
+  const s = setup("2.6"); s.deps.manifest().provenanceVerified = false;
+  const failed = new SemanticDesktop({ ...s.deps, invoke: async () => ({
+    version: "2.6", ok: false, error: { code: "PERMISSION_DENIED" },
+  }) });
+  const result = await failed.observe({ kind: "status" });
+  expect(result).toMatchObject({ ok: false, error: { code: "PERMISSION_DENIED" },
+    engineIdentity: { upstreamCommit: null, archiveSha256: null, provenance: { verified: false, upstreamRechecked: false } } });
+  expect(result).not.toHaveProperty("ready");
+  let invoked = false;
+  const noSession = new SemanticDesktop({ ...s.deps,
+    session: async () => { throw new Error("graphical_session_unavailable"); },
+    invoke: async () => { invoked = true; return { version: "2.6", ok: true }; },
+  });
+  expect(await noSession.observe({ kind: "status" })).toMatchObject({ ok: false, error: { code: "graphical_session_unavailable" } });
+  expect(invoked).toBe(false);
+});
+it("retains expected engine identity after a native contract error without reporting readiness", async () => {
+  const s = setup("2.6");
+  const backend = new SemanticDesktop({ ...s.deps, invoke: async () => ({ version: "2.5", ok: true }) });
+  const result = await backend.observe({ kind: "status" });
+  expect(result).toMatchObject({ ok: false, error: { code: "native_contract_mismatch" },
+    engineIdentity: { binary: s.deps.manifest().binary, jsonVersion: "2.6" } });
+  expect(result).not.toHaveProperty("ready");
 });

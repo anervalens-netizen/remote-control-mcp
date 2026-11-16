@@ -1,4 +1,5 @@
 import { imageTransforms } from "./image-transform-budget.ts";
+import type { RuntimeReleaseIdentity } from "../../../packages/shared/src/release-manifest.ts";
 import { operationsFor } from "./operation-observer.ts";
 import { recoveryFor } from "./result-recovery.ts";
 import { captureError } from "./error-reporting.ts";
@@ -77,6 +78,7 @@ function originAllowed(req: IncomingMessage, allowedOrigins: Set<string>): boole
 export function createMcpHttpServer(client: AgentClient, options: {
   token?: string;
   sha?: string | null;
+  releaseIdentity?: RuntimeReleaseIdentity;
   sessionIdleMs?: number;
   allowedOrigins?: string[];
   maxBodyBytes?: number | null;
@@ -176,6 +178,7 @@ export function createMcpHttpServer(client: AgentClient, options: {
           contextKeepBridge: contextKeepBridgeDiagnostics(client),
           runtime: {
             instanceId, startedAt, pid: process.pid, sha: options.sha ?? null, node: process.version,
+            ...(options.releaseIdentity ? { releaseIdentity: options.releaseIdentity } : {}),
             requestTimeoutMs: client.requestTimeoutMs, maxBodyBytes,
           },
           sessions: {

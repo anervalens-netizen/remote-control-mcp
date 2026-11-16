@@ -36,6 +36,31 @@ ContextKeep owns atomic ordering between observations and independent verificati
 4. Upgrade source agents before the controller when a new protocol capability is required. Use a separate live control context and account for running jobs before a restart. Preserve all credentials, absolute state paths, job keys, bridge and move-recovery journals. An unavailable host is not implicitly upgraded.
 5. Confirm authenticated runtime SHA, process/executable path and usable capabilities after activation. Exercise synthetic transfer, batch and result-delivery canaries without touching personal data. A mismatch or failed canary requires investigation or restoring the previous release; do not relabel the intended version as the observed one.
 
+
+## Archive release identity
+
+Archive installations can carry a local `.rcmcp-release.json` without a Git checkout. Prepare the complete source and locked dependencies, build the console, then run:
+
+```sh
+node scripts/create-release-manifest.ts <trusted-repository> <physical-release-directory> <full-commit-id> apps/console/dist/console.html apps/console/dist/manifest.json
+```
+
+The generator first runs the existing full tracked-source comparison. It hashes the same source bytes again when creating the manifest and refuses to replace an existing manifest. The optional trailing paths are generated artifacts: their local hashes do not claim Git or upstream provenance. Keep the returned manifest digest in the private deployment receipt and, when pinning it at startup, set `RCMCP_RELEASE_MANIFEST_SHA256` to that exact value in the private service environment.
+
+Agent runtime status and authenticated controller health expose `releaseIdentity`. It distinguishes the reported SHA/source, agreement with the manifest, manifest validity, listed-file integrity, optional digest pin and the time/scope of the startup check. Explicit legacy SHA overrides remain visible as declarations; an environment value cannot certify artifact integrity. Missing, invalid or mismatched evidence is reported separately.
+
+This is an unsigned local attestation. It does not certify an upstream publisher, the Node binary, installed dependencies, private configuration, unlisted files, symlink targets or changes after process initialization. Those scopes need their own receipts. The check is cached once per process so routine diagnostics do not repeatedly hash the release. Verify the actual process/executable path and repeat relevant MCP behavior after activation; a matching manifest does not establish which service was selected.
+
+## Failed observations and uncertain effects
+
+`apps/mcp-server/src/tool-effects.ts` is the shared contract for tool annotations and per-invocation effect classification. Unknown tools and unknown branches remain effectful. Mixed tools advertise conservative tool-level hints; only audited argument discriminators can classify an individual branch as a read. Raw arguments are not added to telemetry. This classification does not restrict the owner's execution capabilities.
+
+A failed audited read is a returned failed observation, not evidence of an uncertain mutation. The original tool error is preserved. `operation_inspect` and observer views can expose the derived `observationOutcome: "failed"`. An effectful operation with unverified execution or lost delivery remains protected. Request outcome, process outcome, client acceptance and intended effect verification remain independent.
+
+The persistent observation journal stays on its strict version-1 schema. A bounded versioned marker in the existing `failure.kind` preserves per-call read evidence without adding fields older controllers cannot parse. Oversized or unsupported categories are not truncated into invented proof. Historical mixed calls without the marker are not inferred from their tool name.
+
+`node scripts/preview-observation-effects.ts <absolute-private-journal-directory>` performs a read-only eligibility assessment. It does not instantiate a writing observer, change records, retire receipts or replay work. Even pure-read candidates require review of the contract/version deployed at the original call. This lot deliberately does not automatically rewrite historical recovery evidence.
+
 ## Platform qualification and retention
 
 Report transport, identity, interactive desktop, Android Accessibility, screenshot and optional shell readiness separately. A device marked online does not imply screenshots or interactive controls work. Android screen-capture consent and OS lifecycle behavior must be tested on physical devices without bypassing local permission requirements. An unavailable Work host, omitted interactive suite or uninstalled APK remains explicitly pending.
