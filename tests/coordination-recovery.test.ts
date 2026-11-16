@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdtempSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import Fastify from "fastify";
 import { afterEach, expect, it, vi } from "vitest";
@@ -44,6 +44,41 @@ it("reconciles partial effects with exact execution binding and archives the ori
   const newerBase = { ...f.changed, baseVersion: coordinationHash("later external work") };
   expect(f.coordinator.reconciled(f.token, newerBase, f.changed.baseVersion)).toMatchObject({ alreadyReconciled: true, record: { generation: 1 } });
   expect(f.coordinator.inspect(f.changed).record).toEqual(next);
+});
+
+it.each([false, true])("reads a published disposition with its original or freshly observed base after later changes (new generation %s)", nextGeneration => {
+  const f = fixture(); f.bind();
+  const resolved = f.coordinator.reconcileJob(f.token, f.changed, f.changed.baseVersion, f.evidence);
+  if (nextGeneration) f.coordinator.acquire(f.changed);
+  const later = { ...f.changed, baseVersion: coordinationHash("later repository state") };
+  const journal = path.join(f.root, f.token.resourceId + ".json");
+  const archive = path.join(f.root, "reconciliations", readdirSync(path.join(f.root, "reconciliations"))[0]!);
+  const before = [journal, archive].map(file => readFileSync(file, "utf8"));
+  for (const expected of [f.changed.baseVersion, later.baseVersion]) {
+    expect(f.restart().reconciled(f.token, later, expected)).toMatchObject({ alreadyReconciled: true, record: resolved.record });
+  }
+  expect(() => f.restart().reconciled(f.token, later, coordinationHash("unrelated base"))).toThrow("recovery_base_changed");
+  expect(readFileSync(journal, "utf8")).toBe(before[0]);
+  // Reconfirming durability may canonicalize JSON field order. The original
+  // journal bytes and every archived value must remain exactly the same.
+  expect(JSON.parse(readFileSync(archive, "utf8"))).toEqual(JSON.parse(before[1]!));
+});
+
+it("keeps recovery inspection record and metadata in one journal generation during a concurrent transition", () => {
+  const f = fixture(); f.bind();
+  const current = f.coordinator.current.bind(f.coordinator);
+  vi.spyOn(f.coordinator, "current").mockImplementation(resource => {
+    const original = current(resource);
+    f.coordinator.reconcileJob(f.token, f.changed, f.changed.baseVersion, f.evidence);
+    f.coordinator.acquire(f.changed);
+    return original;
+  });
+  const inspection = f.coordinator.inspectRecovery(f.resource);
+  expect(inspection.record).toMatchObject({ operationId: f.token.operationId, generation: 1, state: "active" });
+  expect(inspection.recovery.execution).toMatchObject({ key: f.evidence.key });
+  expect(inspection.recovery.resolution).toBeNull();
+  vi.mocked(f.coordinator.current).mockRestore();
+  expect(f.coordinator.inspect(f.changed).record?.generation).toBe(2);
 });
 
 it("keeps active and released disk journals and legacy wire records readable by the frozen v1 schema", () => {
@@ -227,6 +262,7 @@ it.each(["base", "journal", "slot"])("an interrupted archive retry revalidates t
   const before = [journal, slot, archive].map(file => readFileSync(file, "utf8"));
   expect(() => f.restart().reconciled(f.token, observed, f.changed.baseVersion)).toThrow(
     field === "base" ? "recovery_base_changed" : field === "journal" ? "recovery_record_changed" : "budget_fence_changed");
+  if (field === "base") expect(() => f.restart().reconciled(f.token, observed, observed.baseVersion)).toThrow("recovery_evidence_mismatch");
   expect(f.coordinator.inspect(observed).record?.state).toBe("active");
   expect([journal, slot, archive].map(file => readFileSync(file, "utf8"))).toEqual(before);
 });
@@ -295,6 +331,24 @@ it("a persistence failure before dispatch cannot start a job or fall back to Git
   const result = await app.inject({ method: "POST", url: "/v1/repo/fetch", payload: {} });
   expect(result.statusCode).toBe(500); expect(start).not.toHaveBeenCalled(); expect(fallback).not.toHaveBeenCalled();
   expect(f.coordinator.inspect(f.resource).record?.state).toBe("released");
+});
+
+it("refuses a new execution before dispatch when its future reconciliation store is already full", async () => {
+  const f = fixture(); f.coordinator.settle(f.token);
+  const archives = path.join(f.root, "reconciliations"); mkdirSync(archives);
+  for (let i = 0; i < 4096; i++) writeFileSync(path.join(archives, `synthetic-${i}.json`), "preserved synthetic evidence\n");
+  vi.stubEnv("RCMCP_COORDINATION_DIR", f.root);
+  vi.spyOn(resources, "resolveCoordinationResource").mockResolvedValue(f.resource);
+  vi.spyOn(systemd, "jobCgroupIsolation").mockReturnValue({ ready: true, reason: "synthetic" });
+  const start = vi.spyOn(jobs, "jobStart"), fallback = vi.fn();
+  const app = Fastify(); const coordinate = registerCoordinationRoutes(app); close.push(() => app.close());
+  app.post("/v1/repo/fetch", (request, reply) => coordinate("/v1/repo/fetch", request, reply, { path: f.root }, fallback));
+  const result = await app.inject({ method: "POST", url: "/v1/repo/fetch", payload: {} });
+  expect(result.statusCode, result.body).toBe(409); expect(result.body).toContain("recovery_retention_full");
+  expect(start).not.toHaveBeenCalled(); expect(fallback).not.toHaveBeenCalled();
+  expect(f.coordinator.inspect(f.resource).record?.state).toBe("released");
+  expect(readdirSync(archives)).toHaveLength(4096);
+  expect(readFileSync(path.join(archives, "synthetic-0.json"), "utf8")).toBe("preserved synthetic evidence\n");
 });
 
 it("terminal status, missing PID and partial containment do not authorize reconciliation", async () => {

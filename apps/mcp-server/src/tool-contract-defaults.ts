@@ -217,7 +217,10 @@ export function installDefaultToolOutputContracts(server: McpServer, diagnostics
         const failedValidation = !measureSync("finalValidation", () => advertisedSchema.safeParse(final)).success;
         if (failedValidation) {
           detail.finalValidationFailed = true;
-          final = { ok: false, error: "Final result validation failed; inspect resultRecovery without replaying the operation.", code: "result_validation_failed", ...(reference ? { resultRecovery: reference } : {}) };
+          final = { ok: false, error: "Final result validation failed; inspect resultRecovery without replaying the operation.", code: "result_validation_failed",
+            ...(traced.operationTrace ? { operationTrace: traced.operationTrace } : {}),
+            ...(traced.observationCoverage ? { observationCoverage: traced.observationCoverage } : {}),
+            ...(reference ? { resultRecovery: reference } : {}) };
         }
         // Keep small legacy representations compatible. Once a page/preview is
         // shortened both channels carry exactly the same cursors and counts.
@@ -263,7 +266,9 @@ export function installDefaultToolOutputContracts(server: McpServer, diagnostics
             await observer.finish(operationId, observedResult, requestSucceeded, Boolean(extra?.signal?.aborted), reference?.id);
             operationFinished = true;
           }
-          Object.assign(failure.structuredContent, { observationCoverage: { ...observer.compactCoverage(operationId), admitted: Boolean(operationId) } });
+          Object.assign(failure.structuredContent, { observationCoverage: { ...observer.compactCoverage(operationId), admitted: Boolean(operationId) },
+            ...(operationId ? { operationTrace: { traceId: operationId, controllerInstanceId: observer.controllerInstanceId } } : {}) });
+          failure.content = [{ type: "text", text: JSON.stringify(failure.structuredContent) }];
         }
         if (!advertisedSchema.safeParse(failure.structuredContent).success || jsonBytes(failure) > TOTAL_RESULT_MAX_BYTES) throw new Error("Invalid final error receipt");
         trace.totalBytes = jsonBytes(failure);

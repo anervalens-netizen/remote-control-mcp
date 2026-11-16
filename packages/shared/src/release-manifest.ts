@@ -61,12 +61,16 @@ export type ReleaseFile = ReleaseManifest["files"][number];
 export type ReleaseDifference = { path: string; reason: string };
 export type ReleaseDiagnostic = {
   manifest: "missing" | "invalid" | "present";
+  /** Composite listed-byte/pin check. Even pinned_integrity is not upstream proof. */
+  validation: "unavailable" | "rejected" | "integrity_only" | "pinned_integrity";
   integrity: "not_checked" | "matched" | "mismatch";
   checkedAt: string;
   verificationScope: "listed_files_at_startup";
   manifestSha256: string | null;
   pin: "not_configured" | "unavailable" | "invalid" | "matched" | "mismatch";
   source: ReleaseManifest["source"] | null;
+  /** source.scope/verification describe the manifest author's claim, not a runtime Git-tree check. */
+  sourceClaim: "unavailable" | "manifest_declaration";
   provenance: "unavailable" | "unsigned_local_attestation";
   upstreamVerified: false;
   checkedFiles: number;
@@ -80,6 +84,10 @@ export type ReleaseDiagnostic = {
 export type RuntimeReleaseIdentity = {
   sha: string | null;
   shaSource: "environment" | "git_checkout" | "configured" | "release_manifest" | "unknown";
+  shaBinding: "pinned_manifest" | "legacy_declaration" | "unavailable";
+  /** Equality of declared SHA strings, independent of bytes, pin, or provenance. */
+  declaredSourceAgreement: "matched" | "mismatch" | "unavailable";
+  /** Declared SHA comparison is qualified only when listed bytes and the pin match. */
   sourceAgreement: "matched" | "mismatch" | "unavailable";
   release: ReleaseDiagnostic;
 };
@@ -140,21 +148,21 @@ export function parseReleaseManifest(value: unknown): ReleaseManifest { return m
 /** A bounded startup snapshot, not a signature, upstream proof, or continuous integrity monitor. */
 export function inspectReleaseManifest(directory: string, expectedManifestSha256?: string): ReleaseDiagnostic {
   const result: ReleaseDiagnostic = {
-    manifest: "missing", integrity: "not_checked", checkedAt: new Date().toISOString(),
+    manifest: "missing", validation: "unavailable", integrity: "not_checked", checkedAt: new Date().toISOString(),
     verificationScope: "listed_files_at_startup", manifestSha256: null,
     pin: expectedManifestSha256 === undefined ? "not_configured" : "unavailable",
-    source: null, provenance: "unavailable", upstreamVerified: false,
+    source: null, sourceClaim: "unavailable", provenance: "unavailable", upstreamVerified: false,
     checkedFiles: 0, declaredFiles: 0, generatedArtifacts: 0, differenceCount: 0, differences: [],
     uncovered: ["dependencies", "runtime_binary", "configuration", "unlisted_files", "symlink_targets", "post_start_changes"],
   };
   let root: string;
   try { root = physicalReleaseRoot(directory); }
-  catch { return { ...result, manifest: "invalid", error: "unsafe_or_unreadable_release_root" }; }
+  catch { return { ...result, manifest: "invalid", validation: "rejected", error: "unsafe_or_unreadable_release_root" }; }
   let raw: Buffer;
   try { raw = readReleaseFile(root, releaseManifestName, "100644"); }
   catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return result;
-    return { ...result, manifest: "invalid", error: "unsafe_or_unreadable_manifest" };
+    return { ...result, manifest: "invalid", validation: "rejected", error: "unsafe_or_unreadable_manifest" };
   }
   result.manifestSha256 = sha256(raw);
   if (expectedManifestSha256 !== undefined) {
@@ -163,9 +171,10 @@ export function inspectReleaseManifest(directory: string, expectedManifestSha256
   }
   let manifest: ReleaseManifest;
   try { manifest = parseReleaseManifest(JSON.parse(raw.toString("utf8"))); }
-  catch { return { ...result, manifest: "invalid", error: "invalid_manifest" }; }
+  catch { return { ...result, manifest: "invalid", validation: "rejected", error: "invalid_manifest" }; }
   result.manifest = "present";
   result.source = manifest.source;
+  result.sourceClaim = "manifest_declaration";
   result.provenance = "unsigned_local_attestation";
   result.declaredFiles = manifest.files.length;
   result.generatedArtifacts = manifest.files.filter(file => file.kind === "generated_artifact").length;
@@ -183,6 +192,8 @@ export function inspectReleaseManifest(directory: string, expectedManifestSha256
     }
   }
   result.integrity = result.differenceCount === 0 ? "matched" : "mismatch";
+  result.validation = result.integrity !== "matched" || result.pin === "invalid" || result.pin === "mismatch" ? "rejected"
+    : result.pin === "matched" ? "pinned_integrity" : "integrity_only";
   return result;
 }
 
@@ -193,13 +204,16 @@ export function runtimeReleaseIdentity(directory: string, options: {
   expectedManifestSha256?: string;
 } = {}): RuntimeReleaseIdentity {
   const release = inspectReleaseManifest(directory, options.expectedManifestSha256);
-  const sourceAgreement = options.legacySha && release.source
+  const declaredSourceAgreement = options.legacySha && release.source
     ? (options.legacySha === release.source.commit ? "matched" : "mismatch") : "unavailable";
-  const usableManifest = release.integrity === "matched" && release.pin !== "mismatch" && release.pin !== "invalid";
+  const usableManifest = release.validation === "pinned_integrity";
+  const sourceAgreement = usableManifest ? declaredSourceAgreement : "unavailable";
   // Preserve explicit legacy overrides. For an archive nested inside a checkout,
-  // a matching manifest identifies its source more accurately than the parent HEAD.
+  // a pinned manifest binds its declared source more narrowly than the parent HEAD.
+  // Unpinned source declarations remain visible in release.source but cannot supply SHA.
   const legacySource = options.legacySource ?? (options.legacySha ? "configured" : "unknown");
   const useManifest = usableManifest && legacySource !== "environment" && legacySource !== "configured";
   const sha = useManifest ? release.source!.commit : options.legacySha ?? null;
-  return { sha, shaSource: useManifest ? "release_manifest" : sha ? legacySource : "unknown", sourceAgreement, release };
+  const shaBinding = !sha ? "unavailable" : usableManifest && sha === release.source!.commit ? "pinned_manifest" : "legacy_declaration";
+  return { sha, shaSource: useManifest ? "release_manifest" : sha ? legacySource : "unknown", shaBinding, declaredSourceAgreement, sourceAgreement, release };
 }

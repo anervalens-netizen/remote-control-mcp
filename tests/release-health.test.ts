@@ -17,6 +17,8 @@ it("adds the cached release diagnostic only to authenticated controller health",
   const root = mkdtempSync(path.join(os.tmpdir(), "rcmcp-release-health-")); roots.push(root);
   const release = path.join(root, "release"); mkdirSync(release);
   const identity = runtimeReleaseIdentity(release, { legacySha: "0".repeat(40), legacySource: "configured" });
+  expect(identity).toMatchObject({ shaBinding: "legacy_declaration", sourceAgreement: "unavailable",
+    release: { validation: "unavailable", sourceClaim: "unavailable" } });
   const server = createMcpHttpServer(new AgentClient([]), { token: "synthetic-health-token", sha: identity.sha, releaseIdentity: identity });
   servers.push(server);
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));

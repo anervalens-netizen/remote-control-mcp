@@ -26,13 +26,13 @@ function receipt(operation: "fetch" | "pull" | "push") {
   };
 }
 
-async function connect(operation: "fetch" | "pull" | "push", status: number, body: Record<string, unknown>) {
+async function connect(operation: "fetch" | "pull" | "push", status: number, body: Record<string, unknown>, jobExitCode = status === 500 ? 1 : 0) {
   const directory = await mkdtemp(path.join(os.tmpdir(), "rcmcp-repo-sdk-")); closers.push(() => rm(directory, { recursive: true, force: true }));
   vi.stubEnv("RCMCP_STATE_DIR", directory);
   const app = Fastify(); let repositoryDispatches = 0, statusReads = 0;
   app.get("/v1/info", async () => ({ runtime: { capabilities: ["high-level-coordination-v1", "coordination-recovery-v1"] } }));
   app.post(`/v1/repo/${operation}`, async (_request, reply) => { repositoryDispatches++; return reply.code(status).send(body); });
-  app.post("/v1/jobs/status", async request => { statusReads++; return { id: (request.body as any).id, state: "completed", exitCode: status === 500 ? 1 : 0 }; });
+  app.post("/v1/jobs/status", async request => { statusReads++; return { id: (request.body as any).id, state: "completed", exitCode: jobExitCode }; });
   const url = await app.listen({ host: "127.0.0.1", port: 0 }); closers.push(() => app.close());
   const agent = new AgentClient([{ name: "lab", aliases: ["alias"], url, userUrl: url }]);
   const server = new McpServer({ name: "repository-recovery", version: "1" }); registerTools(server, agent);
@@ -91,6 +91,76 @@ it.each(["top_level", "coordination_only"] as const)("preserves bounded failure 
   vi.restoreAllMocks();
   await client.callTool({ name: "job_status", arguments: { device: "alias", identity: "owner", id: delivered.jobId } });
   expect(await observer.inspect(traceId)).toMatchObject({ state: "unknown", requestSucceeded: false, terminalJobs: [{ jobId: metadata.jobId }] });
+  expect(counters()).toEqual({ repositoryDispatches: 1, statusReads: 1 });
+});
+
+it("preserves successful execution evidence in an HTTP 500 recovery receipt without treating the response as terminal authority", async () => {
+  const metadata = receipt("pull");
+  const body = { ...metadata, ok: false, error: "repository_execution_requires_recovery", operationSucceeded: true,
+    executionOutcome: "exit_zero", resultPublication: "available", rawArguments: "private-original-arguments" };
+  const { call, client, agent, counters } = await connect("pull", 500, body, 0);
+  const result = await call(), delivered = result.structuredContent as any;
+  expect(result.isError).toBe(true);
+  expect(delivered).toMatchObject({ ok: false, requestSucceeded: false, status: 500, noReplay: true, jobId: metadata.jobId,
+    coordination: { token: metadata.coordination.token }, recovery: metadata.recovery, operationSucceeded: true,
+    executionOutcome: "exit_zero", resultPublication: "available", effectVerification: "unverified" });
+  expect(JSON.stringify(delivered)).not.toContain("private-original-arguments");
+  const observer = operationsFor(agent), traceId = delivered.operationTrace.traceId;
+  expect(await observer.inspect(traceId)).toMatchObject({ state: "unknown", requestSucceeded: false,
+    jobs: [{ device: "lab", identity: "owner", jobId: metadata.jobId }] });
+  expect((await observer.inspect(traceId))?.terminalJobs).toBeUndefined();
+  const recovered = await client.callTool({ name: "result_recover", arguments: { id: delivered.resultRecovery.id } });
+  expect(recovered.isError).not.toBe(true);
+  const page = recovered.structuredContent as any;
+  expect(page.eof).toBe(true);
+  const original = JSON.parse(Buffer.from(page.data, "base64").toString("utf8"));
+  expect(original.isError).toBe(true);
+  expect(original.structuredContent).toMatchObject({ operationTrace: delivered.operationTrace, noReplay: true,
+    jobId: metadata.jobId, coordination: { token: metadata.coordination.token }, recovery: metadata.recovery,
+    operationSucceeded: true, executionOutcome: "exit_zero", resultPublication: "available" });
+  expect((await observer.inspect(traceId))?.terminalJobs).toBeUndefined();
+  const status = await client.callTool({ name: "job_status", arguments: { device: "alias", identity: "owner", id: delivered.jobId } });
+  expect(status.isError).not.toBe(true);
+  expect(status.structuredContent).toMatchObject({ id: metadata.jobId, state: "completed", exitCode: 0 });
+  expect(await observer.inspect(traceId)).toMatchObject({ state: "unknown", requestSucceeded: false,
+    terminalJobs: [{ device: "lab", identity: "owner", jobId: metadata.jobId }] });
+  expect(counters()).toEqual({ repositoryDispatches: 1, statusReads: 1 });
+});
+
+it("preserves the original recovery receipt through an HTTP 409 coordination conflict without replay or terminal authority", async () => {
+  const metadata = receipt("pull");
+  const { token: _token, ...record } = metadata.coordination;
+  const details = { reason: "capacity_index_unreadable", coordination: record };
+  const body = { ...metadata, ok: false, error: "coordination_conflict", code: "COORDINATION_CONFLICT", details,
+    operationSucceeded: true, executionOutcome: "exit_zero", resultPublication: "available", rawArguments: "private-conflict-arguments" };
+  const { call, client, agent, counters } = await connect("pull", 409, body, 0);
+  const result = await call(), delivered = result.structuredContent as any;
+  expect(result.isError).toBe(true);
+  expect(delivered).toMatchObject({ ok: false, requestSucceeded: false, kind: "http", status: 409, agentCode: "COORDINATION_CONFLICT",
+    noReplay: true, jobId: metadata.jobId, coordination: metadata.coordination, recovery: metadata.recovery,
+    operationSucceeded: true, executionOutcome: "exit_zero", resultPublication: "available", effectVerification: "unverified" });
+  expect(delivered.coordinationConflict).toEqual(details);
+  expect(delivered.coordinationConflict.coordination).not.toHaveProperty("token");
+  expect(JSON.stringify(delivered)).not.toContain("private-conflict-arguments");
+  const observer = operationsFor(agent), traceId = delivered.operationTrace.traceId;
+  expect(await observer.inspect(traceId)).toMatchObject({ state: "unknown", requestSucceeded: false,
+    jobs: [{ device: "lab", identity: "owner", jobId: metadata.jobId }] });
+  expect((await observer.inspect(traceId))?.terminalJobs).toBeUndefined();
+  const recovered = await client.callTool({ name: "result_recover", arguments: { id: delivered.resultRecovery.id } });
+  expect(recovered.isError).not.toBe(true);
+  const page = recovered.structuredContent as any;
+  expect(page.eof).toBe(true);
+  const original = JSON.parse(Buffer.from(page.data, "base64").toString("utf8"));
+  expect(original.isError).toBe(true);
+  expect(original.structuredContent).toMatchObject({ operationTrace: delivered.operationTrace, status: 409,
+    coordinationConflict: details, noReplay: true, jobId: metadata.jobId, coordination: metadata.coordination,
+    recovery: metadata.recovery, operationSucceeded: true, executionOutcome: "exit_zero", resultPublication: "available" });
+  expect((await observer.inspect(traceId))?.terminalJobs).toBeUndefined();
+  const status = await client.callTool({ name: "job_status", arguments: { device: "alias", identity: "owner", id: delivered.jobId } });
+  expect(status.isError).not.toBe(true);
+  expect(status.structuredContent).toMatchObject({ id: metadata.jobId, state: "completed", exitCode: 0 });
+  expect(await observer.inspect(traceId)).toMatchObject({ state: "unknown", requestSucceeded: false,
+    terminalJobs: [{ device: "lab", identity: "owner", jobId: metadata.jobId }] });
   expect(counters()).toEqual({ repositoryDispatches: 1, statusReads: 1 });
 });
 

@@ -2,12 +2,12 @@ import { noEffectSubmittedProof, withExecutionProof } from "./execution-boundary
 import path from "node:path";
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import { isCoordinationReadOnly, coordinationRequestSchema, coordinationResourceSchema, coordinationTokenSchema, type CoordinationResource } from "../../../packages/protocol/src/coordination.ts";
-import { ResourceCoordinator, CoordinationError, coordinationFileMode, coordinationToken, coordinationHash, coordinationDevice, coordinationIdentity, coordinationPublicRecord, coordinationRecoveryView } from "./coordination.ts";
+import { ResourceCoordinator, CoordinationError, coordinationFileMode, coordinationToken, coordinationHash, coordinationDevice, coordinationIdentity, coordinationPublicRecord, coordinationRecoveryView, type ResourceVersion } from "./coordination.ts";
 import type { CoordinationRecordView } from "../../../packages/protocol/src/coordination.ts";
 import { resolveCoordinationResource } from "./coordination-resource.ts";
 import { stateRoot } from "./state.ts";
 import { jobStartKeyStatus, jobCoordinationStatus } from "./jobs.ts";
-import { coordinatedRepoMode, runCoordinatedRepo, coordinatedRepoEvidence, coordinationJobEvidence } from "./coordinated-repo.ts";
+import { coordinatedRepoMode, runCoordinatedRepo, coordinatedRepoEvidence, coordinationJobEvidence, type CoordinatedRepoReceipt } from "./coordinated-repo.ts";
 import type { RepoOperation } from "./repo-operation-contract.ts";
 
 export function operationResource(route: string, input: Record<string, unknown>): CoordinationResource | null {
@@ -86,6 +86,8 @@ export function registerCoordinationRoutes(app: FastifyInstance) {
       let began = false;
       let automatic = false;
       let repoMode: ReturnType<typeof coordinatedRepoMode> | undefined;
+      let repoResource: ResourceVersion | undefined;
+      let originalReceipt: CoordinatedRepoReceipt | undefined;
       try {
         const resourceInput = operationResource(route, input);
         if (!resourceInput) {
@@ -107,7 +109,7 @@ export function registerCoordinationRoutes(app: FastifyInstance) {
         token = supplied ?? coordinationToken(coordinator.acquire(base));
         // Re-observe after admission: neither a token nor an override bypasses CAS.
         const current = await probe(resourceInput);
-        coordinator.begin(token, current);
+        const begun = coordinator.begin(token, current);
         began = true;
         if (request.raw.aborted || reply.raw.destroyed) {
           coordinator.settle(token);
@@ -119,8 +121,10 @@ export function registerCoordinationRoutes(app: FastifyInstance) {
           // after this branch has persisted a job binding or attempted admission.
           repoMode = coordinatedRepoMode();
           if (repoMode.recoveryMode === "durable_job") {
+            repoResource = current; originalReceipt = { record: begun };
             const outcome = await withExecutionProof(proofScope, () => runCoordinatedRepo({ operation: route.slice("/v1/repo/".length) as RepoOperation,
-              input, token: token!, coordinator, resource: current, probe: pinnedPath => probe({ kind: "repo", path: pinnedPath }) }));
+              input, token: token!, coordinator, resource: current, probe: pinnedPath => probe({ kind: "repo", path: pinnedPath }),
+              onReceipt: receipt => { originalReceipt = structuredClone(receipt); } }));
             return reply.code(outcome.statusCode).send(outcome.body);
           }
         }
@@ -142,10 +146,29 @@ export function registerCoordinationRoutes(app: FastifyInstance) {
           // a stale/duplicate token cannot release an active or newer writer.
           try { coordinator.release(token); } catch { /* no matching reservation */ }
         }
-        if (error instanceof CoordinationError) return reply.code(409).send({ ...(failedRecord ? new CoordinationError(error.reason, failedRecord) : error).toJSON(), ...(repoMode ?? {}) });
-        if (repoMode && failedRecord) return reply.code(500).send({ error: "repository_operation_failed",
-          message: repoMode.recoveryMode === "legacy" && error instanceof Error ? error.message : "Repository execution requires recovery; inspect the original receipt without replay.",
-          ...repoMode, noReplay: true, effectVerification: "unverified", coordination: { ...coordinationPublicRecord(failedRecord), token }, recovery: coordinationRecoveryView(failedRecord) });
+        if (!failedRecord && originalReceipt && repoResource && token) {
+          // Settlement can fail after the immutable archive was published. A
+          // matching read is preferable; its failure must not erase the receipt.
+          try {
+            const current = coordinator.current(repoResource);
+            if (current && coordinationHash(coordinationToken(current)) === coordinationHash(token)
+              && (!originalReceipt.record.execution || coordinationHash(current.execution ?? null) === coordinationHash(originalReceipt.record.execution))
+              && (!originalReceipt.jobId || !current.jobId || current.jobId === originalReceipt.jobId)) failedRecord = current;
+          } catch { /* Return only the original, already observed binding below. */ }
+          failedRecord ??= originalReceipt.record;
+        }
+        const recovery = repoMode && failedRecord ? {
+          ...(originalReceipt?.jobId ? { jobId: originalReceipt.jobId } : {}),
+          ...(originalReceipt?.executionOutcome ? { executionOutcome: noEffectSubmittedProof(error, proofScope) ? "not_started" : originalReceipt.executionOutcome } : {}),
+          ...(originalReceipt?.resultPublication ? { resultPublication: originalReceipt.resultPublication } : {}),
+          ...(originalReceipt?.operationSucceeded !== undefined ? { operationSucceeded: originalReceipt.operationSucceeded } : {}),
+          ...repoMode, noReplay: true, effectVerification: "unverified", coordination: { ...coordinationPublicRecord(failedRecord), token }, recovery: coordinationRecoveryView(failedRecord) } : undefined;
+        if (error instanceof CoordinationError) return reply.code(409).send({ ...(failedRecord ? new CoordinationError(error.reason, failedRecord) : error).toJSON(), ...(repoMode ?? {}),
+          // Post-dispatch coordination failures must retain the observed receipt
+          // as well as the legacy conflict details. Neither permits replay.
+          ...(originalReceipt?.record.execution ? recovery : {}) });
+        if (recovery) return reply.code(500).send({ error: recovery.recoveryMode === "durable_job" ? "repository_execution_requires_recovery" : "repository_operation_failed",
+          message: recovery.recoveryMode === "legacy" && error instanceof Error ? error.message : "Repository execution requires recovery; inspect the original receipt without replay.", ...recovery });
         throw error;
       }
   };

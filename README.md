@@ -104,8 +104,9 @@ Use `node scripts/verify-release.ts <repository> <release-directory> <full-commi
 
 Archive installations can also generate a local release manifest with
 `scripts/create-release-manifest.ts`. Authenticated agent/controller diagnostics
-report its startup integrity separately from the declared SHA and optional
-deployment pin. See [archive release identity](docs/RELIABILITY.md#archive-release-identity)
+report its startup integrity separately from the declared SHA and deployment
+pin. A manifest-derived SHA requires a matching pin and listed-file integrity;
+an unpinned manifest supplies diagnostic claims only. See [archive release identity](docs/RELIABILITY.md#archive-release-identity)
 for the exact command and verification scope.
 
 Audited read failures are reported as failed observations; uncertain effects

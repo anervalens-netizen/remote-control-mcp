@@ -63,9 +63,15 @@ function readResult(file: string, requestHash: string) {
   } finally { closeSync(fd); }
 }
 
+export type CoordinatedRepoReceipt = {
+  record: CoordinationRecord; jobId?: string; executionOutcome?: ReturnType<typeof repositoryExecutionOutcome>;
+  operationSucceeded?: boolean; resultPublication?: "available" | "unavailable";
+};
+
 export async function runCoordinatedRepo(options: {
   operation: RepoOperation; input: Record<string, unknown>; token: CoordinationToken;
   coordinator: ResourceCoordinator; resource: ResourceVersion; probe: (pinnedPath: string) => Promise<ResourceVersion>;
+  onReceipt?: (receipt: CoordinatedRepoReceipt) => void;
 }) {
   return executionBoundary(async submit => {
     const { operation, input, token, coordinator, resource } = options;
@@ -79,30 +85,44 @@ export async function runCoordinatedRepo(options: {
     const worker = fileURLToPath(new URL("./repo-operation-worker.ts", import.meta.url));
     const jobInput = { command: nativeCommand([process.execPath, worker, requestFile, resultFile, requestHash]), cwd: request.input.path,
       idempotencyKey: "coordination-repo:" + token.operationId };
-    coordinator.bindExecution(token, { kind: "repo_job", key: jobInput.idempotencyKey, fingerprint: jobStartFingerprint(jobInput), requestHash });
-    mkdirSync(directory, { recursive: true, mode: 0o700 });
-    atomicWriteJson(requestFile, request);
-    // The complete operation is one existing durable job. Once reserved, an
-    // admission failure or missing reply never falls back to direct Git/spawn.
-    submit();
-    const job = await jobStart(jobInput);
-    let record = coordinator.attachJob(token, job.id);
-    const followed = await jobFollow({ id: job.id, until: "complete", waitMs: Math.min(20_000, (request.input.timeoutMs ?? 60_000) + 2000), maxBytes: 1024 });
-    const recovery = { recoveryMode: "durable_job", noReplay: true, jobId: job.id, effectVerification: "unverified" };
-    if (!followed.terminal) return { statusCode: 202, body: { ok: false, accepted: true, operation, executionPending: true, ...recovery,
-      job: { id: job.id, state: followed.state }, coordination: { ...coordinationPublicRecord(record), token }, recovery: coordinationRecoveryView(record), nextAction: "Inspect the original job, then reconcile this token and the freshly observed base; do not repeat the repository operation." } };
-    const evidence = await coordinatedRepoEvidence(record);
-    const executionOutcome = repositoryExecutionOutcome(evidence);
-    const observed = await options.probe(pinnedPath);
-    const reconciled = coordinator.reconcileJob(token, observed, observed.baseVersion, evidence);
-    record = reconciled.record;
-    let result;
-    try { result = readResult(resultFile, requestHash); }
-    catch { return { statusCode: 500, body: { ok: false, operation, error: "repository_result_unavailable", resultPublication: "unavailable", executionOutcome,
-      ...recovery, coordination: { ...coordinationPublicRecord(record), token }, recovery: coordinationRecoveryView(record) } }; }
-    const succeeded = result.ok && executionOutcome === "exit_zero";
-    return { statusCode: succeeded ? 200 : 500, body: { ...(result.result ?? {}), ok: succeeded, operation, operationSucceeded: result.ok, resultPublication: "available",
-      ...(result.error ? { error: "repository_operation_failed", message: result.error } : !succeeded ? { error: "repository_execution_outcome_unverified" } : {}), ...recovery,
-      executionOutcome, coordination: { ...coordinationPublicRecord(record), token }, recovery: coordinationRecoveryView(record) } };
+    let record = coordinator.bindExecution(token, { kind: "repo_job", key: jobInput.idempotencyKey, fingerprint: jobStartFingerprint(jobInput), requestHash });
+    let jobId: string | undefined;
+    let executionOutcome: ReturnType<typeof repositoryExecutionOutcome> = "uncertain";
+    const remember = (facts: Omit<CoordinatedRepoReceipt, "record" | "jobId"> = {}) => options.onReceipt?.({ record, ...(jobId ? { jobId } : {}), ...facts });
+    remember();
+    try {
+      mkdirSync(directory, { recursive: true, mode: 0o700 });
+      atomicWriteJson(requestFile, request);
+      // The complete operation is one existing durable job. Once reserved, an
+      // admission failure or missing reply never falls back to direct Git/spawn.
+      submit();
+      const job = await jobStart(jobInput);
+      jobId = job.id; remember(); // Admission was observed even if attaching its ID fails.
+      record = coordinator.attachJob(token, job.id); remember();
+      const followed = await jobFollow({ id: job.id, until: "complete", waitMs: Math.min(20_000, (request.input.timeoutMs ?? 60_000) + 2000), maxBytes: 1024 });
+      const recovery = { recoveryMode: "durable_job", noReplay: true, jobId: job.id, effectVerification: "unverified" };
+      if (!followed.terminal) return { statusCode: 202, body: { ok: false, accepted: true, operation, executionPending: true, ...recovery,
+        job: { id: job.id, state: followed.state }, coordination: { ...coordinationPublicRecord(record), token }, recovery: coordinationRecoveryView(record), nextAction: "Inspect the original job, then reconcile this token and the freshly observed base; do not repeat the repository operation." } };
+      const evidence = await coordinatedRepoEvidence(record);
+      executionOutcome = repositoryExecutionOutcome(evidence);
+      const observed = await options.probe(pinnedPath);
+      const reconciled = coordinator.reconcileJob(token, observed, observed.baseVersion, evidence);
+      record = reconciled.record;
+      let result;
+      try { result = readResult(resultFile, requestHash); }
+      catch { return { statusCode: 500, body: { ok: false, operation, error: "repository_result_unavailable", resultPublication: "unavailable", executionOutcome,
+        ...recovery, coordination: { ...coordinationPublicRecord(record), token }, recovery: coordinationRecoveryView(record) } }; }
+      const succeeded = result.ok && executionOutcome === "exit_zero";
+      return { statusCode: succeeded ? 200 : 500, body: { ...(result.result ?? {}), ok: succeeded, operation, operationSucceeded: result.ok, resultPublication: "available",
+        ...(result.error ? { error: "repository_operation_failed", message: result.error } : !succeeded ? { error: "repository_execution_outcome_unverified" } : {}), ...recovery,
+        executionOutcome, coordination: { ...coordinationPublicRecord(record), token }, recovery: coordinationRecoveryView(record) } };
+    } catch (error) {
+      // A publication failure does not erase the admitted execution or turn a
+      // successful Git operation into a failed process. Read only its bound result.
+      let published;
+      try { published = readResult(resultFile, requestHash); } catch { /* Original result unavailable. */ }
+      remember({ executionOutcome, resultPublication: published ? "available" : "unavailable", ...(published ? { operationSucceeded: published.ok } : {}) });
+      throw error;
+    }
   });
 }

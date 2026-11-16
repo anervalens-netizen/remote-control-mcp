@@ -114,10 +114,12 @@ export class ResourceCoordinator {
       || archive.originalJournalHash !== journalHash(archive.originalJournal) || resolution.originalJournalHash !== archive.originalJournalHash
       || coordinationHash(baseRecordSchema.parse(JSON.parse(archive.originalJournal))) !== coordinationHash(coordinationPublicRecord(archive.original))
       || coordinationHash(coordinationToken(resolved)) !== coordinationHash(token)
-      || resolution.observedBaseVersion !== expectedBase || resolution.recoveryIntentId !== intentId) throw new CoordinationError("recovery_evidence_mismatch");
+      || resolution.recoveryIntentId !== intentId) throw new CoordinationError("recovery_evidence_mismatch");
     this.assertResource(resolved, { ...resource, baseVersion: expectedBase }, expectedBase);
     const current = this.read(token.resourceId);
     if (!current || current.generation < token.generation || current.generation === token.generation && current.operationId !== token.operationId) throw new CoordinationError("recovery_record_changed", current);
+    const pending = current.operationId === token.operationId && current.generation === token.generation && coordinationHash(current) === coordinationHash(archive.original);
+    if (!pending && expectedBase !== resolution.observedBaseVersion && expectedBase !== resource.baseVersion) throw new CoordinationError("recovery_base_changed", current);
     if (current?.operationId === token.operationId && current.generation === token.generation) {
       if (current.state === "released" && current.updatedAt !== resolved.updatedAt && coordinationHash({ ...current, updatedAt: resolved.updatedAt }) === coordinationHash(resolved)) {
         // A baseline agent refreshed only the timestamp after release. Preserve
@@ -125,10 +127,11 @@ export class ResourceCoordinator {
         return { record: resolved, alreadyReconciled: true, noReplay: true as const };
       }
       if (coordinationHash(current) !== coordinationHash(archive.original) && coordinationHash(current) !== coordinationHash(resolved)) throw new CoordinationError("recovery_record_changed", current);
-      if (coordinationHash(current) === coordinationHash(archive.original)) {
+      if (pending) {
         // A receipt lookup may ignore later resource changes only after release
         // was published. Finishing a pending release is still a fenced mutation.
         this.assertResource(current, resource, expectedBase);
+        if (expectedBase !== resolution.observedBaseVersion) throw new CoordinationError("recovery_evidence_mismatch", current);
         if (!this.ownsSlot(current)) throw new CoordinationError("budget_fence_changed", current);
         if (this.journalSnapshot(current).originalJournalHash !== archive.originalJournalHash) throw new CoordinationError("recovery_record_changed", current);
       }
@@ -194,13 +197,13 @@ export class ResourceCoordinator {
     throw new CoordinationError("device_backpressure");
   }
   activeRecords() { return readdirSync(this.root).filter(f => /^[a-f0-9]{64}\.json$/.test(f)).flatMap(f => { try { const record = this.read(f.slice(0, -5)); return record ? [record] : []; } catch { return []; } }).filter(r => r.state === "active"); }
-  inspect(resource: ResourceVersion) {
-    const record = this.read(this.resourceId(resource));
+  private inspection(resource: ResourceVersion, record: CoordinationRecord | null) {
     return { resourceId: this.resourceId(resource), device: resource.device, identity: resource.identity, canonicalKey: resource.canonicalKey,
       observedBaseVersion: resource.baseVersion, record: record ? coordinationPublicRecord(record) : null, activeBudget: this.activeBudget };
   }
+  inspect(resource: ResourceVersion) { return this.inspection(resource, this.current(resource)); }
   current(resource: ResourceVersion) { return this.read(this.resourceId(resource)); }
-  inspectRecovery(resource: ResourceVersion) { const record = this.current(resource); return { ...this.inspect(resource), recovery: coordinationRecoveryView(record) }; }
+  inspectRecovery(resource: ResourceVersion) { const record = this.current(resource); return { ...this.inspection(resource, record), recovery: coordinationRecoveryView(record) }; }
   acquire(resource: ResourceVersion, leaseMs = 30_000, override?: Override): CoordinationRecord {
     return this.transaction(this.resourceId(resource), () => {
       const id = this.resourceId(resource), previous = this.read(id), now = this.now();
@@ -261,6 +264,8 @@ export class ResourceCoordinator {
       const record = this.match(token); coordinationExecutionSchema.parse(execution);
       if (record.state !== "active" || !this.ownsSlot(record)) throw new CoordinationError("writer_not_active", record);
       if (record.execution && coordinationHash(record.execution) !== coordinationHash(execution)) throw new CoordinationError("execution_binding_mismatch", record);
+      // Refuse before effects when the eventual disposition cannot be retained.
+      // This preflight is not a reservation against concurrent archive writers.
       this.checkRecoveryCapacity("reconciliations");
       // Immutable sidecar, published in the same resource transaction before any
       // job reservation/dispatch. Legacy v1 journals remain byte-schema compatible.

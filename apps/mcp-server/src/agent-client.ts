@@ -110,7 +110,8 @@ async function readAgentError(response: Response, maxBytes = 1024 * 1024, route 
     const repositoryRecovery = repoRecoveryReceipt(route, value);
     if (payload?.error === "coordination_conflict") {
       const parsed = coordinationConflictSchema.safeParse(payload.details);
-      if (parsed.success) return { diagnostic: `coordination_conflict: ${parsed.data.reason}`, agentCode: "COORDINATION_CONFLICT", coordinationConflict: parsed.data, truncated: false };
+      if (parsed.success) return { diagnostic: `coordination_conflict: ${parsed.data.reason}`, agentCode: "COORDINATION_CONFLICT", coordinationConflict: parsed.data,
+        ...(repositoryRecovery ? { repositoryRecovery } : {}), truncated: false };
     }
     const agentCode = payload && typeof payload.code === "string" && /^[A-Za-z][A-Za-z0-9_]{1,63}$/.test(payload.code) ? payload.code : undefined;
     if (payload && (payload.error === "job_start_conflict" || payload.error === "job_start_uncertain")) {

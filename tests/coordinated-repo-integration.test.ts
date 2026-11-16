@@ -156,6 +156,51 @@ describe.skipIf(!containment.ready)(`coordinated repository systemd integration 
     expect(await jobStartKeyStatus(record.execution!.key)).toMatchObject({ jobId: originalJob });
   }, 25_000);
 
+  it.each(["before_journal", "after_journal", "slot_read"].flatMap(failurePoint => [false, true].map(unavailableRead => ({ failurePoint, unavailableRead }))))(
+    "preserves the original HTTP receipt when release publication fails ($failurePoint, fallback read unavailable $unavailableRead)", async ({ failurePoint, unavailableRead }) => {
+      const f = await fixture(false), atomic = state.atomicWriteJson, current = ResourceCoordinator.prototype.current;
+      let archivePublished = false;
+      let originalSlot: { file: string; bytes: string } | undefined;
+      const failure = vi.spyOn(state, "atomicWriteJson").mockImplementation((file, value, mode) => {
+        const released = value as { state?: string; device: string; budgetSlot: number };
+        const releaseJournal = archivePublished && path.dirname(file) === f.coordinationRoot && released.state === "released";
+        if (releaseJournal && failurePoint === "before_journal") throw new Error("synthetic release journal failure");
+        atomic(file, value, mode);
+        if (file.includes(path.sep + "reconciliations" + path.sep)) archivePublished = true;
+        if (releaseJournal && failurePoint === "after_journal") throw new Error("synthetic post-rename publication failure");
+        if (releaseJournal && failurePoint === "slot_read") {
+          const slot = path.join(f.coordinationRoot, `slot-${released.device}-${released.budgetSlot}.json`);
+          originalSlot = { file: slot, bytes: readFileSync(slot, "utf8") };
+          writeFileSync(slot, "synthetic unreadable slot");
+        }
+      });
+      const reader = vi.spyOn(ResourceCoordinator.prototype, "current").mockImplementation(function(this: ResourceCoordinator, resource) {
+        if (archivePublished && unavailableRead) throw new Error("synthetic recovery read failure");
+        return current.call(this, resource);
+      });
+      const result = await f.app.inject({ method: "POST", url: "/v1/repo/pull", payload: { path: f.working, timeoutMs: 5000 } });
+      failure.mockRestore(); reader.mockRestore();
+      if (originalSlot) writeFileSync(originalSlot.file, originalSlot.bytes);
+      const { record, observed } = await f.snapshot(), body = result.json();
+      expect(archivePublished).toBe(true); expect(result.statusCode, result.body).toBe(failurePoint === "slot_read" ? 409 : 500);
+      expect(body).toMatchObject({ error: failurePoint === "slot_read" ? "coordination_conflict" : "repository_execution_requires_recovery", noReplay: true, recoveryMode: "durable_job", effectVerification: "unverified",
+        jobId: record.jobId, coordination: { ...coordinationToken(record), token: coordinationToken(record) }, recovery: { execution: record.execution } });
+      const receiptState = failurePoint === "before_journal" || unavailableRead ? "active" : "released";
+      expect(body.coordination.state).toBe(receiptState);
+      if (receiptState === "active") expect(body.recovery.resolution).toBeNull();
+      else expect(body.recovery.resolution.jobId).toBe(body.jobId);
+      if (failurePoint === "slot_read") expect(body).toMatchObject({ code: "COORDINATION_CONFLICT", details: { reason: "budget_state_invalid", coordination: { state: receiptState } } });
+      expect(body).toMatchObject({ operationSucceeded: true, executionOutcome: "exit_zero", resultPublication: "available" });
+      expect(record.state).toBe(failurePoint === "before_journal" ? "active" : "released"); expect(git(f.working, ["rev-parse", "HEAD"])).not.toBe(f.beforeHead);
+      expect(await jobStatusAsync(record.jobId!)).toMatchObject({ state: "completed", exitCode: 0 });
+      const recovered = await f.app.inject({ method: "POST", url: "/v1/coordination", payload: { action: "reconcile", resource: f.resource,
+        token: body.coordination.token, expectedCurrentBaseVersion: observed.baseVersion } });
+      expect(recovered.statusCode, recovered.body).toBe(200); expect(recovered.json().record.state).toBe("released");
+      expect(recovered.json().recovery.resolution.jobId).toBe(body.jobId);
+      expect(await jobStartKeyStatus(record.execution!.key)).toMatchObject({ jobId: body.jobId });
+      expect(readdirSync(path.join(f.coordinationRoot, "repo-operations"))).toEqual([record.operationId]);
+  }, 25_000);
+
   it("a detached hook descendant keeps the whole repository operation fenced until its cgroup is empty", async () => {
     const f = await fixture(false), release = path.join(f.root, "release-child"), ready = path.join(f.root, "child-ready");
     const child = `echo ready > ${shellQuote(ready)}; while [ ! -f ${shellQuote(release)} ]; do sleep 0.03; done`;

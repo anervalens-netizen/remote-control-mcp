@@ -31,7 +31,9 @@ versioned sidecars under `executions/`; dispositions and original journal bytes
 live under `reconciliations/`. Old agents can still parse active and released
 journals and ignore these directories. Legacy inspect responses and conflict
 records also contain only the v1 fields. New metadata is exposed separately by
-`inspect_recovery` and the new mutation responses. Downgrading an agent does not
+`inspect_recovery` and the new mutation responses. Recovery inspection derives its
+public record and metadata from one journal read, so a concurrent transition cannot
+mix generations in those fields. Downgrading an agent does not
 add synchronous recovery support to that older agent; existing fences and job
 semantics remain in force. Preserve all sidecars during rollback.
 A v1 agent can refresh only `updatedAt` on an already released journal before
@@ -99,6 +101,19 @@ original token. The controller preserves only validated, mutually matching
 recovery identifiers. That locator is correlation metadata, not terminal proof;
 inspect the original job and resource before reconciliation. If an older agent or
 an untyped error has no receipt, use `inspect_recovery` on the canonical resource.
+An archive or journal publication failure also preserves the original observed
+binding and any job ID already returned by admission, even if a later settlement
+or recovery read fails. A bounded, hash-validated original worker result can still
+report `operationSucceeded: true`, `executionOutcome: "exit_zero"` and publication
+available alongside HTTP 500. That HTTP error concerns receipt publication; it does
+not turn successful Git work into a failed operation. Missing result data remains
+unavailable and unobserved process outcomes remain uncertain. A memory fallback
+contains the last observed original record, not a new resource inspection. It never
+invents a job ID after an uncertain admission or relaxes the persisted fence.
+Post-dispatch coordination conflicts also retain this receipt alongside their
+HTTP 409 code and unchanged v1 conflict details, including a slot-cleanup failure
+after the released journal has been published. A conflict status alone does not
+mean that Git was never dispatched or that its operation failed.
 
 Before releasing the resource, reconciliation durably stores the original v1
 journal bytes, their digest, execution metadata and the resolution. It then
@@ -113,14 +128,22 @@ interrupted transition only after rechecking the current base, exact original
 journal bytes and budget slot. A changed fence keeps the writer blocked; the retry
 does not rewrite the archived disposition to fit a new base or changed evidence.
 Reading an already published disposition can tolerate a later resource base, but
-it cannot change a later generation. Original metadata
+it cannot change a later generation. Such a lookup accepts either the original
+disposition's observed base or the freshly inspected current base, and returns the
+unchanged original disposition. A pending release still requires the current base
+to match the immutable archive's base; this lookup allowance cannot release it.
+Original metadata
 and private execution bindings are retained. Each execution, intent and resolution
 store has a 4096-entry admission limit; saturation fails closed. Request receipts
 are bounded to 64 KiB and result reads to 256 KiB. Each limit applies to its
 directory under the configured coordination state root, not to the whole fleet or
 one client session. Saturation returns `recovery_retention_full`; it refuses new
 binding/preparation/publication rather than discarding evidence or releasing an
-unverified writer. Unresolved evidence is not expired to create capacity.
+unverified writer. Binding also checks the reconciliation store before dispatch,
+even when execution storage has space, because that future disposition must be
+retained. This is a preflight check, not a reservation against concurrent archive
+writers; later saturation still fails closed and preserves the writer and evidence.
+Unresolved evidence is not expired to create capacity.
 Do not delete journals, sidecars, intents, archives or job keys to retry a command.
 Monitor capacity and preserve evidence for a separately qualified retention
 change; that maintenance remains part of RC26-HIS-04 in the improvement plan.
