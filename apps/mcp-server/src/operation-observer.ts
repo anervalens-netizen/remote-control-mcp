@@ -7,7 +7,7 @@ import { executionOutcome } from "../../../packages/protocol/src/execution-outco
 import { correlationHash } from "../../../packages/protocol/src/diagnostic-context.ts";
 import type { AgentClient, AgentEndpointContext } from "./agent-client.ts";
 
-import { readOnlyTools } from "./tool-effects.ts";
+import { classifyToolEffect, isObservationFailureKind, observationFailureKind, readOnlyTools, toolEffectContract, type ToolEffect } from "./tool-effects.ts";
 const identity = z.enum(["owner", "root", "interactive"]);
 const contextKeepReference = z.object({ projectId: z.string().uuid(), taskId: z.string().uuid(), runId: z.string().uuid() });
 export const jobReferenceSchema = z.object({ device: z.string().max(256), identity, jobId: z.string().min(1).max(256) }).strict();
@@ -30,6 +30,26 @@ const operationSchema = z.object({
   persistence: z.enum(["confirmed", "unconfirmed"]).optional(),
 }).strict();
 export type ObservedOperation = z.infer<typeof operationSchema>;
+const markedReadFailure = (record: ObservedOperation) => record.requestSucceeded === false &&
+  toolEffectContract(record.tool) !== "effectful" && isObservationFailureKind(record.failure?.kind);
+
+/** Read-only assessment, never a migration. Historical mixed calls have no
+ * arguments, so their effect cannot be recovered from a tool name or error.
+ * A candidate still requires the deployed contract/version to be reviewed.
+ */
+export function assessHistoricalReadFailure(value: unknown) {
+  const parsed = operationSchema.safeParse(value);
+  if (!parsed.success) return { disposition: "protected", reason: "invalid_record" } as const;
+  const record = parsed.data;
+  const result = (disposition: "candidate" | "protected" | "not_applicable", reason: string) => ({ disposition, reason, tool: record.tool });
+  if (record.state !== "unknown" || record.requestSucceeded !== false) return result("not_applicable", "not_failed_unknown");
+  if (toolEffectContract(record.tool) !== "read") return result("protected", "requires_per_call_evidence");
+  if (record.persistence === "unconfirmed" || record.eventsPartial || record.jobsPartial) return result("protected", "incomplete_evidence");
+  if (record.jobs.length || record.terminalJobs?.length) return result("protected", "job_references");
+  if (!record.events.some(event => event.stage === "handler_returned")) return result("protected", "no_handler_return");
+  if (record.executionOutcome !== undefined || record.terminationReason !== undefined || record.terminationVerified !== undefined) return result("protected", "execution_evidence");
+  return result("candidate", "static_read_contract_requires_deployment_review");
+}
 type CurrentOperation = { observer: OperationObserver; traceId: string };
 export const operationContext = new AsyncLocalStorage<CurrentOperation>();
 export const consoleReadTools = new Set(["open_remote_control_console", "dashboard_snapshot", "operation_inspect"]);
@@ -56,6 +76,10 @@ const coverageFileSchema = z.object({
 export class OperationObserver {
   readonly controllerInstanceId = randomUUID();
   private readonly entries = new Map<string, ObservedOperation>();
+  // Retain only the classification, never the arguments. The entry bound also
+  // bounds this map; keeping it through late disconnects avoids reclassifying a
+  // mixed read as an effectful call when finish is invoked a second time.
+  private readonly effects = new Map<string, ToolEffect>();
   private readonly sizes = new Map<string, number>();
   private readonly faults = new Set<string>();
   private totalBytes = 0;
@@ -81,11 +105,11 @@ export class OperationObserver {
       ["job_wait", "job_status", "job_output", "job_output_since"].includes(record.tool);
     const needsLocator = ["job_start", "job_start_many", "project_run", "deploy_run", "batch_exec", "process_start", "pty_start"].includes(record.tool);
     return record.persistence !== "unconfirmed" && returned && (!needsLocator || record.jobs.length > 0 || !record.events.some(e => e.stage === "agent_dispatch")) && !record.jobsPartial && record.jobs.every(job => record.terminalJobs?.some(t => sameJob(job, t))) &&
-      (record.jobs.length > 0 || record.requestSucceeded === true || readOnlyTools.has(record.tool) || !record.events.some(e => e.stage === "agent_dispatch"));
+      (record.jobs.length > 0 || record.requestSucceeded === true || readOnlyTools.has(record.tool) || markedReadFailure(record) || !record.events.some(e => e.stage === "agent_dispatch"));
   }
   private async remove(id: string) {
     if (this.directory) await fs.unlink(path.join(this.directory, `${id}.json`)).catch(error => { if (error.code !== "ENOENT") throw error; });
-    this.entries.delete(id); this.totalBytes -= this.sizes.get(id) ?? 0; this.sizes.delete(id);
+    this.entries.delete(id); this.effects.delete(id); this.totalBytes -= this.sizes.get(id) ?? 0; this.sizes.delete(id);
   }
   private async capacity(bytes: number, exclude?: string) {
     if (this.entries.size < this.maxEntries && this.totalBytes + bytes <= this.maxBytes) return;
@@ -273,7 +297,7 @@ export class OperationObserver {
     record.persistence = "confirmed";
     return true;
   }
-  async begin(tool: string, scope: unknown, requestId?: unknown, sessionId?: unknown, workflow?: unknown): Promise<string | undefined> {
+  async begin(tool: string, scope: unknown, requestId?: unknown, sessionId?: unknown, workflow?: unknown, effect: ToolEffect = classifyToolEffect(tool)): Promise<string | undefined> {
     await this.ready;
     let id: string | undefined;
     await this.serialize(async () => {
@@ -292,7 +316,8 @@ export class OperationObserver {
         startedAt: at, updatedAt: at, state: "running", events: [{ stage: "handler_started", at }], eventsPartial: false, jobs: [], jobsPartial: false,
         clientAcceptance: "unknown", effectVerification: "unverified" };
       id = record.traceId;
-      if (await this.save(record) === false) { id = undefined; this.counters.admissionRefused++; }
+      this.effects.set(record.traceId, effect);
+      if (await this.save(record) === false) { this.effects.delete(record.traceId); id = undefined; this.counters.admissionRefused++; }
       else this.count("started");
     });
     return id;
@@ -321,6 +346,7 @@ export class OperationObserver {
       const original = this.entries.get(id); if (!original) return;
       const record = structuredClone(original);
       record.updatedAt = new Date().toISOString(); record.state = "returned";
+      const effect = this.effects.get(id) ?? classifyToolEffect(record.tool);
       if (original.requestSucceeded === undefined) this.count(requestSucceeded ? "succeeded" : "failed");
       record.requestSucceeded = requestSucceeded; record.callerDisconnected = disconnected;
       if (!requestSucceeded) record.failure = { kind: result ? "tool_result_error" : "handler_error" };
@@ -336,10 +362,17 @@ export class OperationObserver {
         if (reason) record.terminationReason = reason;
         if (typeof result.terminationVerified === "boolean") record.terminationVerified = result.terminationVerified;
       }
-      // A failed/disconnected call can leave effects running after dispatch.
-      // Preserve that uncertainty independently of the handler-return event.
-      if (record.executionOutcome === "uncertain" || (result?.timedOut === true && result.terminationVerified !== true) ||
-          ((!requestSucceeded || disconnected) && !readOnlyTools.has(record.tool) && record.events.some(event => event.stage === "agent_dispatch"))) record.state = "unknown";
+      // A failed observation is still a failed request; it cannot leave a write
+      // effect uncertain. Keep the original category inside a bounded marker
+      // and retain agentCode/status, without changing the strict v1 schema.
+      if (effect === "read" && !requestSucceeded && record.failure) {
+        const kind = observationFailureKind(record.failure.kind);
+        if (kind) record.failure.kind = kind;
+      }
+      // Failed/disconnected effectful calls can leave work running after dispatch.
+      // Timeouts must not relabel pure observations as uncertain write effects.
+      if (effect !== "read" && (record.executionOutcome === "uncertain" || (result?.timedOut === true && result.terminationVerified !== true) ||
+          ((!requestSucceeded || disconnected) && record.events.some(event => event.stage === "agent_dispatch")))) record.state = "unknown";
       if (recoveryId) record.recoveryId = recoveryId;
       if (!record.events.some(event => event.stage === "handler_returned")) {
         if (record.events.length < 128) record.events.push({ stage: "handler_returned", at: record.updatedAt }); else record.eventsPartial = true;
@@ -382,7 +415,7 @@ export class OperationObserver {
     let pageBytes = 0;
     for (const row of remaining.slice(0, limit)) {
       const { events, jobs, terminalJobs, ...r } = row;
-      const preview = { ...structuredClone(r), jobs: structuredClone(jobs.slice(0, 3)),
+      const preview = { ...structuredClone(r), ...this.observationView(row), jobs: structuredClone(jobs.slice(0, 3)),
         jobsPreview: jobs.length > 3, jobCount: jobs.length, eventCount: events.length,
         terminalJobCount: terminalJobs?.length ?? 0 };
       const bytes = Buffer.byteLength(JSON.stringify(preview));
@@ -395,8 +428,17 @@ export class OperationObserver {
       nextCursor: remaining.length > selected.length && last ? Buffer.from(JSON.stringify({ at: last.startedAt, id: last.traceId })).toString("base64url") : null,
       coverage: this.coverage() };
   }
+  private observationView(record: ObservedOperation) {
+    const effect = this.effects.get(record.traceId);
+    const read = effect !== undefined ? effect === "read" : record.state === "returned" && (readOnlyTools.has(record.tool) || markedReadFailure(record));
+    return record.requestSucceeded === false && read ? { observationOutcome: "failed" as const } : {};
+  }
   async health() { await this.ready; await this.queue; return this.coverage(); }
-  async inspect(id: string) { await this.ready; await this.queue; return structuredClone(this.entries.get(id) ?? null); }
+  async inspect(id: string) {
+    await this.ready; await this.queue;
+    const record = this.entries.get(id);
+    return record ? { ...structuredClone(record), ...this.observationView(record) } : null;
+  }
 }
 
 const observers = new WeakMap<object, OperationObserver>();

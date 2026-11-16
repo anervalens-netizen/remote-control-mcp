@@ -57,8 +57,19 @@ it.each(["fs_read","job_status","android_observe","android_command_status","batc
   const observer=new OperationObserver();
   const id=await observer.begin(tool,undefined);
   await observer.event(id!,{stage:"agent_dispatch",device:"fixture",identity:"owner"});
-  await observer.finish(id!,{ok:false,kind:"http",agentCode:"ENOENT",status:404},false,true);
-  expect(await observer.inspect(id!)).toMatchObject({state:!["exec","fs_write"].includes(tool)?"returned":"unknown",requestSucceeded:false,callerDisconnected:true,failure:{kind:"http",agentCode:"ENOENT",status:404}});
+  const failure={ok:false,kind:"http",agentCode:"ENOENT",status:404};
+  await observer.finish(id!,failure,false,true);
+  const record=await observer.inspect(id!);
+  const read=!["exec","fs_write"].includes(tool);
+  expect(record).toMatchObject({state:read?"returned":"unknown",requestSucceeded:false,callerDisconnected:true});
+  expect(record?.failure).toEqual({kind:read?"observation_failed:v1:http":"http",agentCode:"ENOENT",status:404});
+  if(read){
+    expect(record).toMatchObject({observationOutcome:"failed"});
+    expect(record?.failure?.kind?.slice("observation_failed:v1:".length)).toBe(failure.kind);
+  }else{
+    expect(record).not.toHaveProperty("observationOutcome");
+  }
+  expect(failure).toEqual({ok:false,kind:"http",agentCode:"ENOENT",status:404});
 });
 
 import Fastify from "fastify";

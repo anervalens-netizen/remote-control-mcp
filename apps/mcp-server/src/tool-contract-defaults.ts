@@ -20,7 +20,7 @@ const installedServers = new WeakSet<object>();
 const controlTools = new Set(["job_status", "job_output", "job_output_since", "job_wait", "job_cancel", "job_list", "job_history", "job_lineage", "job_find", "batch_recover", "pty_output", "pty_terminate", "search_stop", "search_results", "android_command_status", "android_cancel"]);
 const scopedTools = new Set(["exec", "batch_exec", "job_start", "job_start_many", "project_run", "deploy_run", "repo_apply_patch", "fs_edit", "service_action"]);
 
-import { readOnlyTools } from "./tool-effects.ts";
+import { classifyToolEffect, toolEffectAnnotations } from "./tool-effects.ts";
 
 export const STRUCTURED_CONTENT_MAX_BYTES = 64 * 1024;
 
@@ -171,7 +171,8 @@ export function installDefaultToolOutputContracts(server: McpServer, diagnostics
       try {
         if (explicitRecovery !== undefined && metadataRecovery !== undefined && explicitRecovery !== metadataRecovery) throw new Error("Conflicting resultRecoveryId arguments; no dispatch occurred");
         if (scope !== undefined) z.string().uuid().parse(scope);
-        operationId = await observer?.begin(name, scope, extra?.requestId, extra?.sessionId, args[0]?.contextKeep);
+        operationId = await observer?.begin(name, scope, extra?.requestId, extra?.sessionId, args[0]?.contextKeep,
+          classifyToolEffect(name, args[0], config?.annotations));
         if (!name.startsWith("result_recover") && !consoleReadTools.has(name)) {
           // A caller can reserve the ID before effects. Unknown/reused IDs fail
           // closed; recovery is never an execution retry mechanism.
@@ -216,7 +217,10 @@ export function installDefaultToolOutputContracts(server: McpServer, diagnostics
         const failedValidation = !measureSync("finalValidation", () => advertisedSchema.safeParse(final)).success;
         if (failedValidation) {
           detail.finalValidationFailed = true;
-          final = { ok: false, error: "Final result validation failed; inspect resultRecovery without replaying the operation.", code: "result_validation_failed", ...(reference ? { resultRecovery: reference } : {}) };
+          final = { ok: false, error: "Final result validation failed; inspect resultRecovery without replaying the operation.", code: "result_validation_failed",
+            ...(traced.operationTrace ? { operationTrace: traced.operationTrace } : {}),
+            ...(traced.observationCoverage ? { observationCoverage: traced.observationCoverage } : {}),
+            ...(reference ? { resultRecovery: reference } : {}) };
         }
         // Keep small legacy representations compatible. Once a page/preview is
         // shortened both channels carry exactly the same cursors and counts.
@@ -262,7 +266,9 @@ export function installDefaultToolOutputContracts(server: McpServer, diagnostics
             await observer.finish(operationId, observedResult, requestSucceeded, Boolean(extra?.signal?.aborted), reference?.id);
             operationFinished = true;
           }
-          Object.assign(failure.structuredContent, { observationCoverage: { ...observer.compactCoverage(operationId), admitted: Boolean(operationId) } });
+          Object.assign(failure.structuredContent, { observationCoverage: { ...observer.compactCoverage(operationId), admitted: Boolean(operationId) },
+            ...(operationId ? { operationTrace: { traceId: operationId, controllerInstanceId: observer.controllerInstanceId } } : {}) });
+          failure.content = [{ type: "text", text: JSON.stringify(failure.structuredContent) }];
         }
         if (!advertisedSchema.safeParse(failure.structuredContent).success || jsonBytes(failure) > TOTAL_RESULT_MAX_BYTES) throw new Error("Invalid final error receipt");
         trace.totalBytes = jsonBytes(failure);
@@ -276,10 +282,8 @@ export function installDefaultToolOutputContracts(server: McpServer, diagnostics
       }
       });
     };
-    const annotations = readOnlyTools.has(name)
-      ? { readOnlyHint: true, destructiveHint: false, idempotentHint: true, ...config?.annotations }
-      : config?.annotations;
-    return original(name, { ...config, ...(annotations ? { annotations } : {}), outputSchema: advertisedSchema }, wrappedCallback);
+    const annotations = toolEffectAnnotations(name, config?.annotations);
+    return original(name, { ...config, annotations, outputSchema: advertisedSchema }, wrappedCallback);
   };
   installedServers.add(server);
   registerResultRecovery(server, recovery);

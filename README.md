@@ -84,6 +84,8 @@ snapshot isolation against uncoordinated namespace changes.
 
 **Batch identities:** `job_start_many` validates every requested route before dispatch and executes each device with its own resolved identity. A heterogeneous automatic batch has per-item `identity` and `context`, without a misleading top-level route. Uniform batches retain their summary route. List order does not change the selected identity.
 
+**Repository recovery:** qualified agents bind the whole fetch/pull/push operation to one durable job before dispatch. A pending response or typed error preserves the original token and job locator. Use capability-gated recovery inspection and reconciliation; do not repeat an uncertain write. Main coordination journals retain their strict v1 format for rollback. See [coordination recovery](docs/COORDINATION-RECOVERY.md) for containment, historical incidents, sidecar preservation and limits.
+
 **Jobs:** without `idempotencyKey`, each `job_start` intentionally starts a new job. An optional key (1–200 characters) identifies one input on one agent/state directory. Retries with that key return the existing job; different command/cwd/environment produces `job_start_conflict`. If a reserved start has no verifiable job metadata, `job_start_uncertain` requires inspection, not automatic replay. Reservation files in `job-start-keys` must be backed up with job state and remain after job-output deletion. Do not delete them to retry an uncertain command. New intended execution requires a new key. This is restart/retry deduplication, not a claim of exactly-once execution under disk loss or arbitrary power failure.
 
 **Job waits:** one `job_wait` call defaults to and is capped at 20 seconds so it returns below typical connector/gateway deadlines. A normal expiry is a successful resumable result with `terminal:false`, `waitExpired:true`, preserved stream cursors and `retryAfterMs`. Wait for that hint, then call `job_wait` again with the returned cursor; do not alternate rapid `job_status` polling. Cancelling or disconnecting a wait never cancels the durable job; only `job_cancel` requests termination.
@@ -99,6 +101,17 @@ snapshot isolation against uncoordinated namespace changes.
 Verify the candidate commit and tests before changing runtime. Keep the previous release and service definitions; back up private configuration and persistent state consistently. Stop or account for in-flight operations before switching. Set `RCMCP_RUNTIME_SHA` only to the verified release whose source is actually running, then confirm authenticated runtime information and actual MCP operations after restart. Upgrade source agents before a controller that requires generation-bound relay reads. A controller upgrade alone does not make an old source agent compatible.
 
 Use `node scripts/verify-release.ts <repository> <release-directory> <full-commit-id>` to compare every tracked blob and applicable executable mode against the immutable commit. Store the successful JSON receipt privately with the release, together with the service/identity and validation results; the script does not assert which process is active. Confirm actual process paths and runtime identity separately. See [Reliability and release qualification](docs/RELIABILITY.md).
+
+Archive installations can also generate a local release manifest with
+`scripts/create-release-manifest.ts`. Authenticated agent/controller diagnostics
+report its startup integrity separately from the declared SHA and deployment
+pin. A manifest-derived SHA requires a matching pin and listed-file integrity;
+an unpinned manifest supplies diagnostic claims only. See [archive release identity](docs/RELIABILITY.md#archive-release-identity)
+for the exact command and verification scope.
+
+Audited read failures are reported as failed observations; uncertain effects
+remain protected. The strict version-1 observation journal stays readable by
+rollback controllers. See [effect classification](docs/RELIABILITY.md#failed-observations-and-uncertain-effects).
 
 On failure, restore the prior service/release configuration rather than deleting job or move-recovery journals. Inspect `job_status`, `job_output` and recovery receipts before retrying commands. Preserve the private deployment log and its exact source identity. Physical Windows/Android, power-loss and full-restore qualification are separate from unit tests and must not be marked passed when unavailable.
 

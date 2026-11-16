@@ -2,10 +2,13 @@ import { noEffectSubmittedProof, withExecutionProof } from "./execution-boundary
 import path from "node:path";
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import { isCoordinationReadOnly, coordinationRequestSchema, coordinationResourceSchema, coordinationTokenSchema, type CoordinationResource } from "../../../packages/protocol/src/coordination.ts";
-import { ResourceCoordinator, CoordinationError, coordinationFileMode, coordinationToken, coordinationDevice, coordinationIdentity } from "./coordination.ts";
+import { ResourceCoordinator, CoordinationError, coordinationFileMode, coordinationToken, coordinationHash, coordinationDevice, coordinationIdentity, coordinationPublicRecord, coordinationRecoveryView, type ResourceVersion } from "./coordination.ts";
+import type { CoordinationRecordView } from "../../../packages/protocol/src/coordination.ts";
 import { resolveCoordinationResource } from "./coordination-resource.ts";
 import { stateRoot } from "./state.ts";
 import { jobStartKeyStatus, jobCoordinationStatus } from "./jobs.ts";
+import { coordinatedRepoMode, runCoordinatedRepo, coordinatedRepoEvidence, coordinationJobEvidence, type CoordinatedRepoReceipt } from "./coordinated-repo.ts";
+import type { RepoOperation } from "./repo-operation-contract.ts";
 
 export function operationResource(route: string, input: Record<string, unknown>): CoordinationResource | null {
   if (isCoordinationReadOnly(route, input)) return null;
@@ -13,6 +16,9 @@ export function operationResource(route: string, input: Record<string, unknown>)
   const target = route === "/v1/deploy/run" ? input.repoPath ?? input.cwd : input.path;
   if (route === "/v1/deploy/run" && target === undefined) return null;
   return coordinationResourceSchema.parse({ kind: "repo", path: target });
+}
+function recoveryReply<T extends { record: CoordinationRecordView }>(result: T) {
+  return { ...result, record: coordinationPublicRecord(result.record), recovery: coordinationRecoveryView(result.record) };
 }
 
 /** Installed before the high-level routes. Raw exec, jobs and reads do not use this lane. */
@@ -29,7 +35,7 @@ export function registerCoordinationRoutes(app: FastifyInstance) {
   async function reconcile() {
     // At most four active jobs per device. Missing evidence remains blocking.
     for (const record of coordinator.activeRecords()) {
-      if (!record.jobId || record.device !== coordinationDevice || record.identity !== coordinationIdentity) continue;
+      if (record.execution || !record.jobId || record.device !== coordinationDevice || record.identity !== coordinationIdentity) continue;
       try {
         const job = await jobCoordinationStatus(record.jobId);
         if (job.state === "completed" || job.state === "cancelled" || job.state === "lost") {
@@ -42,12 +48,32 @@ export function registerCoordinationRoutes(app: FastifyInstance) {
     const parsed = coordinationRequestSchema.safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: "invalid_request" });
     try {
-      await reconcile();
+      // Recovery actions must not pass through the older, less specific job
+      // settlement policy before checking their own containment/boot evidence.
+      if (parsed.data.action === "acquire" || parsed.data.action === "release") await reconcile();
       const input = parsed.data, resource = await probe(input.resource);
       if (input.action === "inspect") return coordinator.inspect(resource);
+      if (input.action === "inspect_recovery") return coordinator.inspectRecovery(resource);
       if (input.action === "release") {
         if (!input.token || input.token.resourceId !== coordinator.resourceId(resource)) throw new CoordinationError("resource_token_required");
         return { record: coordinator.release(input.token) };
+      }
+      if (input.action === "prepare_recovery" || input.action === "reconcile") {
+        if (!input.token || input.token.resourceId !== coordinator.resourceId(resource)) throw new CoordinationError("resource_token_required");
+        if (!input.expectedCurrentBaseVersion) throw new CoordinationError("expected_current_base_required");
+        if (input.action === "prepare_recovery") return recoveryReply(coordinator.prepareRecovery(input.token, resource, input.expectedCurrentBaseVersion));
+        const previous = coordinator.reconciled(input.token, resource, input.expectedCurrentBaseVersion, input.recoveryIntentId);
+        if (previous) return recoveryReply(previous);
+        const record = coordinator.current(resource);
+        if (!record || coordinationHash(coordinationToken(record)) !== coordinationHash(input.token)) throw new CoordinationError("stale_writer", record);
+        if (input.recoveryIntentId) {
+          const evidence = record.jobId ? await coordinationJobEvidence(record.jobId).catch(() => undefined) : undefined;
+          const current = await probe(input.resource);
+          return recoveryReply(coordinator.reconcileRecovery(input.token, current, input.expectedCurrentBaseVersion, input.recoveryIntentId, evidence));
+        }
+        const evidence = await coordinatedRepoEvidence(record);
+        const current = await probe(input.resource);
+        return recoveryReply(coordinator.reconcileJob(input.token, current, input.expectedCurrentBaseVersion, evidence));
       }
       const record = coordinator.acquire(resource, input.leaseMs, input.ownerOverride);
       return { record, token: coordinationToken(record) };
@@ -59,6 +85,9 @@ export function registerCoordinationRoutes(app: FastifyInstance) {
       let token;
       let began = false;
       let automatic = false;
+      let repoMode: ReturnType<typeof coordinatedRepoMode> | undefined;
+      let repoResource: ResourceVersion | undefined;
+      let originalReceipt: CoordinatedRepoReceipt | undefined;
       try {
         const resourceInput = operationResource(route, input);
         if (!resourceInput) {
@@ -80,12 +109,24 @@ export function registerCoordinationRoutes(app: FastifyInstance) {
         token = supplied ?? coordinationToken(coordinator.acquire(base));
         // Re-observe after admission: neither a token nor an override bypasses CAS.
         const current = await probe(resourceInput);
-        coordinator.begin(token, current);
+        const begun = coordinator.begin(token, current);
         began = true;
         if (request.raw.aborted || reply.raw.destroyed) {
           coordinator.settle(token);
           began = false;
           throw new CoordinationError("cancelled_before_apply");
+        }
+        if (["/v1/repo/fetch", "/v1/repo/pull", "/v1/repo/push"].includes(route)) {
+          // Select the backend before any execution reservation. Never fall back
+          // after this branch has persisted a job binding or attempted admission.
+          repoMode = coordinatedRepoMode();
+          if (repoMode.recoveryMode === "durable_job") {
+            repoResource = current; originalReceipt = { record: begun };
+            const outcome = await withExecutionProof(proofScope, () => runCoordinatedRepo({ operation: route.slice("/v1/repo/".length) as RepoOperation,
+              input, token: token!, coordinator, resource: current, probe: pinnedPath => probe({ kind: "repo", path: pinnedPath }),
+              onReceipt: receipt => { originalReceipt = structuredClone(receipt); } }));
+            return reply.code(outcome.statusCode).send(outcome.body);
+          }
         }
         const result = await withExecutionProof(proofScope, run) as Record<string, unknown> | undefined;
         if (result === reply as unknown) { coordinator.settle(token, { uncertain: reply.statusCode >= 500 }); return reply; }
@@ -93,18 +134,48 @@ export function registerCoordinationRoutes(app: FastifyInstance) {
         const execution = result?.result as { cancelled?: boolean; cancellationRequested?: boolean; timedOut?: boolean; terminationVerified?: boolean } | undefined;
         const uncertain = reply.statusCode >= 500 || Boolean(execution && (execution.cancelled || execution.cancellationRequested || execution.timedOut) && !execution.terminationVerified);
         const record = coordinator.settle(token, { jobId: job?.id, uncertain });
-        return result && typeof result === "object" ? { ...result, coordination: { ...record, token: coordinationToken(record) } } : result;
+        return result && typeof result === "object" ? { ...result, ...(repoMode ?? {}), coordination: { ...coordinationPublicRecord(record), token: coordinationToken(record) } } : result;
       } catch (error) {
+        let failedRecord;
+        const executionNotStarted = Boolean(noEffectSubmittedProof(error, proofScope));
+        let releasedBeforeDispatch = false;
         if (token && began) {
           // Only this invocation's successful begin authorizes settlement. A
           // rejected duplicate must never settle the active invocation's token.
-          try { coordinator.settle(token, { uncertain: !noEffectSubmittedProof(error, proofScope) }); } catch { /* not active */ }
+          try {
+            failedRecord = coordinator.settle(token, { uncertain: !executionNotStarted });
+            releasedBeforeDispatch = executionNotStarted && failedRecord.state === "released";
+          } catch { /* not active */ }
         } else if (token && (automatic || error instanceof CoordinationError && error.reason === "cancelled_before_apply")) {
           // No invocation began an effect. Release only a matching reservation;
           // a stale/duplicate token cannot release an active or newer writer.
           try { coordinator.release(token); } catch { /* no matching reservation */ }
         }
-        if (error instanceof CoordinationError) return reply.code(409).send(error.toJSON());
+        if (!failedRecord && originalReceipt && repoResource && token) {
+          // Settlement can fail after the immutable archive was published. A
+          // matching read is preferable; its failure must not erase the receipt.
+          try {
+            const current = coordinator.current(repoResource);
+            if (current && coordinationHash(coordinationToken(current)) === coordinationHash(token)
+              && (!originalReceipt.record.execution || coordinationHash(current.execution ?? null) === coordinationHash(originalReceipt.record.execution))
+              && (!originalReceipt.jobId || !current.jobId || current.jobId === originalReceipt.jobId)) failedRecord = current;
+          } catch { /* Return only the original, already observed binding below. */ }
+          failedRecord ??= originalReceipt.record;
+        }
+        const recovery = repoMode && failedRecord ? {
+          ...(originalReceipt?.jobId ? { jobId: originalReceipt.jobId } : {}),
+          ...(originalReceipt && executionNotStarted ? { executionOutcome: "not_started" }
+            : originalReceipt?.executionOutcome ? { executionOutcome: originalReceipt.executionOutcome } : {}),
+          ...(originalReceipt?.resultPublication ? { resultPublication: originalReceipt.resultPublication } : {}),
+          ...(originalReceipt?.operationSucceeded !== undefined ? { operationSucceeded: originalReceipt.operationSucceeded } : {}),
+          ...repoMode, noReplay: true, effectVerification: "unverified", coordination: { ...coordinationPublicRecord(failedRecord), token }, recovery: coordinationRecoveryView(failedRecord) } : undefined;
+        if (error instanceof CoordinationError) return reply.code(409).send({ ...(failedRecord ? new CoordinationError(error.reason, failedRecord) : error).toJSON(), ...(repoMode ?? {}),
+          // Post-dispatch coordination failures must retain the observed receipt
+          // as well as the legacy conflict details. Neither permits replay.
+          ...(originalReceipt?.record.execution ? recovery : {}) });
+        if (recovery) return reply.code(500).send({ error: recovery.recoveryMode === "durable_job" && !releasedBeforeDispatch ? "repository_execution_requires_recovery" : "repository_operation_failed",
+          message: recovery.recoveryMode === "durable_job" && releasedBeforeDispatch ? "Repository operation failed before dispatch; no execution was started and the coordination fence was released."
+            : recovery.recoveryMode === "legacy" && error instanceof Error ? error.message : "Repository execution requires recovery; inspect the original receipt without replay.", ...recovery });
         throw error;
       }
   };

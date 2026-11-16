@@ -1,11 +1,24 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { semanticActSchema, semanticObserveSchema } from "../../../packages/protocol/src/semantic-desktop.ts";
+import { semanticActSchema, semanticManifestSchema, semanticObserveSchema } from "../../../packages/protocol/src/semantic-desktop.ts";
 import type { AgentClient } from "./agent-client.ts";
 import { requireAgentCapability } from "./agent-compatibility.ts";
 
+const manifestFields = semanticManifestSchema.shape;
+const engineIdentitySchema = z.object({
+  source: z.literal("loaded_manifest"),
+  binary: manifestFields.binary, sha256: manifestFields.sha256,
+  engineVersion: manifestFields.engineVersion, jsonVersion: manifestFields.jsonVersion,
+  files: manifestFields.files.unwrap(),
+  upstreamCommit: manifestFields.upstreamCommit.unwrap().nullable(),
+  archiveSha256: manifestFields.archiveSha256.unwrap().nullable(),
+  // The loaded manifest preserves an install-time claim, not a new upstream check.
+  provenance: z.object({ source: z.literal("saved_manifest"), verified: z.boolean(), upstreamRechecked: z.literal(false) }).strict(),
+}).strict();
+
 const semanticOutput = {
   ok: z.boolean(), version: z.string().optional(), engineVersion: z.string().optional(),
+  engineIdentity: engineIdentitySchema.optional(),
   command: z.string().optional(), observationId: z.uuid().optional(), commandId: z.uuid().optional(),
   data: z.unknown().optional(), error: z.record(z.string(), z.unknown()).optional(),
   observation: z.record(z.string(), z.unknown()).optional(), recovered: z.boolean().optional(),

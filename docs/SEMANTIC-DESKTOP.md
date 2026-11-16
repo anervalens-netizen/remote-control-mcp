@@ -21,6 +21,26 @@ KDE/Wayland supports semantic accessibility where applications expose it, but
 physical input and native Qt popups have upstream limitations. No physical
 fallback is automatic. A configured backend is not proof of GUI readiness.
 
+## Effective engine identity
+
+An authenticated `desktop_observe` call with `kind=status` includes
+`engineIdentity` from the manifest selected for that invocation: the executable
+path and digest, engine and JSON versions, auxiliary-file digests, recorded
+upstream commit and archive digest. The provenance section identifies the saved
+manifest as its source and reports `upstreamRechecked:false`; a status call does
+not repeat upstream attestation verification.
+
+The loader verifies the selected files before invoking them. A digest mismatch
+returns an error without claiming a usable engine identity. A native contract
+error can retain the selected identity for diagnosis while preserving
+`ok:false`. This diagnostic does not use whichever executable happens to be on
+PATH.
+
+Status can run without a graphical session. Its successful envelope and
+permission data do not certify an available desktop. Qualify an actual
+observation, reversible action and independent readback through the selected
+owner MCP route; repeat after changing the agent startup target.
+
 ## Observe and act
 
 Use `kind=status`, `apps` and `windows` to discover capabilities and targets.
@@ -117,7 +137,11 @@ Accessibility uses AT-SPI through agent-desktop; applications must expose their
 controls. Linux window handles can be strings and must be passed back unchanged.
 Windows-specific UIA patterns are rejected; use semantic actions instead.
 
-Install Python 3 with PyGObject/Gio, KWin, kscreen-doctor and Spectacle. X11
+Install Python 3 with PyGObject/Gio, KWin, kscreen-doctor and Spectacle. The
+managed-engine qualification fixture also needs GTK 3 introspection
+(`gir1.2-gtk-3.0` on Debian/Ubuntu, alongside `python3-gi`). A missing
+GTK namespace is a qualification prerequisite failure; it is not a passing
+headless desktop test. X11
 physical input additionally needs xdotool. Wayland physical input requires
 KWin's owner-session EIS interface and libei with text capability (qualified
 with libei 1.6). No root input daemon or broad device permissions are required.

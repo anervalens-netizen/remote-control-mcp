@@ -8,6 +8,7 @@ import type { DesktopUiaInput, DesktopWindowsInput, DesktopBatchInput } from "..
 import { filterProcesses, summarizeDockerSnapshot, type DockerSnapshot } from "../../../packages/protocol/src/filtering.ts";
 import fs from "node:fs";
 import { observeAgent, operationsFor } from "./operation-observer.ts";
+import { repoRecoveryReceipt, type RepoRecoveryReceipt } from "./repo-recovery-receipt.ts";
 import type { DeviceConfig, ExecRequest, ExecResult } from "../../../packages/protocol/src/index.ts";
 import type { AndroidFilePushInput } from "./android-file-push.ts";
 import type { AndroidController } from "./android-controller.ts";
@@ -42,8 +43,9 @@ export class AgentRequestError extends Error {
   readonly responseBodyTruncated: boolean;
   readonly jobStartFailure: JobStartFailure | undefined;
   readonly coordinationConflict: CoordinationConflict | undefined;
+  readonly repositoryRecovery: RepoRecoveryReceipt | undefined;
 
-  constructor(message: string, device: string, context: AgentEndpointContext, route: string, kind: "timeout" | "network" | "http" | "protocol" | "context" | "cancelled", status?: number, recovery?: JobRecoveryPayload, responseBodyTruncated = false, jobStartFailure?: JobStartFailure, agentCode?: string, coordinationConflict?: CoordinationConflict) {
+  constructor(message: string, device: string, context: AgentEndpointContext, route: string, kind: "timeout" | "network" | "http" | "protocol" | "context" | "cancelled", status?: number, recovery?: JobRecoveryPayload, responseBodyTruncated = false, jobStartFailure?: JobStartFailure, agentCode?: string, coordinationConflict?: CoordinationConflict, repositoryRecovery?: RepoRecoveryReceipt) {
     super(message);
     this.name = "AgentRequestError";
     this.device = device;
@@ -56,6 +58,7 @@ export class AgentRequestError extends Error {
     this.responseBodyTruncated = responseBodyTruncated;
     this.jobStartFailure = jobStartFailure;
     this.coordinationConflict = coordinationConflict;
+    this.repositoryRecovery = repositoryRecovery;
   }
 }
 
@@ -80,7 +83,7 @@ function ordinaryHttpDiagnostic(value: unknown): { diagnostic: string; truncated
   return boundedHttpDiagnostic(diagnostic === "{}" ? "" : diagnostic ?? "");
 }
 
-async function readAgentError(response: Response, maxBytes = 1024 * 1024): Promise<{ coordinationConflict?: CoordinationConflict; recovery?: JobRecoveryPayload; jobStartFailure?: JobStartFailure; agentCode?: string; diagnostic?: string; truncated: boolean }> {
+async function readAgentError(response: Response, maxBytes = 1024 * 1024, route = ""): Promise<{ coordinationConflict?: CoordinationConflict; repositoryRecovery?: RepoRecoveryReceipt; recovery?: JobRecoveryPayload; jobStartFailure?: JobStartFailure; agentCode?: string; diagnostic?: string; truncated: boolean }> {
   const reader = response.body?.getReader();
   if (!reader) return { truncated: false };
   const chunks: Uint8Array[] = [];
@@ -104,16 +107,18 @@ async function readAgentError(response: Response, maxBytes = 1024 * 1024): Promi
     const recovery = jobRecoveryPayload(value);
     if (recovery) return { recovery, truncated: false };
     const payload = value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+    const repositoryRecovery = repoRecoveryReceipt(route, value);
     if (payload?.error === "coordination_conflict") {
       const parsed = coordinationConflictSchema.safeParse(payload.details);
-      if (parsed.success) return { diagnostic: `coordination_conflict: ${parsed.data.reason}`, agentCode: "COORDINATION_CONFLICT", coordinationConflict: parsed.data, truncated: false };
+      if (parsed.success) return { diagnostic: `coordination_conflict: ${parsed.data.reason}`, agentCode: "COORDINATION_CONFLICT", coordinationConflict: parsed.data,
+        ...(repositoryRecovery ? { repositoryRecovery } : {}), truncated: false };
     }
     const agentCode = payload && typeof payload.code === "string" && /^[A-Za-z][A-Za-z0-9_]{1,63}$/.test(payload.code) ? payload.code : undefined;
     if (payload && (payload.error === "job_start_conflict" || payload.error === "job_start_uncertain")) {
       const jobId = typeof payload.jobId === "string" && /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(payload.jobId) ? payload.jobId : undefined;
       return { ...ordinaryHttpDiagnostic(value), ...(agentCode ? { agentCode } : {}), jobStartFailure: { code: payload.error, ...(jobId ? { jobId } : {}) } };
     }
-    return { ...ordinaryHttpDiagnostic(value), ...(agentCode ? { agentCode } : {}) };
+    return { ...ordinaryHttpDiagnostic(value), ...(agentCode ? { agentCode } : {}), ...(repositoryRecovery ? { repositoryRecovery } : {}) };
   } catch {
     // A parsed body's excessive depth must not bypass field selection/redaction
     // by falling back to its raw JSON representation.
@@ -213,16 +218,16 @@ export class AgentClient {
         ...(signal ? { signal } : {}),
       });
       if (!response.ok) {
-        const { recovery, diagnostic, truncated, jobStartFailure, agentCode, coordinationConflict } = await readAgentError(response);
+        const { recovery, diagnostic, truncated, jobStartFailure, agentCode, coordinationConflict, repositoryRecovery } = await readAgentError(response, undefined, route);
         const detail = recovery ? " job_recovery_required" : diagnostic ? ` ${diagnostic}` : "";
-        throw new AgentRequestError(`${name} ${context} ${route} failed: HTTP ${response.status}${detail}`, name, context, route, "http", response.status, recovery, truncated, jobStartFailure, agentCode, coordinationConflict);
+        throw new AgentRequestError(`${name} ${context} ${route} failed: HTTP ${response.status}${detail}`, name, context, route, "http", response.status, recovery, truncated, jobStartFailure, agentCode, coordinationConflict, repositoryRecovery);
       }
       try {
         const result = await response.json() as T;
         const value = result as any;
         const candidate = route === "/v1/jobs/start" || route === "/v1/jobs/status" || route === "/v1/jobs/follow"
           ? value?.id ?? value?.job?.id
-          : route === "/v1/project/run" ? value?.result?.id : route === "/v1/deploy/run" ? value?.job?.id : undefined;
+          : route === "/v1/project/run" ? value?.result?.id : route === "/v1/deploy/run" ? value?.job?.id : repoRecoveryReceipt(route, value)?.jobId;
         const returnedJob = typeof candidate === "string" ? candidate : knownJobId;
         const deviceName = this.getDevice(name).name;
         if (options.observeOperation !== false) await observeAgent("agent_response", deviceName, context, true, returnedJob);
@@ -243,7 +248,8 @@ export class AgentClient {
         throw new AgentRequestError(`${name} ${context} ${route} invalid JSON response: ${detail}`, name, context, route, "protocol");
       }
     } catch (error) {
-      if (options.observeOperation !== false) await observeAgent("agent_response", this.getDevice(name).name, context, false);
+      if (options.observeOperation !== false) await observeAgent("agent_response", this.getDevice(name).name, context, false,
+        error instanceof AgentRequestError ? error.repositoryRecovery?.jobId : undefined);
       const kind = error instanceof AgentRequestError ? error.kind : options.signal?.aborted && !deadline.timedOut() ? "cancelled" : deadline.timedOut() ? "timeout" : "network";
       const trace = diagnosticContext.getStore();
       if (trace) trace.agentErrors[kind] = (trace.agentErrors[kind] ?? 0) + 1;

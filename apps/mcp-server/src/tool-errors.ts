@@ -16,6 +16,7 @@ export function toolErrorDetails(error: unknown) {
       ...(error.agentCode ? { agentCode: error.agentCode } : {}),
       ...(error.recovery ? { recovery: error.recovery } : {}),
       ...(error.coordinationConflict ? { coordinationConflict: error.coordinationConflict } : {}),
+      ...(error.repositoryRecovery ?? {}),
       ...(error.jobStartFailure ? error.jobStartFailure : {}),
       ...(error.responseBodyTruncated ? { responseBodyTruncated: true } : {}),
     } : {}),

@@ -1,5 +1,6 @@
 import { execFile, execFileSync, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { runtimeReleaseIdentity } from "../../../packages/shared/src/release-manifest.ts";
 import { accessSync, constants as fsConstants, existsSync, mkdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -84,7 +85,14 @@ function privilegeLevel(admin: boolean, token: WindowsTokenIdentity | null): Pri
 }
 
 const version = packageVersion();
-const sha = gitRuntimeSha();
+const releaseRoot = fileURLToPath(new URL("../../../", import.meta.url));
+const legacySha = gitRuntimeSha(releaseRoot);
+const releaseIdentity = runtimeReleaseIdentity(releaseRoot, {
+  legacySha,
+  legacySource: process.env.RCMCP_RUNTIME_SHA ? "environment" : legacySha ? "git_checkout" : "unknown",
+  expectedManifestSha256: process.env.RCMCP_RELEASE_MANIFEST_SHA256,
+});
+const sha = releaseIdentity.sha;
 const windowsIdentity = process.platform === "win32" ? readWindowsIdentity() : null;
 const context = detectContext(windowsIdentity);
 const actualUser = (() => { try { return windowsIdentity?.user ?? userInfo().username; } catch { return null; } })();
@@ -150,7 +158,7 @@ export function runtimeStatus() {
     "fs-edit", "repo-checkpoint-selection", "repo-apply-patch", "project-multistack", "deploy-phases", "job-follow",
     "high-level-idempotency-v1",
     "exec-receipts-v1",
-    "job-key-recovery-v1", "utf8-byte-pages-v1", "high-level-coordination-v1",
+    "job-key-recovery-v1", "utf8-byte-pages-v1", "high-level-coordination-v1", "coordination-recovery-v1",
     ...(jobIsolation.ready ? ["job-cgroup-isolation-v1"] : []),
     ...(desktopEnabled && process.platform === "linux" ? ["linux-desktop-v1"] : []),
     ...(desktopEnabled ? ["desktop", "desktop-session", "desktop-batch", "desktop-helper", "desktop-window-enumeration", "desktop-uia", "clipboard", "browser"] : []),
@@ -165,6 +173,7 @@ export function runtimeStatus() {
     context,
     version,
     sha,
+    releaseIdentity,
     node: process.version,
     platform: process.platform,
     arch: process.arch,

@@ -9,13 +9,135 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { afterEach, expect, it, vi } from "vitest";
-import { OperationObserver, operationsFor } from "../apps/mcp-server/src/operation-observer.ts";
+import { assessHistoricalReadFailure, OperationObserver, operationsFor } from "../apps/mcp-server/src/operation-observer.ts";
 import { AgentClient } from "../apps/mcp-server/src/agent-client.ts";
 import { registerTools } from "../apps/mcp-server/src/all-tools.ts";
+import { classifyToolEffect } from "../apps/mcp-server/src/tool-effects.ts";
+import { installDefaultToolOutputContracts } from "../apps/mcp-server/src/tool-contract-defaults.ts";
+import { observeAgent } from "../apps/mcp-server/src/operation-observer.ts";
 
 const closers: (() => Promise<unknown>)[] = [];
-afterEach(async () => { vi.restoreAllMocks(); while (closers.length) await closers.pop()!(); });
+afterEach(async () => { vi.restoreAllMocks(); while (closers.length) await closers.pop()!(); vi.unstubAllEnvs(); });
 async function directory() { const root = await mkdtemp(path.join(os.tmpdir(), "rcmcp-observations-")); closers.push(() => rm(root, { recursive: true, force: true })); return root; }
+
+it("keeps failed observations distinct from uncertain effects through real SDK delivery", async () => {
+  vi.stubEnv("RCMCP_STATE_DIR", await directory());
+  const app = Fastify();
+  const domainError = { ok: false, error: { code: "WINDOW_NOT_FOUND", message: "synthetic missing window" } };
+  app.get("/v1/info", async () => ({ runtime: { capabilities: ["desktop-semantic-v1"] } }));
+  app.post("/v1/desktop/observe", async () => domainError);
+  app.post("/v1/desktop/act", async () => domainError);
+  const url = await app.listen({ host: "127.0.0.1", port: 0 }); closers.push(() => app.close());
+  const agent = new AgentClient([{ name: "lab", url, userUrl: url }]);
+  const server = new McpServer({ name: "synthetic-effects", version: "1" }); registerTools(server, agent);
+  const client = new Client({ name: "fixture", version: "1" });
+  const [a, b] = InMemoryTransport.createLinkedPair(); await Promise.all([server.connect(a), client.connect(b)]);
+  closers.push(async () => { await client.close(); await server.close(); });
+  const tools = new Map((await client.listTools()).tools.map(tool => [tool.name, tool]));
+  expect(tools.get("desktop_observe")?.annotations?.readOnlyHint).toBe(true);
+  expect(tools.get("desktop_act")?.annotations?.readOnlyHint).toBe(false);
+  for (const [name, input, expectedState] of [
+    ["desktop_observe", { kind: "windows" }, "returned"],
+    ["desktop_act", { mode: "status", commandId: randomUUID() }, "returned"],
+    ["desktop_act", { mode: "execute", commandId: randomUUID() }, "unknown"],
+  ] as const) {
+    const result = await client.callTool({ name, arguments: { device: "lab", ...input } });
+    expect(result.isError).toBe(true);
+    const content = result.structuredContent as any;
+    expect(content).toMatchObject(domainError);
+    expect(content.code).not.toBe("result_validation_failed");
+    const observed = await operationsFor(agent).inspect(content.operationTrace.traceId);
+    expect(observed).toMatchObject({ state: expectedState, requestSucceeded: false, failure: { agentCode: "WINDOW_NOT_FOUND" }, effectVerification: "unverified", clientAcceptance: "unknown" });
+    if (expectedState === "returned") expect(observed).toMatchObject({ observationOutcome: "failed", failure: { kind: "observation_failed:v1:domain_error" } });
+    else expect(observed).not.toHaveProperty("observationOutcome");
+    expect(content.error).toEqual(domainError.error); // The delivered failure is not relabeled.
+  }
+});
+
+it("preserves conservative explicit read metadata in the observer as well as tool listing", async () => {
+  vi.stubEnv("RCMCP_STATE_DIR", await directory());
+  const agent = new AgentClient([]);
+  const server = new McpServer({ name: "synthetic-override", version: "1" });
+  installDefaultToolOutputContracts(server, undefined, agent);
+  server.registerTool("fs_read", { inputSchema: {}, annotations: { readOnlyHint: false, destructiveHint: true } }, async () => {
+    await observeAgent("agent_dispatch", "lab", "user");
+    return { isError: true, content: [{ type: "text", text: JSON.stringify({ ok: false, error: "synthetic failure" }) }] };
+  });
+  const client = new Client({ name: "fixture", version: "1" });
+  const [a, b] = InMemoryTransport.createLinkedPair(); await Promise.all([server.connect(a), client.connect(b)]);
+  closers.push(async () => { await client.close(); await server.close(); });
+  expect((await client.listTools()).tools.find(tool => tool.name === "fs_read")?.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: true });
+  const result = await client.callTool({ name: "fs_read", arguments: {} });
+  const record = await operationsFor(agent).inspect((result.structuredContent as any).operationTrace.traceId);
+  expect(record).toMatchObject({ state: "unknown", requestSucceeded: false, failure: { kind: "tool_result_error" } });
+  expect(record).not.toHaveProperty("observationOutcome");
+});
+
+it("persists only a bounded v1 read-failure marker and safely retires mixed reads after restart", async () => {
+  const root = await directory();
+  const observer = new OperationObserver(root);
+  const input = { operation: "stat", path: "private-argument-not-in-journal" };
+  const id = (await observer.begin("fs_manage", undefined, undefined, undefined, undefined, classifyToolEffect("fs_manage", input)))!;
+  await observer.event(id, { stage: "agent_dispatch", device: "lab", identity: "owner" });
+  const result = { ok: false, kind: "http", agentCode: "UNAVAILABLE", status: 503, error: "private-error-not-in-journal", timedOut: true };
+  await observer.finish(id, result, false, false);
+  await observer.finish(id, result, false, true); // Late disconnect must not lose the per-call read contract.
+  const expected = { state: "returned", requestSucceeded: false, callerDisconnected: true, observationOutcome: "failed", failure: { kind: "observation_failed:v1:http", agentCode: "UNAVAILABLE", status: 503 } };
+  expect(await observer.inspect(id)).toMatchObject(expected);
+  expect((await observer.snapshot()).items[0]).toMatchObject(expected);
+  const raw = await readFile(path.join(root, `${id}.json`), "utf8");
+  const saved = JSON.parse(raw);
+  expect(saved.version).toBe(1);
+  expect(saved).not.toHaveProperty("observationOutcome");
+  expect(saved).not.toHaveProperty("effect");
+  expect(saved).not.toHaveProperty("executionOutcome");
+  expect(saved).not.toHaveProperty("terminationReason");
+  expect(raw).not.toMatch(/private-argument|private-error|operation.*stat/);
+  expect(saved.events.filter((event: any) => event.stage === "handler_returned")).toHaveLength(1);
+  const restarted = new OperationObserver(root, 10, 32768, 0);
+  expect(await restarted.inspect(id)).toMatchObject(expected);
+  await restarted.begin("device_info", undefined);
+  expect(await restarted.inspect(id)).toBeNull();
+});
+
+it("retains mixed failures without a full marker and never trusts a marker supplied by an effectful result", async () => {
+  const root = await directory();
+  const observer = new OperationObserver(root);
+  const mixed = (await observer.begin("service_manage", undefined, undefined, undefined, undefined, "read"))!;
+  await observer.event(mixed, { stage: "agent_dispatch" });
+  await observer.finish(mixed, { ok: false, kind: "a".repeat(43) }, false, false);
+  expect(await observer.inspect(mixed)).toMatchObject({ state: "returned", failure: { kind: "a".repeat(43) } });
+  const effect = (await observer.begin("exec", undefined))!;
+  await observer.event(effect, { stage: "agent_dispatch" });
+  await observer.finish(effect, { ok: false, kind: "observation_failed:v1:domain_error", code: null, timedOut: true }, false, false);
+  expect(await observer.inspect(effect)).toMatchObject({ state: "unknown", failure: { kind: "tool_result_error" } });
+  expect(await observer.inspect(effect)).not.toHaveProperty("observationOutcome");
+  const restarted = new OperationObserver(root, 10, 32768, 0);
+  await restarted.begin("device_info", undefined);
+  expect(await restarted.inspect(mixed)).not.toBeNull();
+  expect(await restarted.inspect(mixed)).not.toHaveProperty("observationOutcome");
+  expect(await restarted.inspect(effect)).toMatchObject({ state: "unknown" });
+});
+
+it("previews legacy pure-read candidates without rewriting or retiring historical unknowns", async () => {
+  const root = await directory();
+  const observer = new OperationObserver(root);
+  const id = (await observer.begin("desktop_observe", undefined))!;
+  await observer.event(id, { stage: "agent_dispatch", device: "lab", identity: "owner" });
+  await observer.finish(id, { ok: false, error: { code: "WINDOW_NOT_FOUND" } }, false, false);
+  const file = path.join(root, `${id}.json`);
+  const legacy = { ...JSON.parse(await readFile(file, "utf8")), state: "unknown", failure: { kind: "domain_error", agentCode: "WINDOW_NOT_FOUND" } };
+  const before = JSON.stringify(legacy); await writeFile(file, before);
+  expect(assessHistoricalReadFailure(legacy)).toMatchObject({ disposition: "candidate", reason: "static_read_contract_requires_deployment_review" });
+  for (const change of [{ tool: "desktop_act" }, { tool: "unknown_read" }, { eventsPartial: true }, { jobsPartial: true }, { persistence: "unconfirmed" }, { events: [] }, { executionOutcome: "uncertain" }, { jobs: [{ device: "lab", identity: "owner", jobId: "unsettled" }] }]) {
+    expect(assessHistoricalReadFailure({ ...legacy, ...change }).disposition).toBe("protected");
+  }
+  expect(assessHistoricalReadFailure({ ...legacy, unexpectedField: true }).disposition).toBe("protected");
+  const restarted = new OperationObserver(root, 10, 32768, 0);
+  await restarted.begin("device_info", undefined);
+  expect(await restarted.inspect(id)).toMatchObject({ state: "unknown", failure: legacy.failure });
+  expect(await readFile(file, "utf8")).toBe(before);
+});
 
 it("retains metadata across restart without claiming unfinished synchronous work is active", async () => {
   const root = await directory();

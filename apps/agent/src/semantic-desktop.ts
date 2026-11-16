@@ -14,6 +14,21 @@ type Context = { manifest: SemanticManifest; env: NodeJS.ProcessEnv; binding: st
 type Dependencies = { root?: string; manifest?: () => SemanticManifest; session?: typeof semanticSession; invoke?: (ctx: Context, args: string[], timeout: number) => Promise<Envelope> };
 const run = promisify(execFile);
 function failure(code: string, delivery = "not_delivered") { return { ok: false, error: { code, disposition: { delivery, retry: delivery === "not_delivered" ? "safe" : "unsafe" } } }; }
+// Report the manifest selected for this invocation. The saved provenance flag
+// is an install-time claim; status does not independently contact the upstream.
+function engineIdentity(manifest: SemanticManifest) {
+  return {
+    source: "loaded_manifest",
+    binary: manifest.binary,
+    sha256: manifest.sha256,
+    engineVersion: manifest.engineVersion,
+    jsonVersion: manifest.jsonVersion,
+    files: manifest.files.map(file => ({ path: file.path, sha256: file.sha256 })),
+    upstreamCommit: manifest.upstreamCommit ?? null,
+    archiveSha256: manifest.archiveSha256 ?? null,
+    provenance: { source: "saved_manifest", verified: manifest.provenanceVerified, upstreamRechecked: false },
+  };
+}
 export function collectRefs(value: unknown): string[] {
   const refs = new Set<string>();
   const walk = (v: unknown) => { if (v && typeof v === "object") for (const [key, item] of Object.entries(v)) { if (key === "ref_id" && typeof item === "string" && /^@[A-Za-z0-9_-]+:e\d+$/.test(item)) refs.add(item); else if (item && typeof item === "object") walk(item); } };
@@ -86,7 +101,10 @@ export class SemanticDesktop {
     }
     if (input.app && ["snapshot", "apps", "windows"].includes(input.kind) && !input.ref) args.push("--app", input.app);
     const result = await this.invoke(ctx, args, input.timeoutMs);
-    if (!result.ok || input.kind !== "snapshot") return { ...result, engineVersion: ctx.manifest.engineVersion };
+    if (!result.ok || input.kind !== "snapshot") return {
+      ...result, engineVersion: ctx.manifest.engineVersion,
+      ...(input.kind === "status" ? { engineIdentity: engineIdentity(ctx.manifest) } : {}),
+    };
     const id = randomUUID();
     const request = parent ? { ...parent.request, ...input, app: parent.request.app, windowId: parent.request.windowId } : input;
     atomicWriteJson(path.join(this.directory("observations"), `${id}.json`), { id, createdAt: Date.now(), binding: ctx.binding, refs: result.data?.identity_unproven === true ? [] : collectRefs(result.data), request } satisfies Observation);
@@ -94,7 +112,18 @@ export class SemanticDesktop {
   }
   observe(raw: unknown): Promise<Record<string, any>> {
     const input = semanticObserveSchema.parse(raw);
-    return desktopSequence(async () => { try { return await this.observeInner(input, await this.context(input.kind !== "status")); } catch (error) { return failure(error instanceof Error ? error.message : "observation_failed"); } });
+    return desktopSequence(async () => {
+      let ctx: Context | undefined;
+      try {
+        ctx = await this.context(input.kind !== "status");
+        return await this.observeInner(input, ctx);
+      } catch (error) {
+        return {
+          ...failure(error instanceof Error ? error.message : "observation_failed"),
+          ...(input.kind === "status" && ctx ? { engineIdentity: engineIdentity(ctx.manifest) } : {}),
+        };
+      }
+    });
   }
   act(raw: unknown): Promise<Record<string, any>> {
     const input = semanticActSchema.parse(raw);

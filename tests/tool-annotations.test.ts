@@ -8,7 +8,7 @@ it("advertises accurate read hints without relabeling effectful tools or overrid
   const server = new McpServer({ name: "synthetic-annotations", version: "1" });
   const client = new Client({ name: "synthetic-client", version: "1" });
   installDefaultToolOutputContracts(server);
-  for (const name of ["device_info", "fs_list", "exec", "fs_manage", "job_start"]) {
+  for (const name of ["device_info", "fs_list", "fleet_status", "process_find", "repo_compare", "docker_summary", "exec", "fs_manage", "job_start", "desktop_batch", "service_manage"]) {
     server.registerTool(name, { inputSchema: {} }, async () => ({ content: [] }));
   }
   server.registerTool("fs_read", { inputSchema: {}, annotations: { readOnlyHint: false, destructiveHint: true } }, async () => ({ content: [] }));
@@ -19,7 +19,8 @@ it("advertises accurate read hints without relabeling effectful tools or overrid
     const metadata = new Map(tools.map(tool => [tool.name, tool.annotations]));
     expect(metadata.get("device_info")).toMatchObject({ readOnlyHint: true, destructiveHint: false, idempotentHint: true });
     expect(metadata.get("fs_list")).toMatchObject({ readOnlyHint: true, destructiveHint: false });
-    for (const name of ["exec", "fs_manage", "job_start"]) expect(metadata.get(name)?.readOnlyHint).not.toBe(true);
+    for (const name of ["fleet_status", "process_find", "repo_compare", "docker_summary"]) expect(metadata.get(name)?.readOnlyHint).toBe(true);
+    for (const name of ["exec", "fs_manage", "job_start", "desktop_batch", "service_manage"]) expect(metadata.get(name)?.readOnlyHint).toBe(false);
     expect(metadata.get("fs_read")).toMatchObject({ readOnlyHint: false, destructiveHint: true });
     expect(tools.every(tool => tool.outputSchema)).toBe(true);
   } finally {
