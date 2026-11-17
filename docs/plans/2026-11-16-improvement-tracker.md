@@ -37,15 +37,20 @@ live-discovered follow-ups remain tracked in GitHub without silently deleting
 or relabeling existing items:
 [issue #58 — coordination-capacity diagnostics](https://github.com/anervalens-netizen/remote-control-mcp/issues/58)
 and [issue #59 — DSH provider-capacity and deferred-review continuity](https://github.com/anervalens-netizen/remote-control-mcp/issues/59).
-The REC-06 follow-up now has an isolated candidate source contract for
-`coordination_capacity`: a read-only bounded snapshot of slot categories and
-unverified binding evidence, without changing historical fences. Its merge,
-native rollout, job-terminal verification, and capacity clearance remain
-separate acceptance gates. Both issues require their own evidence before closure.
+The REC-06 follow-up was merged in [PR #60](https://github.com/anervalens-netizen/remote-control-mcp/pull/60)
+as `4331c00` with current-head Codex and Linux/Windows/public-source CI green.
+Selected Linux owner/root/controller activation and actual authenticated MCP
+SDK `coordination_capacity` and `usage_window` probes passed. The diagnostic
+reports bounded slot categories and explicitly unverified binding evidence,
+without changing any historical fence. Older-agent capability rejection was
+also verified. Full fleet acceptance, ChatGPT host discovery, historical
+job-terminal/resource reconciliation and **actual capacity clearance** remain
+separate open gates under #58. The independent DSH review remains explicitly
+deferred under owner instruction, **not** approved; issue #59 remains open.
 
 Lot2 adds ingress correlation/counters/history, bounded usage reports, finite capability probes and the fs_read input-contract correction. All four candidate review checkpoints and the 52-finding public disposition are retained in the [development disposition matrix](2026-11-16-lot2-review.md). The public same-window collection/retention source follow-up is documented above; its review and deployed acceptance, automatic orphan recovery and complete history/inventory/console, stage/export and pressure acceptance retain their explicit remaining work.
 
-The previous selected lot2 runtime checkpoint used `13d7563216b629f582bbb9e7815cf797fb5d6a4d`. The additional PR57 rollout qualified `18e273e93c98d24520f6b38e88c8a3c1026fb546` for a narrower controller/agent scope; other endpoints may retain older releases. Neither the repository HEAD nor a documentation-only commit replaces independently inspected running identity. Hosted Windows CI qualifies its runner's source/backend cases, not a physical Windows host. Physical Android and other unobserved endpoints remain outside this runtime scope.
+The previous selected lot2 runtime checkpoint used `13d7563216b629f582bbb9e7815cf797fb5d6a4d`. The additional PR57 rollout qualified `18e273e93c98d24520f6b38e88c8a3c1026fb546` for a narrower controller/agent scope. The subsequent PR60 rollout qualified `4331c00f0aad81cd649270e9a4ca7238737bfe44` for a selected Linux controller/root/owner scope with full tracked-source release verification and actual authenticated MCP diagnostic calls. Other endpoints intentionally retain older releases. Repository HEAD, checkout state and documentation-only commits never substitute for separately inspected running identity. Hosted Windows CI qualifies its runner's source/backend cases, not a physical Windows host. Physical Android and other unobserved endpoints remain outside this runtime scope.
 
 ## How to execute and update
 
@@ -118,7 +123,7 @@ Lots: 0 baseline; 1 recovery/desktop/effect semantics; 2 observation/history/inv
 | [RC26-UX-07](2026-11-16-improvement-plan.md#rc26-ux-07) | Extend the existing MCP Apps console with the same contracts | 3 | P2 | planned | UX-01, UX-06, HIS-02 | — | — |
 | [RC26-GOV-01](2026-11-16-improvement-plan.md#rc26-gov-01) | Reconcile review evidence against the exact repository head | 3 | P2 | planned | BASE-01 | — | — |
 | [RC26-GOV-02](2026-11-16-improvement-plan.md#rc26-gov-02) | Preserve complementary Codex and DSH review workflow | 3 | P2 | planned | BASE-01 | — | — |
-| [RC26-GOV-03](2026-11-16-improvement-plan.md#rc26-gov-03) | Keep tracker state and private handoffs synchronized | 0 | P1 | active | — | Implementation agent | Lot1 and lot2 checkpoints remain preserved. The PR57 merge, selected runtime qualification, mixed-version limitation, owner-directed DSH deferral and remaining delivery blockers are recorded in private task evidence. Follow-ups #58/#59 remain separate and open; this row stays active until all ongoing handoffs are synchronized. |
+| [RC26-GOV-03](2026-11-16-improvement-plan.md#rc26-gov-03) | Keep tracker state and private handoffs synchronized | 0 | P1 | active | — | Implementation agent | Lot1 and lot2 checkpoints remain preserved. The PR57 and PR60 merges, selected Linux runtime qualifications, mixed-version limitations, owner-directed DSH deferral and remaining delivery blockers are recorded in private task evidence. #58 remains open for four historical capacity slots; #59 remains open for independent review/provider continuity. This row stays active until all handoffs and outstanding acceptance gates are synchronized. |
 | [RC26-MCP-01](2026-11-16-improvement-plan.md#rc26-mcp-01) | Build the actual client and protocol compatibility matrix | 3 | P2 | planned | BASE-01 | — | — |
 | [RC26-MCP-02](2026-11-16-improvement-plan.md#rc26-mcp-02) | Run relevant official protocol conformance cases | 3 | P2 | planned | MCP-01 | — | — |
 | [RC26-MCP-03](2026-11-16-improvement-plan.md#rc26-mcp-03) | Verify modern discovery and catalog/result parity | 3 | P2 | planned | MCP-01 | — | — Targeted fs_read and batch_read discovery/validation parity is covered through actual SDK transports in the lot2 candidate; this does not complete the full modern discovery matrix. |

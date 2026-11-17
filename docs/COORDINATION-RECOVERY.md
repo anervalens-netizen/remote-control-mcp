@@ -50,8 +50,11 @@ writer, releases a slot or alters any journal. `active`, `uncertain`, orphan
 and invalid records remain fenced. An elapsed lease does not demonstrate
 quiescence or make an uncertain operation safe to replay. Recovery must still
 follow the original token, full execution identity and independent containment
-contract below. Actual terminal/job qualification and safely reconciling any
-historical exhausted capacity remain separate work under
+contract below. Selected Linux native SDK collection was qualified after the
+[PR #60](https://github.com/anervalens-netizen/remote-control-mcp/pull/60)
+source merge. That demonstrates only a bounded live diagnostic read and older
+agent rejection: actual terminal/job qualification and safe reconciliation
+of historical exhausted capacity remain separate work under
 [RC26-REC-06](https://github.com/anervalens-netizen/remote-control-mcp/issues/58).
 
 The main journal retains the exact strict v1 schema. Execution bindings live in
