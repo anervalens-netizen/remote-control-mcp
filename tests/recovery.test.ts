@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 const roots: string[] = [];
 const originalStateDir = process.env.RCMCP_STATE_DIR;
 const originalRgPath = process.env.RCMCP_RG_PATH;
+const originalStderrGate = process.env.RCMCP_TEST_STDERR_GATE;
 
 afterEach(async () => {
   vi.doUnmock("../apps/agent/src/state.ts");
@@ -17,6 +18,8 @@ afterEach(async () => {
   else process.env.RCMCP_STATE_DIR = originalStateDir;
   if (originalRgPath === undefined) delete process.env.RCMCP_RG_PATH;
   else process.env.RCMCP_RG_PATH = originalRgPath;
+  if (originalStderrGate === undefined) delete process.env.RCMCP_TEST_STDERR_GATE;
+  else process.env.RCMCP_TEST_STDERR_GATE = originalStderrGate;
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })));
 });
 
@@ -443,40 +446,48 @@ describe("restart recovery", () => {
   it.skipIf(process.platform === "win32")("contains stderr persistence failure inside the search lifecycle", async () => {
     const root = await isolatedRoot("rcmcp-recovery-search-stderr-fail-");
     const fakeRg = path.join(root, "fake-rg.sh");
-    // Runtime discovery invokes --version during import. It must not enter
-    // the deliberately slow stderr-emitting search fixture.
+    const emitGate = path.join(root, "emit-stderr");
+    // Runtime discovery invokes --version. The search process waits for an
+    // explicit gate so stderr cannot arrive before its file is replaced.
     await writeFile(fakeRg, `#!/bin/sh
 if [ "$1" = "--version" ]; then
   printf 'ripgrep test-fixture\\n'
   exit 0
 fi
-sleep 0.2
+attempts=0
+until [ -f "$RCMCP_TEST_STDERR_GATE" ]; do
+  attempts=$((attempts + 1))
+  [ "$attempts" -le 200 ] || exit 24
+  sleep 0.04
+done
 printf 'FAKE_STDERR\\n' >&2
 exec sleep 5
 `);
     await chmod(fakeRg, 0o700);
     process.env.RCMCP_RG_PATH = fakeRg;
+    process.env.RCMCP_TEST_STDERR_GATE = emitGate;
     vi.resetModules();
     const mod = await import("../apps/agent/src/search-sessions.ts");
     const started = await mod.searchStart({ path: root, pattern: "needle", literal: true });
     const errorFile = path.join(root, "search", started.id + ".stderr.log");
-    await rm(errorFile, { force: true });
-    await mkdir(errorFile);
-
-    const deadline = Date.now() + 3000;
-    let finished = mod.searchResults(started.id, 0, 10);
-    while (finished.status === "running" && Date.now() < deadline) {
-      await new Promise((resolve) => setTimeout(resolve, 25));
-      finished = mod.searchResults(started.id, 0, 10);
+    try {
+      await rm(errorFile, { force: true });
+      await mkdir(errorFile);
+      await writeFile(emitGate, "emit\n");
+      const finished = await vi.waitFor(() => {
+        const page = mod.searchResults(started.id, 0, 10);
+        expect(page.status).toBe("error");
+        return page;
+      }, { timeout: 9_000, interval: 25 });
+      expect(finished.error).toContain("Search stderr persistence failed:");
+      expect(mod.searchSessions().find((item) => item.id === started.id)).toMatchObject({ status: "error" });
+    } finally {
+      // Ensure that the owned child is stopped on assertion or timeout failure.
+      await rm(errorFile, { recursive: true, force: true });
+      await writeFile(errorFile, "");
+      await mod.searchRemove(started.id, true);
     }
-    expect(finished.status).toBe("error");
-    expect(finished.error).toContain("Search stderr persistence failed:");
-    expect(mod.searchSessions().find((item) => item.id === started.id)).toMatchObject({ status: "error" });
-
-    await rm(errorFile, { recursive: true, force: true });
-    await writeFile(errorFile, "");
-    await mod.searchRemove(started.id, true);
-  });
+  }, 15_000);
 
   it("ignores a torn final JSONL record while preserving complete recovered search results", async () => {
     const root = await isolatedRoot("rcmcp-recovery-search-tail-");
