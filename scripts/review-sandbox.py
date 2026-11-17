@@ -67,7 +67,10 @@ def validate_policy(policy: Any) -> dict[str, Any]:
     if not isinstance(policy, dict) or set(policy) != {"workspaceRoot", "runtimeDirs", "timeoutSeconds"}:
         raise SandboxError("invalid_policy_shape")
     root = _absolute_directory(policy["workspaceRoot"])
-    if len(root.parts) < 4 or root in (Path("/"), Path("/home"), Path("/root"), Path("/etc"), Path("/usr"), Path("/var"), Path("/run")):
+    if len(root.parts) < 3 or root == Path.home() or root in (
+        Path("/"), Path("/home"), Path("/root"), Path("/etc"),
+        Path("/usr"), Path("/var"), Path("/run"),
+    ):
         raise SandboxError("workspace_root_too_broad")
     runtimes = policy["runtimeDirs"]
     if not isinstance(runtimes, list) or len(runtimes) > 3 or len(set(map(str, runtimes))) != len(runtimes):
@@ -95,7 +98,7 @@ def _workspace(root: Path, path: str) -> Path:
     return dest
 
 
-def build_command(policy: dict[str, Any], workspace: str, requested: list[str]) -> list[str]:
+def build_command(policy: dict[str, Any], workspace: str, requested: list[str], workspace_fd: int | None = None) -> list[str]:
     validated = validate_policy(policy)
     root = Path(validated["workspaceRoot"])
     checkout = _workspace(root, workspace)
@@ -129,7 +132,8 @@ def build_command(policy: dict[str, Any], workspace: str, requested: list[str]) 
         cmd.extend(["--ro-bind", runtime, runtime])
     cmd.extend([
         "--tmpfs", "/tmp", "--proc", "/proc", "--dev", "/dev",
-        "--dir", "/home", "--dir", "/work", "--bind", str(checkout), "/work",
+        "--dir", "/home", "--dir", "/work", "--bind",
+        f"/proc/self/fd/{workspace_fd}" if workspace_fd is not None else str(checkout), "/work",
         "--setenv", "HOME", "/tmp", "--setenv", "TMPDIR", "/tmp",
         "--setenv", "XDG_CACHE_HOME", "/tmp/cache", "--setenv", "XDG_CONFIG_HOME", "/tmp/config",
         "--setenv", "RCMCP_STATE_DIR", "/tmp/rcmcp-tests", "--setenv", "CI", "true",
@@ -143,10 +147,25 @@ def build_command(policy: dict[str, Any], workspace: str, requested: list[str]) 
 
 
 def run_probe(policy: dict[str, Any], workspace: str, requested: list[str]) -> int:
-    command = build_command(policy, workspace, requested)
+    validated = validate_policy(policy)
+    checkout = _workspace(Path(validated["workspaceRoot"]), workspace)
+    # Pin the approved inode before invoking bubblewrap. A reviewer can rename
+    # its own workspace after validation; rebinding by pathname would otherwise
+    # permit a symlink-swap race before bubblewrap resolves the mount source.
+    fd = os.open(checkout, os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        opened = os.fstat(fd)
+        current = os.stat(checkout, follow_symlinks=False)
+        if opened.st_uid != os.getuid() or (opened.st_dev, opened.st_ino) != (current.st_dev, current.st_ino):
+            raise SandboxError("workspace_changed_during_admission")
+        command = build_command(policy, workspace, requested, workspace_fd=fd)
+        # The descendant keeps only this pinned FD across exec. Bwrap resolves
+        # /proc/self/fd/N before replacing /proc with the isolated process tree.
+        process = subprocess.Popen(command, start_new_session=True, pass_fds=(fd,))
+    finally:
+        os.close(fd)
     # Its process group is owned by this launcher only; timeout never signals
     # an unrelated service or searches for a process by an untrusted PID.
-    process = subprocess.Popen(command, start_new_session=True)
     try:
         return process.wait(timeout=policy["timeoutSeconds"])
     except subprocess.TimeoutExpired:

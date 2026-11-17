@@ -31,6 +31,11 @@ Invocation:
       --workspace /srv/review-worktrees/ticket-123 -- \
       /usr/bin/node --test /work/fixture.test.mjs
 
+Each invocation pins the approved checkout inode with an open directory
+file descriptor and passes that descriptor to bubblewrap. A rename or symlink
+swap between validation and the mount cannot redirect the source to a
+different host directory.
+
 Every invocation starts a separate bubblewrap user/PID/network/IPC/UTS
 namespace. The sole host writable mount is the selected checkout at /work.
 Core system runtime mounts are read-only; /tmp, /proc and /dev are new

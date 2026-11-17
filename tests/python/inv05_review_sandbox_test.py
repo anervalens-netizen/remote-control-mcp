@@ -9,6 +9,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 SOURCE = Path(__file__).resolve().parents[2] / "scripts" / "review-sandbox.py"
 spec = importlib.util.spec_from_file_location("review_sandbox", SOURCE)
@@ -38,6 +39,18 @@ class TestReviewSandbox(unittest.TestCase):
         (self.root / "redirect").symlink_to(outsider, target_is_directory=True)
         self.assertRejected(self.policy, str(self.root / "redirect"), ["/usr/bin/true"])
 
+    def test_documented_two_segment_review_root_is_supported(self):
+        # /srv/review-worktrees has two components after /, like the parent
+        # directory of this temporary checkout.
+        shallow = Path(self.temp.name)
+        args = sandbox.build_command(
+            {**self.policy, "workspaceRoot": str(shallow)},
+            str(self.root), ["/usr/bin/true"],
+        )
+        self.assertIn(str(self.root), args)
+        self.assertRejected({**self.policy, "workspaceRoot": str(Path.home())},
+                            str(self.workspace), ["/usr/bin/true"])
+
     def test_invalid_policy_or_command_never_dispatches(self):
         for change in (
             {"runtimeDirs": ["/home"]}, {"timeoutSeconds": 901},
@@ -65,6 +78,19 @@ class TestReviewSandbox(unittest.TestCase):
         self.assertEqual(cmd[-3:], ["/usr/bin/python3", "-c", "print('synthetic')"])
         # There is no user-defined shell command allowlist. All commands go
         # through the same isolated subprocess boundary.
+
+    def test_launch_pins_approved_workspace_inode_by_inherited_fd(self):
+        with mock.patch.object(sandbox.subprocess, "Popen") as start:
+            start.return_value.wait.return_value = 0
+            self.assertEqual(sandbox.run_probe(self.policy, str(self.workspace),
+                                               ["/usr/bin/true"]), 0)
+            arguments, kwargs = start.call_args
+            cmd = arguments[0]
+            pinned = next(cmd[i + 1] for i in range(len(cmd) - 1)
+                          if cmd[i] == "--bind" and cmd[i + 2] == "/work")
+            self.assertRegex(pinned, r"^/proc/self/fd/[0-9]+$")
+            self.assertEqual(kwargs["pass_fds"], (int(pinned.rsplit("/", 1)[-1]),))
+            self.assertTrue(kwargs["start_new_session"])
 
     def sandbox_available(self):
         if sys.platform != "linux" or not Path(sandbox.BWRAP).is_file():
