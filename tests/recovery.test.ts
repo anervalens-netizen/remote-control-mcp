@@ -486,7 +486,7 @@ exec sleep 5
     await rm(errorFile, { recursive: true, force: true });
     await writeFile(errorFile, "");
     await mod.searchRemove(started.id, true);
-  });
+  }, 15_000); // The 8s observation deadline must fit inside this test timeout.
 
   it("ignores a torn final JSONL record while preserving complete recovered search results", async () => {
     const root = await isolatedRoot("rcmcp-recovery-search-tail-");
