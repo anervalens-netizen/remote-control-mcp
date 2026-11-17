@@ -11,9 +11,19 @@ policy from /etc/remote-control-mcp/inv05-review-sandbox.json. The keys are:
 
     {
       "workspaceRoot": "/srv/review-worktrees",
+      "workspaceRootDev": 12345,
+      "workspaceRootIno": 67890,
       "runtimeDirs": [],
       "timeoutSeconds": 240
     }
+
+The device and inode numbers above are placeholders: replace them with
+the real st_dev and st_ino returned by stat on the trusted workspace root.
+They bind future admissions to the originally provisioned directory, not a
+replacement inode at the same pathname. Any parent symlink is refused.
+The launcher traverses from a pinned filesystem root descriptor using
+O_NOFOLLOW on every component before passing the accepted checkout FD to
+bubblewrap. Root replacement or a symlink swap fails closed.
 
 An operating-system administrator installs the policy and source launcher
 outside any DSH or repository writable workspace. The policy file must be

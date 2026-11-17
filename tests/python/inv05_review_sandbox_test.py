@@ -25,11 +25,20 @@ class TestReviewSandbox(unittest.TestCase):
         self.root = Path(self.temp.name) / "trusted-worktrees"
         self.workspace = self.root / "review-ticket"
         self.workspace.mkdir(parents=True)
-        self.policy = {"workspaceRoot": str(self.root), "runtimeDirs": [], "timeoutSeconds": 6}
+        st = self.root.stat()
+        self.policy = {"workspaceRoot": str(self.root), "workspaceRootDev": st.st_dev,
+                       "workspaceRootIno": st.st_ino, "runtimeDirs": [], "timeoutSeconds": 6}
+
+    def build(self, policy, workspace, requested):
+        fd = sandbox.open_review_workspace(policy, workspace)
+        try:
+            return sandbox.build_command(policy, workspace, requested, workspace_fd=fd)
+        finally:
+            os.close(fd)
 
     def assertRejected(self, *args):
         with self.assertRaises(sandbox.SandboxError):
-            sandbox.build_command(*args)
+            self.build(*args)
 
     def test_rejects_workspace_escape_and_symlink(self):
         outsider = Path(self.temp.name) / "installed-service"
@@ -43,11 +52,13 @@ class TestReviewSandbox(unittest.TestCase):
         # /srv/review-worktrees has two components after /, like the parent
         # directory of this temporary checkout.
         shallow = Path(self.temp.name)
-        args = sandbox.build_command(
-            {**self.policy, "workspaceRoot": str(shallow)},
+        st = shallow.stat()
+        args = self.build(
+            {**self.policy, "workspaceRoot": str(shallow),
+             "workspaceRootDev": st.st_dev, "workspaceRootIno": st.st_ino},
             str(self.root), ["/usr/bin/true"],
         )
-        self.assertIn(str(self.root), args)
+        self.assertIn("--bind", args)
         self.assertRejected({**self.policy, "workspaceRoot": str(Path.home())},
                             str(self.workspace), ["/usr/bin/true"])
 
@@ -64,10 +75,8 @@ class TestReviewSandbox(unittest.TestCase):
                 self.assertRejected(self.policy, str(self.workspace), command)
 
     def test_arguments_enforce_sanitization_without_command_allowlist(self):
-        if not Path(sandbox.BWRAP).is_file():
-            self.skipTest("bubblewrap not installed")
-        cmd = sandbox.build_command(self.policy, str(self.workspace),
-                                    ["/usr/bin/python3", "-c", "print('synthetic')"])
+        cmd = self.build(self.policy, str(self.workspace),
+                         ["/usr/bin/python3", "-c", "print('synthetic')"])
         self.assertIn("--clearenv", cmd)
         for flag in ("--unshare-pid", "--unshare-net", "--unshare-user",
                      "--die-with-parent", "--new-session", "--bind", "--proc"):
@@ -80,7 +89,9 @@ class TestReviewSandbox(unittest.TestCase):
         # through the same isolated subprocess boundary.
 
     def test_launch_pins_approved_workspace_inode_by_inherited_fd(self):
-        with mock.patch.object(sandbox.subprocess, "Popen") as start:
+        # This is a pure descriptor/admission test, not a native-bwrap test.
+        with mock.patch.object(sandbox, "BWRAP", "/usr/bin/true"), \
+             mock.patch.object(sandbox.subprocess, "Popen") as start:
             start.return_value.wait.return_value = 0
             self.assertEqual(sandbox.run_probe(self.policy, str(self.workspace),
                                                ["/usr/bin/true"]), 0)
@@ -91,6 +102,40 @@ class TestReviewSandbox(unittest.TestCase):
             self.assertRegex(pinned, r"^/proc/self/fd/[0-9]+$")
             self.assertEqual(kwargs["pass_fds"], (int(pinned.rsplit("/", 1)[-1]),))
             self.assertTrue(kwargs["start_new_session"])
+
+    def test_symlinked_checkout_ancestor_is_rejected_even_if_it_is_user_owned(self):
+        parent = self.root / "swappable-parent"
+        child = parent / "ticket"
+        child.mkdir(parents=True)
+        outside = Path(self.temp.name) / "outside-protected"
+        (outside / "ticket").mkdir(parents=True)
+        # First validation sees a valid path; immediately before open, a
+        # different worker replaces the parent with a link to its own tree.
+        sandbox._workspace(self.root, str(child))
+        parent.rename(self.root / "original-parent")
+        parent.symlink_to(outside, target_is_directory=True)
+        try:
+            self.assertRejected(self.policy, str(child), ["/usr/bin/true"])
+        finally:
+            parent.unlink()
+            (self.root / "original-parent").rename(parent)
+
+    def test_trusted_root_identity_prevents_directory_replacement(self):
+        moved = Path(self.temp.name) / "original-root"
+        self.root.rename(moved)
+        self.root.mkdir()
+        try:
+            self.assertRejected(self.policy, str(self.workspace), ["/usr/bin/true"])
+        finally:
+            self.root.rmdir()
+            moved.rename(self.root)
+
+    def test_validation_and_fd_unit_tests_work_without_bubblewrap(self):
+        with mock.patch.object(sandbox, "BWRAP", "/invalid/no-bwrap-here"):
+            self.assertIn("--bind", self.build(
+                self.policy, str(self.workspace), ["/usr/bin/true"]))
+            with self.assertRaisesRegex(sandbox.SandboxError, "bwrap_missing"):
+                sandbox.run_probe(self.policy, str(self.workspace), ["/usr/bin/true"])
 
     def sandbox_available(self):
         if sys.platform != "linux" or not Path(sandbox.BWRAP).is_file():
@@ -131,9 +176,14 @@ print('isolated-test-PASS')
         code = code.replace("'__OPERATOR_PRIVATE__'", repr(str(Path.home() / ".dsh")))
         os.environ["INV05_TEST_SECRET"] = "fake-synthetic-secret"
         try:
-            result = subprocess.run(sandbox.build_command(
-                self.policy, str(self.workspace), ["/usr/bin/python3", "-c", code]),
-                capture_output=True, text=True, timeout=7)
+            fd = sandbox.open_review_workspace(self.policy, str(self.workspace))
+            try:
+                result = subprocess.run(sandbox.build_command(
+                    self.policy, str(self.workspace), ["/usr/bin/python3", "-c", code],
+                    workspace_fd=fd), pass_fds=(fd,),
+                    capture_output=True, text=True, timeout=7)
+            finally:
+                os.close(fd)
         finally:
             os.environ.pop("INV05_TEST_SECRET", None)
         self.assertEqual(result.returncode, 0, result.stderr[:700])

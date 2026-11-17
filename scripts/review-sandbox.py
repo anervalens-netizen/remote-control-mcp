@@ -25,22 +25,38 @@ class SandboxError(Exception):
     pass
 
 
-def _absolute_directory(raw: str, *, owned: bool = False) -> Path:
+# Every ancestor is opened relative to a pinned directory descriptor. O_NOFOLLOW
+# on the final component alone is insufficient when a writable parent can be
+# substituted after path validation.
+_DIR_FLAGS = os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW
+
+
+def _pinned_absolute_dir(raw: str) -> int:
     if not isinstance(raw, str) or not raw.startswith("/") or "\0" in raw:
         raise SandboxError("invalid_directory")
     path = Path(raw)
-    if ".." in path.parts or str(path) != str(path.resolve(strict=True)):
+    if ".." in path.parts:
         raise SandboxError("nonphysical_directory")
-    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    fd = os.open("/", _DIR_FLAGS)
     try:
-        st = os.fstat(fd)
-        if not stat.S_ISDIR(st.st_mode):
+        for component in path.parts[1:]:
+            next_fd = os.open(component, _DIR_FLAGS, dir_fd=fd)
+            os.close(fd)
+            fd = next_fd
+        if not stat.S_ISDIR(os.fstat(fd).st_mode):
             raise SandboxError("not_directory")
-        if owned and st.st_uid != os.getuid():
-            raise SandboxError("workspace_owner_mismatch")
-    finally:
+        return fd
+    except Exception as error:
         os.close(fd)
-    return path
+        if isinstance(error, SandboxError):
+            raise
+        raise SandboxError("nonphysical_directory") from None
+
+
+def _absolute_directory(raw: str) -> Path:
+    fd = _pinned_absolute_dir(raw)
+    os.close(fd)
+    return Path(raw)
 
 
 def _policy_from_file(path: Path = POLICY) -> dict[str, Any]:
@@ -64,7 +80,8 @@ def _policy_from_file(path: Path = POLICY) -> dict[str, Any]:
 
 
 def validate_policy(policy: Any) -> dict[str, Any]:
-    if not isinstance(policy, dict) or set(policy) != {"workspaceRoot", "runtimeDirs", "timeoutSeconds"}:
+    fields = {"workspaceRoot", "workspaceRootDev", "workspaceRootIno", "runtimeDirs", "timeoutSeconds"}
+    if not isinstance(policy, dict) or set(policy) != fields:
         raise SandboxError("invalid_policy_shape")
     root = _absolute_directory(policy["workspaceRoot"])
     if len(root.parts) < 3 or root == Path.home() or root in (
@@ -72,6 +89,16 @@ def validate_policy(policy: Any) -> dict[str, Any]:
         Path("/usr"), Path("/var"), Path("/run"),
     ):
         raise SandboxError("workspace_root_too_broad")
+    dev, ino = policy["workspaceRootDev"], policy["workspaceRootIno"]
+    if type(dev) is not int or type(ino) is not int or dev < 1 or ino < 1:
+        raise SandboxError("invalid_root_identity")
+    fd = _pinned_absolute_dir(str(root))
+    try:
+        st = os.fstat(fd)
+        if (st.st_dev, st.st_ino) != (dev, ino):
+            raise SandboxError("trusted_root_identity_mismatch")
+    finally:
+        os.close(fd)
     runtimes = policy["runtimeDirs"]
     if not isinstance(runtimes, list) or len(runtimes) > 3 or len(set(map(str, runtimes))) != len(runtimes):
         raise SandboxError("invalid_runtime_roots")
@@ -82,34 +109,59 @@ def validate_policy(policy: Any) -> dict[str, Any]:
     seconds = policy["timeoutSeconds"]
     if isinstance(seconds, bool) or not isinstance(seconds, int) or not 1 <= seconds <= 900:
         raise SandboxError("invalid_timeout")
-    return {"workspaceRoot": str(root), "runtimeDirs": list(runtimes), "timeoutSeconds": seconds}
+    return {"workspaceRoot": str(root), "workspaceRootDev": dev, "workspaceRootIno": ino,
+            "runtimeDirs": list(runtimes), "timeoutSeconds": seconds}
 
 
 def _workspace(root: Path, path: str) -> Path:
-    dest = _absolute_directory(path, owned=True)
+    if not isinstance(path, str) or not path.startswith("/") or "\0" in path or ".." in Path(path).parts:
+        raise SandboxError("invalid_workspace")
+    dest = Path(path)
     if dest == root or not dest.is_relative_to(root):
         raise SandboxError("workspace_outside_trusted_root")
-    # Refuse symlink traversal anywhere between the pinned root and checkout.
-    current = root
-    for part in dest.relative_to(root).parts:
-        current = current / part
-        if current.is_symlink():
-            raise SandboxError("symlink_workspace")
     return dest
+
+
+def open_review_workspace(policy: dict[str, Any], workspace: str) -> int:
+    validated = validate_policy(policy)
+    root = Path(validated["workspaceRoot"])
+    dest = _workspace(root, workspace)
+    fd = _pinned_absolute_dir(str(root))
+    try:
+        st = os.fstat(fd)
+        if (st.st_dev, st.st_ino) != (validated["workspaceRootDev"], validated["workspaceRootIno"]):
+            raise SandboxError("trusted_root_identity_mismatch")
+        for component in dest.relative_to(root).parts:
+            next_fd = os.open(component, _DIR_FLAGS, dir_fd=fd)
+            os.close(fd)
+            fd = next_fd
+        if os.fstat(fd).st_uid != os.getuid():
+            raise SandboxError("workspace_owner_mismatch")
+        return fd
+    except Exception as error:
+        os.close(fd)
+        if isinstance(error, SandboxError):
+            raise
+        raise SandboxError("nonphysical_workspace") from None
 
 
 def build_command(policy: dict[str, Any], workspace: str, requested: list[str], workspace_fd: int | None = None) -> list[str]:
     validated = validate_policy(policy)
-    root = Path(validated["workspaceRoot"])
-    checkout = _workspace(root, workspace)
+    _workspace(Path(validated["workspaceRoot"]), workspace)
     if not 1 <= len(requested) <= MAX_ARGS or any(
         not isinstance(a, str) or not a or "\0" in a or len(os.fsencode(a)) > MAX_ARG_BYTES for a in requested
     ):
         raise SandboxError("invalid_arguments")
-    if not Path(BWRAP).is_file():
-        raise SandboxError("bwrap_missing")
-    # No /home host tree, /root, /run/systemd, /var, Docker socket, or host
-    # /proc. No inherited environment, network or cross-namespace process IDs.
+    if workspace_fd is None or type(workspace_fd) is not int or workspace_fd < 3:
+        raise SandboxError("pinned_fd_required")
+    try:
+        st = os.fstat(workspace_fd)
+        if not stat.S_ISDIR(st.st_mode) or st.st_uid != os.getuid():
+            raise SandboxError("invalid_pinned_workspace")
+    except OSError:
+        raise SandboxError("invalid_pinned_workspace") from None
+    # The FD is an immutable inode reference opened by open_review_workspace.
+    # Do not resolve a mutable pathname as the source mount.
     cmd = [BWRAP, "--unshare-user", "--unshare-pid", "--unshare-net", "--unshare-ipc",
            "--unshare-uts", "--die-with-parent", "--new-session", "--cap-drop", "ALL",
            "--clearenv"]
@@ -127,13 +179,11 @@ def build_command(policy: dict[str, Any], workspace: str, requested: list[str], 
         parent = Path("/")
         for segment in relative.parts[:-1]:
             parent = parent / segment
-            # These parents are empty mount points, never host directories.
             cmd.extend(["--dir", str(parent)])
         cmd.extend(["--ro-bind", runtime, runtime])
     cmd.extend([
         "--tmpfs", "/tmp", "--proc", "/proc", "--dev", "/dev",
-        "--dir", "/home", "--dir", "/work", "--bind",
-        f"/proc/self/fd/{workspace_fd}" if workspace_fd is not None else str(checkout), "/work",
+        "--dir", "/home", "--dir", "/work", "--bind", f"/proc/self/fd/{workspace_fd}", "/work",
         "--setenv", "HOME", "/tmp", "--setenv", "TMPDIR", "/tmp",
         "--setenv", "XDG_CACHE_HOME", "/tmp/cache", "--setenv", "XDG_CONFIG_HOME", "/tmp/config",
         "--setenv", "RCMCP_STATE_DIR", "/tmp/rcmcp-tests", "--setenv", "CI", "true",
@@ -147,20 +197,11 @@ def build_command(policy: dict[str, Any], workspace: str, requested: list[str], 
 
 
 def run_probe(policy: dict[str, Any], workspace: str, requested: list[str]) -> int:
-    validated = validate_policy(policy)
-    checkout = _workspace(Path(validated["workspaceRoot"]), workspace)
-    # Pin the approved inode before invoking bubblewrap. A reviewer can rename
-    # its own workspace after validation; rebinding by pathname would otherwise
-    # permit a symlink-swap race before bubblewrap resolves the mount source.
-    fd = os.open(checkout, os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW)
+    fd = open_review_workspace(policy, workspace)
     try:
-        opened = os.fstat(fd)
-        current = os.stat(checkout, follow_symlinks=False)
-        if opened.st_uid != os.getuid() or (opened.st_dev, opened.st_ino) != (current.st_dev, current.st_ino):
-            raise SandboxError("workspace_changed_during_admission")
         command = build_command(policy, workspace, requested, workspace_fd=fd)
-        # The descendant keeps only this pinned FD across exec. Bwrap resolves
-        # /proc/self/fd/N before replacing /proc with the isolated process tree.
+        if not Path(BWRAP).is_file():
+            raise SandboxError("bwrap_missing")
         process = subprocess.Popen(command, start_new_session=True, pass_fds=(fd,))
     finally:
         os.close(fd)
