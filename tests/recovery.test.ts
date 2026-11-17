@@ -443,14 +443,21 @@ describe("restart recovery", () => {
   it.skipIf(process.platform === "win32")("contains stderr persistence failure inside the search lifecycle", async () => {
     const root = await isolatedRoot("rcmcp-recovery-search-stderr-fail-");
     const fakeRg = path.join(root, "fake-rg.sh");
-    // Runtime discovery invokes --version during import. It must not enter
-    // the deliberately slow stderr-emitting search fixture.
+    const stderrGate = path.join(root, "release-stderr");
+    // Runtime discovery invokes --version during import. Do not emit stderr
+    // until the test has replaced its persisted stderr file with a directory:
+    // a fixed sleep races with async process registration under CI load.
     await writeFile(fakeRg, `#!/bin/sh
 if [ "$1" = "--version" ]; then
   printf 'ripgrep test-fixture\\n'
   exit 0
 fi
-sleep 0.2
+i=0
+while [ ! -e ${JSON.stringify(stderrGate)} ]; do
+  i=$((i + 1))
+  if [ "$i" -gt 400 ]; then exit 88; fi
+  sleep 0.02
+done
 printf 'FAKE_STDERR\\n' >&2
 exec sleep 5
 `);
@@ -462,8 +469,11 @@ exec sleep 5
     const errorFile = path.join(root, "search", started.id + ".stderr.log");
     await rm(errorFile, { force: true });
     await mkdir(errorFile);
+    expect(mod.searchResults(started.id, 0, 10).status).toBe("running");
+    // Release fixture stderr only after the deliberate directory sabotage.
+    await writeFile(stderrGate, "release");
 
-    const deadline = Date.now() + 3000;
+    const deadline = Date.now() + 8000;
     let finished = mod.searchResults(started.id, 0, 10);
     while (finished.status === "running" && Date.now() < deadline) {
       await new Promise((resolve) => setTimeout(resolve, 25));
