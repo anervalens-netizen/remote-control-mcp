@@ -52,9 +52,13 @@ quiescence or make an uncertain operation safe to replay. Recovery must still
 follow the original token, full execution identity and independent containment
 contract below. Selected Linux native SDK collection was qualified after the
 [PR #60](https://github.com/anervalens-netizen/remote-control-mcp/pull/60)
-source merge. That demonstrates only a bounded live diagnostic read and older
-agent rejection: actual terminal/job qualification and safe reconciliation
-of historical exhausted capacity remain separate work under
+source merge, including a second owner-route activation under guarded admission.
+That demonstrates a bounded live diagnostic read and older-agent rejection,
+not a clearance of the still-uncertain historical operations. One previously
+occupied slot was independently observed released, while three other original
+uncertain journals were verified unchanged. Job-terminal/resource
+reconciliation and safe clearance of remaining historical reservations stay
+separate work under
 [RC26-REC-06](https://github.com/anervalens-netizen/remote-control-mcp/issues/58).
 
 The main journal retains the exact strict v1 schema. Execution bindings live in
