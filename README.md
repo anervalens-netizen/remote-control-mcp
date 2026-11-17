@@ -83,7 +83,12 @@ returned `nextOffset` while retaining line-range options.
 direct traffic and remain independent of sampled traces. Controller HTTP finish,
 premature close and request abort remain distinct; client consumption stays
 unknown. See [ingress observations](docs/INGRESS-OBSERVABILITY.md) for attribution,
-coverage, retention, paging and direct-transfer limits.
+coverage, retention, paging and direct-transfer limits. `usage_window` adds a
+bounded read-only open/collect/close/read workflow for one explicit canonical
+device and identity, preserving original dispatch envelopes independently of
+the global sample ring. Windows expire after 15 minutes and explicitly report
+missing detail, saturation and process discontinuity; they are diagnostic
+correlation, not source attestation or effect proof.
 
 **RPC and raw-file reads:** redirects are rejected, including redirects to the same origin. A caller selects a configured endpoint; a redirect is not permission to send commands or import bytes elsewhere. Raw HTTP error bodies are consumed only up to a bounded read budget (64 KiB plus at most an incoming stream chunk), then cancelled. Diagnostics retain selected error fields, not unrelated credentials. HTTP errors are not automatically retried.
 

@@ -51,6 +51,7 @@ export const parseIngressReceipt = (value: unknown) => parseHeader(value, ingres
 
 /** Bounded live pages. Samples have stable IDs but offset pages are not snapshots. */
 export const ingressQueryFields = {
+  sampleAfterSequence: z.number().int().nonnegative().safe().optional(),
   sampleOffset: z.number().int().min(0).max(256).optional(),
   sampleLimit: z.number().int().min(0).max(32).optional(),
   seriesOffset: z.number().int().min(0).max(256).optional(),

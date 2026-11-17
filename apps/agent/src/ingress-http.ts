@@ -65,7 +65,7 @@ export function registerAgentIngress(app: FastifyInstance, options: AgentIngress
     const parsed = ingressQuerySchema.safeParse(request.body ?? {});
     if (!parsed.success) return reply.code(400).send({ error: "invalid_request", details: parsed.error.issues });
     const query = parsed.data;
-    const snapshot = observer.snapshot({ sampleOffset: query.sampleOffset, sampleLimit: query.sampleLimit ?? 16 });
+    const snapshot = observer.snapshot({ sampleOffset: query.sampleOffset, sampleLimit: query.sampleLimit ?? 16, sampleAfterSequence: query.sampleAfterSequence });
     const seriesOffset = Math.min(query.seriesOffset ?? 0, snapshot.series.length);
     const seriesLimit = query.seriesLimit ?? 0;
     const days = [...snapshot.history.days].reverse();
