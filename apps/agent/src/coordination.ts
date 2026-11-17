@@ -4,7 +4,7 @@ import path from "node:path";
 import { hostname, userInfo } from "node:os";
 import { z } from "zod";
 import { atomicWriteJson } from "./state.ts";
-import { coordinationRecordSchema as baseRecordSchema, coordinationRecordViewSchema as recordSchema, coordinationTokenSchema, coordinationExecutionSchema, coordinationRecoveryIntentSchema, type CoordinationRecordView as CoordinationRecord, type CoordinationToken, type CoordinationExecution, type CoordinationResolution } from "../../../packages/protocol/src/coordination.ts";
+import { coordinationRecordSchema as baseRecordSchema, coordinationRecordViewSchema as recordSchema, coordinationTokenSchema, coordinationExecutionSchema, coordinationRecoveryIntentSchema, coordinationCapacitySlotSchema, coordinationCapacitySnapshotSchema, type CoordinationRecordView as CoordinationRecord, type CoordinationToken, type CoordinationExecution, type CoordinationResolution } from "../../../packages/protocol/src/coordination.ts";
 
 export const coordinationHash = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 export const coordinationDevice = coordinationHash(hostname());
@@ -221,6 +221,55 @@ export class ResourceCoordinator {
     throw new CoordinationError("device_backpressure");
   }
   activeRecords() { return readdirSync(this.root).filter(f => /^[a-f0-9]{64}\.json$/.test(f)).flatMap(f => { try { const record = this.read(f.slice(0, -5)); return record ? [record] : []; } catch { return []; } }).filter(r => r.state === "active"); }
+  /** Bounded, read-only visibility into this host's capacity. Never reconcile,
+   * reclaim, probe a process by PID or publish unrelated resource identifiers. */
+  inspectCapacity(device: string, selectedIdentity: string) {
+    hash.parse(device); hash.parse(selectedIdentity);
+    const observedAt = new Date(this.now()).toISOString();
+    const slots: Array<z.infer<typeof coordinationCapacitySlotSchema>> = [];
+    for (let slot = 0; slot < this.activeBudget; slot++) {
+      let reference: { resourceId: string; operationId: string } | null;
+      try { reference = this.slot(device, slot); }
+      catch {
+        slots.push({ slot, state: "unreadable", identityScope: "unknown", ageBand: "unknown",
+          lease: "unknown", jobEvidence: "unavailable" });
+        continue;
+      }
+      if (!reference) {
+        slots.push({ slot, state: "free", identityScope: "unknown", ageBand: "unknown",
+          lease: "unknown", jobEvidence: "unavailable" });
+        continue;
+      }
+      try {
+        const record = this.read(reference.resourceId);
+        if (!record || record.resourceId !== reference.resourceId || record.operationId !== reference.operationId ||
+          record.device !== device || record.budgetSlot !== slot) {
+          slots.push({ slot, state: "orphan", identityScope: "unknown", ageBand: "unknown",
+            lease: "unknown", jobEvidence: "unavailable" });
+          continue;
+        }
+        const age = this.now() - Date.parse(record.createdAt);
+        const ageBand = !Number.isFinite(age) || age < 0 ? "unknown" : age < 3600_000 ? "under_hour"
+          : age < 86_400_000 ? "under_day" : "over_day";
+        slots.push({
+          slot, state: record.state, identityScope: record.identity === selectedIdentity ? "same" : "other",
+          ageBand, lease: record.expiresAt <= this.now() ? "elapsed" : "valid",
+          jobEvidence: record.resolution ? "disposition_recorded"
+            : record.jobId ? "bound_unverified" : "no_binding",
+        });
+      } catch {
+        slots.push({ slot, state: "unreadable", identityScope: "unknown", ageBand: "unknown",
+          lease: "unknown", jobEvidence: "unavailable" });
+      }
+    }
+    const freeSlots = slots.filter(s => s.state === "free").length;
+    return coordinationCapacitySnapshotSchema.parse({
+      version: 1, observedAt, budget: this.activeBudget, freeSlots,
+      occupiedSlots: this.activeBudget - freeSlots,
+      visibility: slots.some(s => s.state === "orphan" || s.state === "unreadable") ? "partial" : "complete",
+      noAutoRelease: true, snapshotConsistency: "non_atomic", slots,
+    });
+  }
   private inspection(resource: ResourceVersion, record: CoordinationRecord | null) {
     return { resourceId: this.resourceId(resource), device: resource.device, identity: resource.identity, canonicalKey: resource.canonicalKey,
       observedBaseVersion: resource.baseVersion, record: record ? coordinationPublicRecord(record) : null, activeBudget: this.activeBudget };

@@ -1,6 +1,6 @@
 import type { AgentClient, AgentEndpointContext, AgentRequestOptions } from "./agent-client.ts";
 import { OperationReceiptError } from "./operation-receipt-error.ts";
-export const agentCapabilities = { coordination: "high-level-coordination-v1", coordinationRecovery: "coordination-recovery-v1", utf8: "utf8-byte-pages-v1", durableBatch: "job-key-recovery-v1" } as const;
+export const agentCapabilities = { coordination: "high-level-coordination-v1", coordinationRecovery: "coordination-recovery-v1", coordinationCapacity: "coordination-capacity-v1", utf8: "utf8-byte-pages-v1", durableBatch: "job-key-recovery-v1" } as const;
 export async function requireAgentCapability(client: AgentClient, device: string, context: AgentEndpointContext, capability: string, options?: AgentRequestOptions) {
   let info: { runtime?: { capabilities?: unknown } } | undefined;
   try { info = await client.info(device, context, options) as typeof info; }
