@@ -78,10 +78,15 @@ describe("AgentClient", () => {
   it("routes user-scoped service operations to the user endpoint", async () => {
     let systemHits = 0;
     const system = createServer((_req, res) => { systemHits += 1; res.setHeader("content-type", "application/json"); res.end("{}"); });
+    const serviceRequests: Array<{ path: string | undefined; authorization: string | undefined }> = [];
     const user = createServer((req, res) => {
-      expect(req.url).toBe("/v1/service");
-      expect(req.headers.authorization).toBe("Bearer user-secret");
       res.setHeader("content-type", "application/json");
+      // A parallel capability probe can reach a reused ephemeral port in CI.
+      // Never throw an assertion from a detached HTTP callback: validate only
+      // the intended service request in the test's own awaited continuation.
+      if (req.url === "/v1/info") { res.end(JSON.stringify({ runtime: { capabilities: [] } })); return; }
+      serviceRequests.push({ path: req.url, authorization: req.headers.authorization });
+      if (req.url !== "/v1/service") { res.statusCode = 404; res.end("{}"); return; }
       res.end(JSON.stringify({ ActiveState: "active" }));
     });
     servers.push(system, user);
@@ -91,6 +96,7 @@ describe("AgentClient", () => {
     const client = new AgentClient([{ name: "pc", url: `http://127.0.0.1:${a.port}`, token: "system-secret", userUrl: `http://127.0.0.1:${b.port}`, userToken: "user-secret" }]);
     const result = await advancedClient.service(client, "pc", { name: "example.service", action: "status", scope: "user" });
     expect(result).toEqual({ ActiveState: "active" });
+    expect(serviceRequests).toEqual([{ path: "/v1/service", authorization: "Bearer user-secret" }]);
     expect(systemHits).toBe(0);
   });
 

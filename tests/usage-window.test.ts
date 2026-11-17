@@ -71,12 +71,46 @@ it("keeps burst eviction and bounded collection overflow explicit, with an exact
   const w = (await call("open")).report;
   for (let i = 0; i < 140; i++) await app.inject({ method: "GET", url: "/v1/info" });
   const r = (await call("close", w.windowId)).report;
-  expect(r.agentDenominator).toBe(141);
+  expect(r.agentDenominator).toBe(140 + r.reconciliation.attributed);
+  expect(r.reconciliation.unattributed).toBe(140);
   expect(r.complete).toBe(false);
   expect(r.missingEventDetail).toBeGreaterThan(0);
   expect(r.collectionResidual).toBe(r.missingEventDetail);
   expect(r.reconciliation.collectionResidual).toBe(0);
-  expect(r.reconciliation.attributed + r.reconciliation.unattributed).toBe(141);
+  expect(r.reconciliation.attributed + r.reconciliation.unattributed).toBe(r.agentDenominator);
+});
+
+it("drains a hundred retained arrivals at close without losing the 32-event tail", async () => {
+  const { call, app, ingress } = await fixture();
+  const w = (await call("open")).report;
+  for (let i = 0; i < 100; i++) await app.inject({ method: "GET", url: "/v1/info" });
+  const result = await call("close", w.windowId);
+  expect(result.agentStatus.state).toBe("available");
+  expect(result.report).toMatchObject({ state: "closed", complete: true, agentDenominator: 104,
+    missingEventDetail: 0, closeDeferred: false,
+    reconciliation: { attributed: 4, unattributed: 100, collectionResidual: 0 } });
+  expect(result.report.end.sequence).toBe(ingress.snapshot().sequence);
+  expect(result.report.nextSampleAfterSequence).toBe(result.report.end.sequence);
+});
+
+it("defers close on a bounded partial-page producer and can retry without freezing a partial end", async () => {
+  const { call, app, ingress } = await fixture();
+  const w = (await call("open")).report;
+  for (let i = 0; i < 60; i++) await app.inject({ method: "GET", url: "/v1/info" });
+  const native = ingress.snapshot.bind(ingress);
+  const limited = vi.spyOn(ingress, "snapshot").mockImplementation(options => {
+    const result = native(options);
+    return { ...result, samples: result.samples.slice(0, 1) };
+  });
+  const first = await call("close", w.windowId);
+  expect(first.agentStatus.state).toBe("available");
+  expect(first.report).toMatchObject({ state: "active", end: null, closeDeferred: true, complete: false });
+  expect(first.report.agentSequencesBeyondCursor).toBeGreaterThan(0);
+  limited.mockRestore();
+  const second = await call("close", w.windowId);
+  expect(second.report).toMatchObject({ state: "closed", closeDeferred: false,
+    missingEventDetail: 0, complete: true, reconciliation: { unattributed: 60, collectionResidual: 0 } });
+  expect(second.report.agentDenominator).toBe(72);
 });
 
 it("rejects aliases, wrong identity, invalid IDs and excessive output before agent dispatch", async () => {
@@ -121,6 +155,14 @@ function dispatch(o: AgentDispatchObserver, sequence: number, device = "fixture"
   const receipt = { version: 1 as const, instanceId, sequence, eventId: instanceId + ":" + sequence, dispatchId: correlation.dispatchId };
   return { h, correlation, receipt };
 }
+
+it("distinguishes a valid but wrong agent identity from an unsupported contract", async () => {
+  const { call } = await fixture();
+  vi.stubGlobal("fetch", vi.fn(async () => Response.json(snapshot(1, [], { identity: "owner" }))));
+  const r = await call("open");
+  expect(r.agentStatus).toMatchObject({ state: "error", reason: "identity_mismatch" });
+  expect(r.report).toMatchObject({ state: "opening", start: null, agentDenominator: null, failedReads: 1 });
+});
 
 it("bounds window slots, detail retention and TTL; tracks saturation independently of historical gaps", () => {
   let now = 0;

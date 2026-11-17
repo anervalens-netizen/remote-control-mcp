@@ -17,7 +17,7 @@ const agentSnapshotSchema = z.object({
 }).passthrough();
 const agentStatusSchema = z.object({
   state: z.enum(["available", "unsupported", "timeout", "error"]),
-  reason: z.enum(["route_unavailable", "unsupported_contract", "deadline_exceeded",
+  reason: z.enum(["route_unavailable", "unsupported_contract", "identity_mismatch", "deadline_exceeded",
     "http_error", "network_error", "protocol_error", "unavailable"]).optional(),
   httpStatus: z.number().int().min(100).max(599).optional(),
   timeoutMs: z.literal(agentReadTimeoutMs),
@@ -61,11 +61,28 @@ export function registerUsageTools(server: McpServer, client: AgentClient) {
     if (action !== "read" && w.state !== "closed" && w.state !== "restart") {
       w.busy = true;
       try {
-        const raw = await client.requestRoute(device, "/v1/observations/ingress",
-          { sampleLimit: 32, seriesLimit: 0, historyLimit: 0, ...(w.start ? { sampleAfterSequence: w.sampleAfterSequence } : {}) }, target,
-          { timeoutMs: agentReadTimeoutMs, signal: extra.signal, observeOperation: false });
-        if (store.ingest(w, raw, action === "close")) agentStatus = { state: "available", timeoutMs: agentReadTimeoutMs };
-        else { w.failedReads++; agentStatus = { state: "unsupported", reason: "unsupported_contract", timeoutMs: agentReadTimeoutMs }; }
+        // A close drains bounded, cursor-based pages before freezing the end.
+        // All pages share one five-second budget; incomplete closes stay active.
+        const deadline = Date.now() + agentReadTimeoutMs;
+        for (let page = 0; page < (action === "close" ? 10 : 1); page++) {
+          const remaining = deadline - Date.now();
+          if (remaining <= 0) {
+            agentStatus = { state: "timeout", reason: "deadline_exceeded", timeoutMs: agentReadTimeoutMs };
+            break;
+          }
+          const raw = await client.requestRoute(device, "/v1/observations/ingress",
+            { sampleLimit: 32, seriesLimit: 0, historyLimit: 0, ...(w.start ? { sampleAfterSequence: w.sampleAfterSequence } : {}) }, target,
+            { timeoutMs: Math.min(agentReadTimeoutMs, remaining), signal: extra.signal, observeOperation: false });
+          if (!store.ingest(w, raw, false)) {
+            w.failedReads++;
+            const reason = w.lastReadFailure ?? "unsupported_contract";
+            agentStatus = { state: reason === "identity_mismatch" ? "error" : "unsupported", reason, timeoutMs: agentReadTimeoutMs };
+            break;
+          }
+          agentStatus = { state: "available", timeoutMs: agentReadTimeoutMs };
+          if (action !== "close" || w.state !== "active" || store.finishClose(w)) break;
+        }
+        if (action === "close" && w.state === "active" && agentStatus?.state === "available") w.closeDeferred = true;
       } catch (error) {
         if (extra.signal.aborted) { if (action === "open") store.discard(w); extra.signal.throwIfAborted(); }
         w.failedReads++; agentStatus = failedAgentStatus(error);

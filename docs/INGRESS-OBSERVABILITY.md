@@ -129,7 +129,9 @@ Use `usage_window` with one **canonical configured device name** and explicit
 identity selection are rejected. This is read-only telemetry, with local memory
 allocation; it neither executes workloads nor changes execution/recovery state.
 The existing authenticated diagnostic trust domain applies: windows are not
-isolated from another holder of the controller credential.
+isolated from another holder of the controller credential. The additional
+`sampleAfterSequence` cursor is an agent HTTP parameter used by `usage_window`,
+not a `usage_report` SDK argument; this preserves the old strict agent schema.
 
 1. Call `action: "open"` without a window ID. Save `report.windowId` and require
    `agentStatus.state: "available"` with an established `report.start`. Only
@@ -141,9 +143,16 @@ isolated from another holder of the controller credential.
    after the last collected sequence. Repeat to catch up before closing. There
    is no background poller and a busy window rejects concurrent actions. Samples
    are live; a burst can outpace collection or evict detail before it is read.
-3. Call `action: "close"`. The first successful close freezes the end sequence
-   and observation instant. Failed/unsupported reads and caller cancellation
-   leave an established window active; they do not fabricate a boundary.
+3. Call `action: "close"`. It drains up to ten cursor-based 32-event pages
+   within a shared five-second budget. The first fully collected close freezes
+   the end sequence and observation instant, including its final diagnostic
+   arrival. If the page/time budget ends with an uncollected tail, the window
+   stays active with `closeDeferred: true`, `end: null` and
+   `agentSequencesBeyondCursor`; repeat close to catch up. Failed/unsupported
+   reads and caller cancellation likewise leave an established window active;
+   they do not fabricate a boundary.
+   An agent returning a valid snapshot for a different selected identity
+   reports `identity_mismatch` rather than `unsupported_contract`.
    A detected different agent instance produces `state: "restart"`, null
    denominator/reconciliation and incomplete coverage, never a subtraction
    across process lifetimes. A regressing same-instance snapshot is rejected.
@@ -195,7 +204,8 @@ cancellation is an observation outcome, not proof of absent effects.
 already included their arrival sequence. `lateDispatchObservations` counts
 post-close envelope updates, including finishes. Late receipts/finishes for
 retained attempts can improve a closed report until expiry, but never move its
-end boundary. Agent samples are not collected after close; their later missing
+end boundary. The close operation drains bounded agent pages before freezing,
+but agent samples are not collected after close; their later missing
 or revised detail is explicitly unsupported. Offset detail pages can change
 while late dispatch updates arrive.
 

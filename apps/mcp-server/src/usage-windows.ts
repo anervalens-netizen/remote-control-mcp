@@ -34,6 +34,7 @@ type Window = {
   droppedDispatchObservations: number; droppedEventObservations: number; invalidEvents: number;
   expiryTimer?: ReturnType<typeof setTimeout>;
   duplicateEvents: number; sampleAfterSequence: number; failedReads: number; lateDispatchObservations: number; lateReceiptDeliveries: number; coverageGap: boolean;
+  lastReadFailure?: "identity_mismatch"; closeDeferred: boolean;
 };
 export const windowLimits = { windows: 8, dispatches: 256, events: 256, ttlMs: 900_000, detailPage: 16 } as const;
 
@@ -77,7 +78,7 @@ export class UsageWindows {
     const w: Window = { id: randomUUID(), controllerErrorsAtStart: this.observer.observationErrors, device, identity: selected, expiresAt: this.now() + windowLimits.ttlMs,
       busy: false, state: "opening", dispatches: new Map(), events: new Map(), conflicts: new Set(), dispatchConflicts: new Set(),
       droppedDispatchObservations: 0, droppedEventObservations: 0, invalidEvents: 0, duplicateEvents: 0,
-      sampleAfterSequence: 0, failedReads: 0, lateDispatchObservations: 0, lateReceiptDeliveries: 0, coverageGap: false };
+      sampleAfterSequence: 0, failedReads: 0, lateDispatchObservations: 0, lateReceiptDeliveries: 0, coverageGap: false, closeDeferred: false };
     this.windows.set(w.id, w);
     w.expiryTimer = setTimeout(() => { this.windows.delete(w.id); }, windowLimits.ttlMs);
     w.expiryTimer.unref();
@@ -92,7 +93,9 @@ export class UsageWindows {
   discard(w: Window) { clearTimeout(w.expiryTimer); this.windows.delete(w.id); }
   ingest(w: Window, raw: unknown, close: boolean) {
     const parsed = boundarySchema.safeParse(raw);
-    if (!parsed.success || parsed.data.identity !== w.identity) return false;
+    w.lastReadFailure = undefined;
+    if (!parsed.success) return false;
+    if (parsed.data.identity !== w.identity) { w.lastReadFailure = "identity_mismatch"; return false; }
     const { samples, history, ...base } = parsed.data;
     const b: Boundary = { ...base, history: { retentionDays: history.retentionDays,
       collectionStartedAt: history.collectionStartedAt, retainedGapCount: history.gaps.length, omittedGaps: history.omittedGaps } };
@@ -128,7 +131,14 @@ export class UsageWindows {
       } else if (w.events.size < windowLimits.events) w.events.set(e.eventId, value);
       else w.droppedEventObservations++;
     }
-    if (close) { w.end = b; w.state = "closed"; }
+    if (close) { w.end = b; w.state = "closed"; w.closeDeferred = false; }
+    return true;
+  }
+  /** Freeze only a fully paged current boundary. An unfinished close remains
+   * active and can be retried without permanently losing the last 32-event page. */
+  finishClose(w: Window) {
+    if (w.state !== "active" || !w.latest || !w.start || w.sampleAfterSequence < w.latest.sequence) return false;
+    w.end = w.latest; w.state = "closed"; w.closeDeferred = false;
     return true;
   }
   report(w: Window, offset = 0, limit = 0) {
@@ -172,6 +182,7 @@ export class UsageWindows {
       duplicateReceiptBindings, conflictingReceiptEvents: conflictingReceiptEvents.size,
       receiptInvalid, receiptMissing, receiptPending, controllerObservationErrors, nextSampleAfterSequence: w.sampleAfterSequence,
       lateReceiptDeliveries: w.lateReceiptDeliveries, lateDispatchObservations: w.lateDispatchObservations, failedReads: w.failedReads,
+      closeDeferred: w.closeDeferred, agentSequencesBeyondCursor: end ? Math.max(0, end.sequence - w.sampleAfterSequence) : null,
       processRestart: w.state === "restart", currentCoverageGap: w.coverageGap, detailsComplete,
       complete: w.state === "closed" && detailsComplete && !reconciliation?.inconsistent,
       detailPage: { offset, limit, total: details.length, nextOffset: limit > 0 && offset + limit < details.length ? offset + limit : null },
