@@ -108,7 +108,9 @@ The controller's `totals` cover all agent dispatches in that controller process,
 
 The agent snapshot includes the diagnostic request currently producing it. Controller and agent process lifetimes and snapshot instants usually differ. The report therefore does not automatically divide one lifetime total by the other or present a controller success fraction as fleet workload success.
 
-The public tool currently returns bounded snapshots. It does not open, retain or reconcile an operator's complete window. The bounded public collection/reconciliation workflow remains open under OBS-04 and HIS-02.
+`usage_report` retains its independent-snapshot default. `usage_window` supplies a
+separate bounded public collection workflow for OBS-04/HIS-02. Console reporting
+and deployed acceptance remain separate and unqualified by source tests.
 
 For an independently qualified fixed-window reconciliation:
 
@@ -118,7 +120,115 @@ For an independently qualified fixed-window reconciliation:
 4. Keep conflicting records unassigned in either delivery order. Malformed diagnostic metadata must not abort the whole comparison.
 5. Report attributed requests plus explicitly unattributed requests against the agent denominator. Missing event detail can reflect sampling, collection gaps or late delivery; its cause is not inferred.
 
-`reconcileIngressSamples` is a bounded library primitive available to tests and operator tooling; `usage_report` does not invoke it. Its conservation residual and conflict/invalid counts remain visible. The caller must supply the correct complete window and independently bind its configured peer and execution identity. The helper does not reconstruct a window from unrelated lifetimes or authenticate an endpoint.
+`reconcileIngressSamples` is the bounded primitive used by `usage_window`; `usage_report` does not invoke it. Its conservation residual and conflict/invalid counts remain visible. The caller must supply the correct complete window and independently bind its configured peer and execution identity. The helper does not reconstruct a window from unrelated lifetimes or authenticate an endpoint.
+
+## Public same-window workflow
+
+Use `usage_window` with one **canonical configured device name** and explicit
+`identity: "root" | "owner" | "interactive"` on every call. Aliases and automatic
+identity selection are rejected. This is read-only telemetry, with local memory
+allocation; it neither executes workloads nor changes execution/recovery state.
+The existing authenticated diagnostic trust domain applies: windows are not
+isolated from another holder of the controller credential. The additional
+`sampleAfterSequence` cursor is an agent HTTP parameter used by `usage_window`,
+not a `usage_report` SDK argument; this preserves the old strict agent schema.
+
+1. Call `action: "open"` without a window ID. Save `report.windowId` and require
+   `agentStatus.state: "available"` with an established `report.start`. Only
+   agents advertising `windowCollectionVersion: 1` establish a boundary. An old,
+   malformed or unavailable agent leaves an `opening` report, with no inferred
+   denominator; retry collection on that ID or let it expire.
+2. Call `action: "collect"` with that ID periodically. Each call makes one
+   authenticated, five-second-bounded agent read, requesting up to 32 events
+   after the last collected sequence. Repeat to catch up before closing. There
+   is no background poller and a busy window rejects concurrent actions. Samples
+   are live; a burst can outpace collection or evict detail before it is read.
+3. Call `action: "close"`. It drains up to ten cursor-based 32-event pages
+   within a shared five-second budget. The first fully collected close freezes
+   the end sequence and observation instant, including its final diagnostic
+   arrival. If the page/time budget ends with an uncollected tail, the window
+   stays active with `closeDeferred: true`, `end: null` and
+   `agentSequencesBeyondCursor`; repeat close to catch up. Failed/unsupported
+   reads and caller cancellation likewise leave an established window active;
+   they do not fabricate a boundary.
+   An agent returning a valid snapshot for a different selected identity
+   reports `identity_mismatch` rather than `unsupported_contract`.
+   A detected different agent instance produces `state: "restart"`, null
+   denominator/reconciliation and incomplete coverage, never a subtraction
+   across process lifetimes. A regressing same-instance snapshot is rejected.
+4. Call `action: "read"` for retained reports. This makes no agent request.
+   Repeating close after success also makes no agent request. Optional
+   `detailOffset` (0–256) and `detailLimit` (0–16, default zero) page original
+   selected-peer dispatch envelopes. A disabled page has a terminal null cursor.
+
+The arrival window is `start.sequence < sequence <= end.sequence` on one agent
+instance. The opening diagnostic is excluded. Intermediate and closing
+requests count in the denominator. Boundary UTC times describe agent snapshot
+instants; they are not synchronized controller/agent clocks. Sequence equality
+with the received counter is validated. The report never divides unrelated
+controller and agent lifetime counters.
+
+The controller preserves envelopes at dispatch start, receipt and finish,
+**before** insertion/eviction in its global 128-entry ring. An already-started
+request whose receipt arrives during retention can also be captured. Unrelated
+peer traffic cannot evict retained window envelopes. Dispatch UUID, canonical
+peer, selected identity, route family, original start time, strict receipt and
+correlation binding are preserved. An immutable conflict remains unassigned in
+either delivery order. Invalid agent metadata is counted and never reflected
+as arbitrary producer fields. Repeated event delivery does not increase the
+denominator; invalid/conflicting revisions cannot restore attribution.
+
+`agentDenominator` is the same-instance received-counter delta.
+`denominatorExact` additionally requires complete current-process hooks and no
+counter saturation at every collected boundary. `collectionResidual` is the exact received delta minus attributed and observed
+unassigned events; it includes missing or excluded conflicting detail.
+`reconciliation` additionally partitions that unknown remainder as explicitly
+unattributed traffic and reports its own arithmetic conservation residual. A zero
+conservation residual alone is not proof of complete detail,
+correct origin, successful execution or complete collection. Conflicting event
+identities are excluded from assignable detail and stay unattributed.
+`missingEventDetail` counts absent identities separately. The portion no longer
+in the agent's advertised arrival ring is
+`missingNoLongerRetainedAtAgent`; `missingStillRetainedOrLate` has an unknown
+collection/late-delivery cause. These fields do not infer that an operation
+failed, never started or should be replayed.
+
+`duplicateReceiptBindings` counts extra dispatch bindings to a single agent event;
+all such conflicting receipt identities remain unassigned.
+`receiptInvalid`, `receiptMissing` and `receiptPending` describe retained
+envelopes, including attempts whose arrival cannot be assigned to the window.
+Optional dispatch detail also includes such attempts and known out-of-window
+receipts; only validated in-window receipts enter reconciliation. A controller
+cancellation is an observation outcome, not proof of absent effects.
+`lateReceiptDeliveries` counts first receipts observed after a boundary had
+already included their arrival sequence. `lateDispatchObservations` counts
+post-close envelope updates, including finishes. Late receipts/finishes for
+retained attempts can improve a closed report until expiry, but never move its
+end boundary. The close operation drains bounded agent pages before freezing,
+but agent samples are not collected after close; their later missing
+or revised detail is explicitly unsupported. Offset detail pages can change
+while late dispatch updates arrive.
+
+Bounds are **8 retained windows per AgentClient, 256 event identities and 256
+original dispatch envelopes per window, 15 minutes from open**, and 16 dispatch
+details per output page. Expiry removes memory without extending on reads;
+opening at capacity fails instead of evicting another retained window. Overflow
+counts dropped *observations*, not unique requests, and prevents a complete
+detail claim. Agent detail still has its independent 128-arrival ring.
+Controller restart loses every window; an unknown/expired ID cannot be resumed
+or reconstructed from aggregates. There is no durable window export.
+
+`complete` means a closed, comparable collection with all event identities,
+valid nonconflicting retained evidence, no pending receipt, no observed hook or
+collector fault and no retention overflow. Explicit unattributed traffic can
+remain. It never means complete fleet history, task success, client acceptance,
+source attestation, authorization or verified effects. Historical gap counts,
+collection start and retention days remain separate from the current window;
+a legacy persistence gap alone does not invalidate complete current hooks.
+Failures between polls and pre-observation requests cannot be independently
+detected beyond reported hook/counter coverage. No physical platform or deployed
+runtime acceptance follows from synthetic tests. Console integration remains
+open under HIS-02/UX-07.
 
 ## Capability probe bounds
 

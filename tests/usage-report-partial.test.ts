@@ -91,6 +91,29 @@ it("keeps the healthy path to one agent request and preserves agent coverage", a
   expect(String(fetch.mock.calls[0]?.[0])).toContain("/v1/observations/ingress");
 });
 
+it("retains the legacy usage_report schema and succeeds against old strict query fields", async () => {
+  const source = snapshot();
+  const allowed = new Set(["sampleOffset", "sampleLimit", "seriesOffset", "seriesLimit", "historyOffset", "historyLimit"]);
+  const fetch = vi.fn(async (_url: string | URL, options: RequestInit) => {
+    const fields = JSON.parse(String(options.body)) as Record<string, unknown>;
+    return Object.keys(fields).every(key => allowed.has(key))
+      ? Response.json(source)
+      : Response.json({ error: "invalid_request" }, { status: 400 });
+  });
+  vi.stubGlobal("fetch", fetch);
+  const { sdk, read } = await fixture();
+  const tool = (await sdk.listTools()).tools.find(value => value.name === "usage_report")!;
+  expect(tool.inputSchema.properties).not.toHaveProperty("sampleAfterSequence");
+  expect(report(await read())).toMatchObject({ agentStatus: { state: "available" }, agent: source });
+  expect(fetch).toHaveBeenCalledTimes(1);
+  expect(JSON.parse(String(fetch.mock.calls[0]![1].body))).toEqual({ sampleLimit: 2 });
+  const rejected = await sdk.callTool({ name: "usage_report", arguments: {
+    device: "alias", identity: "root", sampleAfterSequence: 5,
+  } });
+  expect(rejected.isError).toBe(true);
+  expect(fetch).toHaveBeenCalledTimes(1);
+});
+
 it("returns bounded timeout coverage while retaining the attempted controller dispatch", async () => {
   const { read } = await fixture();
   const entered = Promise.withResolvers<void>();

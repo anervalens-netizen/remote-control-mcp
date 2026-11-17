@@ -31,6 +31,17 @@ export class AgentDispatchObserver {
   private readonly totals = counts();
   private readonly samples: DispatchSample[] = [];
   private overflowCalls = 0;
+  observationErrors = 0;
+  private readonly listeners = new Set<(sample: DispatchSample) => void>();
+  observe(listener: (sample: DispatchSample) => void) {
+    this.listeners.add(listener);
+    return () => { this.listeners.delete(listener); };
+  }
+  private publish(sample: DispatchSample) {
+    for (const listener of this.listeners) {
+      try { listener(structuredClone(sample)); } catch { this.observationErrors = Math.min(Number.MAX_SAFE_INTEGER, this.observationErrors + 1); }
+    }
+  }
   readonly sampleLimit: number;
   readonly maxPeers: number;
   constructor(sampleLimit = 128, maxPeers = 256) {
@@ -46,8 +57,10 @@ export class AgentDispatchObserver {
     }
     if (!peer) this.overflowCalls++;
     this.totals.started++; if (peer) peer.counts.started++;
-    return { sample: { dispatchId: correlation.dispatchId, device, identity, route: routeCategory(route), startedAt: new Date().toISOString(), correlation: structuredClone(correlation) },
+    const handle: DispatchHandle = { sample: { dispatchId: correlation.dispatchId, device, identity, route: routeCategory(route), startedAt: new Date().toISOString(), correlation: structuredClone(correlation) },
       peer, started: performance.now(), finished: false, responded: false };
+    this.publish(handle.sample);
+    return handle;
   }
   response(handle: DispatchHandle, status: number, header: unknown) {
     if (handle.responded || handle.finished) return;
@@ -58,6 +71,7 @@ export class AgentDispatchObserver {
     handle.sample.statusCode = Number.isInteger(status) ? status : undefined;
     handle.sample.receiptState = state;
     if (matched) handle.sample.receipt = parsed.value;
+    this.publish(handle.sample);
     for (const target of [this.totals, handle.peer?.counts]) if (target) {
       target.responses++;
       target[state === "matched" ? "receiptMatched" : state === "invalid" ? "receiptInvalid" : "receiptMissing"]++;
@@ -76,6 +90,7 @@ export class AgentDispatchObserver {
       if (outcome === "timeout") target.timeouts++;
       if (outcome === "cancelled") target.cancelled++;
     }
+    this.publish(handle.sample);
     this.samples.push(structuredClone(handle.sample));
     if (this.samples.length > this.sampleLimit) this.samples.shift();
     return true;
@@ -87,7 +102,7 @@ export class AgentDispatchObserver {
     const limit = Math.min(this.sampleLimit, Math.max(0, Math.floor(options.sampleLimit ?? this.sampleLimit)));
     return {
       version: 1 as const, instanceId: this.instanceId, collectionStartedAt: this.startedAt, observedAt: new Date().toISOString(),
-      persistence: "process_memory" as const, maxPeers: this.maxPeers, sampleLimit: this.sampleLimit, overflowCalls: this.overflowCalls,
+      persistence: "process_memory" as const, observationErrors: this.observationErrors, maxPeers: this.maxPeers, sampleLimit: this.sampleLimit, overflowCalls: this.overflowCalls,
       scope: "Controller-to-agent HTTP attempts, including capability probes and raw reads; no execution/task/client acceptance inference.",
       timingScope: "Dispatch duration includes remote execution or wait and body consumption; pre-handler queue is unobserved.",
       attributionScope: "Receipt matches are diagnostic correlation within the configured endpoint/shared-bearer trust domain. They do not attest endpoint identity or prove durable execution/effects/client acceptance. Credential holders can declare correlation and read its metadata.",

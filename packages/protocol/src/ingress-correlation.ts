@@ -58,4 +58,9 @@ export const ingressQueryFields = {
   historyOffset: z.number().int().min(0).max(90).optional(),
   historyLimit: z.number().int().min(0).max(14).optional(),
 };
-export const ingressQuerySchema = z.object(ingressQueryFields).strict();
+// Agent HTTP accepts an additive cursor. Do not expose it through the legacy
+// usage_report SDK input schema: older agents reject unknown keys with 400.
+export const ingressQuerySchema = z.object({
+  ...ingressQueryFields,
+  sampleAfterSequence: z.number().int().nonnegative().safe().optional(),
+}).strict();

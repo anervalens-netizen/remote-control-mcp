@@ -494,21 +494,22 @@ export class IngressObserver {
     }
   }
 
-  snapshot(options: { sampleOffset?: number; sampleLimit?: number } = {}) {
+  snapshot(options: { sampleOffset?: number; sampleLimit?: number; sampleAfterSequence?: number } = {}) {
     const observedAt = new Date(this.time()).toISOString();
-    const offset = bounded(options.sampleOffset, 0, 0, this.samples.length);
+    const selectedSamples = options.sampleAfterSequence === undefined ? this.samples : this.samples.filter(s => s.sequence > options.sampleAfterSequence!);
+    const offset = bounded(options.sampleOffset, 0, 0, selectedSamples.length);
     const limit = bounded(options.sampleLimit, this.sampleLimit, 0, 256);
     const cutoff = this.cutoff();
     const days = [...this.days.values()].filter(day => day.date >= cutoff).sort((a, b) => a.date.localeCompare(b.date));
     const relevantGaps = this.gaps.filter(gap => gap.to.slice(0, 10) >= cutoff);
     return structuredClone({
-      version: 1 as const, observedAt, counterScope: "current_process" as const,
+      version: 1 as const, windowCollectionVersion: 1 as const, observedAt, counterScope: "current_process" as const,
       instanceId: this.instanceId, identity: this.identity, processStartedAt: this.processStartedAt,
       sequence: this.sequence, totals: { ...this.totals, inFlight: this.totals.received - this.totals.completed },
       sources: this.sources, series: [...this.series.values()], seriesOverflowRequests: this.seriesOverflowRequests,
       malformedCorrelations: this.malformedCorrelations, duplicateCompletions: this.duplicateCompletions,
-      samples: this.samples.slice(offset, offset + limit),
-      samplePage: { offset, limit, total: this.samples.length, nextOffset: limit > 0 && offset + limit < this.samples.length ? offset + limit : null },
+      samples: selectedSamples.slice(offset, offset + limit),
+      samplePage: { offset, limit, total: selectedSamples.length, nextOffset: limit > 0 && offset + limit < selectedSamples.length ? offset + limit : null },
       sampleCoverage: {
         retained: this.samples.length, omitted: this.totals.received - this.samples.length, limit: this.sampleLimit,
         semantics: "Last received requests in this process. Stable eventId deduplicates delivery; revision replaces an earlier sample. Totals are independent of samples.",
