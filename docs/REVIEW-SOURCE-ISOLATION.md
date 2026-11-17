@@ -69,6 +69,34 @@ network-dependent dependency acquisition is a separate controlled preparation
 step. Do not mount the host's personal package cache or provider credentials
 into these probes.
 
+## Selected Linux installation and DSH integration
+
+After the PR #61 source merge, a selected Linux review host installed the
+unmodified, source-hash-verified launcher at
+`/usr/local/libexec/rcmcp-review-sandbox` and a pinned root-owned policy at
+`/etc/remote-control-mcp/inv05-review-sandbox.json`. The actual installed
+entrypoint was run as a non-root review account against a disposable checkout.
+Native Node tests passed: host process/service sockets and provider state were
+not visible, inherited mount-source descriptors were consumed, the checkout
+could be modified, an outside-root workspace was rejected and the owned
+fixture was removed. The running DSH service retained its process identity.
+
+The scoped DSH profile's prompt configuration now includes a
+`review-source-probes` skill and explicit guidance to use the installed
+launcher for executable source probes. A role prompt preview confirmed the
+guidance reaches a new review worker; existing model/executor/permission
+settings were checked unchanged and the DSH service was not restarted.
+The prior profile version remains in a private, protected backup.
+
+**This is a partial delivery.** The DSH worker's native shell tools and
+subagents are not yet forcibly routed through the isolated launcher.
+A source-probe command could still bypass the guidance. The enforceable,
+profile-scoped dispatch and end-to-end PR-review/publication acceptance are
+tracked in [INV-05 dispatch enforcement](https://github.com/anervalens-netizen/remote-control-mcp/issues/64).
+No workaround should mislabel optional use of the launcher as complete
+process isolation. Other DSH profiles and owner-authorized Remote Control
+operations retain their existing capabilities.
+
 ## Acceptance boundary
 
 The synthetic test executes the actual runner, checks private paths and host
