@@ -1,0 +1,188 @@
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { createServer } from "node:http";
+import { afterEach, expect, it, vi } from "vitest";
+import { AgentClient } from "../apps/mcp-server/src/agent-client.ts";
+import { dispatchesFor } from "../apps/mcp-server/src/agent-dispatch-observer.ts";
+import { capabilityReport, registerCapabilityTools } from "../apps/mcp-server/src/capability-tools.ts";
+
+afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); });
+
+const inventory = ["one", "two", "three"].map(name => ({ name, url: "http://127.0.0.1:1" }));
+function slowClient() {
+  const calls: string[] = [];
+  const client = new AgentClient(inventory, undefined, 0);
+  vi.spyOn(client, "info").mockImplementation((name, _context, options) => {
+    calls.push(name);
+    return new Promise((resolve, reject) => {
+      const cleanup = () => { clearTimeout(timer); options?.signal?.removeEventListener("abort", abort); };
+      const abort = () => { cleanup(); reject(options!.signal!.reason); };
+      const timer = setTimeout(() => { cleanup(); resolve({ hostname: "late-fixture" }); }, 500);
+      if (options?.signal?.aborted) abort();
+      else options?.signal?.addEventListener("abort", abort, { once: true });
+    });
+  });
+  return { client, calls };
+}
+
+it("bounds capability probes even when the generic RPC deadline is disabled", async () => {
+  const { client } = slowClient();
+  const started = performance.now();
+  const [result] = await capabilityReport(client, ["one"], 1, { probeTimeoutMs: 100 });
+  expect(result?.endpoints.system).toMatchObject({ ok: false, error: expect.stringContaining("budget") });
+  expect(result?.probeBudgetMs).toBe(100);
+  expect(performance.now() - started).toBeLessThan(450);
+});
+
+it("cancels in-flight capability reads and stops queued devices", async () => {
+  const { client, calls } = slowClient();
+  const controller = new AbortController();
+  const pending = capabilityReport(client, undefined, 1, { probeTimeoutMs: 1000, signal: controller.signal });
+  const rejection = expect(pending).rejects.toThrow();
+  setTimeout(() => controller.abort(new Error("fixture caller stopped")), 20);
+  await rejection;
+  expect(calls).toEqual(["one"]);
+  const before = calls.length;
+  await expect(capabilityReport(client, undefined, 1, { signal: controller.signal })).rejects.toThrow("fixture caller stopped");
+  expect(calls).toHaveLength(before);
+});
+
+it("uses the finite health-probe budget and keeps successful endpoint results", async () => {
+  vi.stubEnv("RCMCP_HEALTH_PROBE_TIMEOUT_MS", "240");
+  const client = new AgentClient([{ name: "fixture", url: "http://127.0.0.1:1", userUrl: "http://127.0.0.1:2" }], undefined, 0);
+  const calls: Array<{ timeoutMs?: number; hasSignal: boolean }> = [];
+  vi.spyOn(client, "info").mockImplementation(async (_name, context, options) => {
+    calls.push({ timeoutMs: options?.timeoutMs, hasSignal: options?.signal instanceof AbortSignal });
+    if (context === "user") throw new Error("fixture endpoint unavailable");
+    return { runtime: { ready: true } };
+  });
+  const [result] = await capabilityReport(client);
+  expect(result).toMatchObject({
+    probeBudgetMs: 240, endpoints: {
+      system: { ok: true, info: { runtime: { ready: true } } },
+      user: { ok: false, error: "fixture endpoint unavailable" },
+    },
+  });
+  expect(calls).toEqual([{ timeoutMs: 240, hasSignal: true }, { timeoutMs: 240, hasSignal: true }]);
+});
+
+it("advertises and forwards the capability budget through the actual SDK registration", async () => {
+  const client = new AgentClient([{ name: "fixture", url: "http://127.0.0.1:1" }]);
+  const info = vi.spyOn(client, "info").mockResolvedValue({ runtime: { ready: true } });
+  const server = new McpServer({ name: "fixture-capabilities", version: "1" });
+  registerCapabilityTools(server, client);
+  const sdk = new Client({ name: "fixture-capabilities-client", version: "1" });
+  const [st, ct] = InMemoryTransport.createLinkedPair();
+  try {
+    await Promise.all([server.connect(st), sdk.connect(ct)]);
+    const tool = (await sdk.listTools()).tools.find(item => item.name === "capability_report")!;
+    expect(tool.inputSchema.properties).toHaveProperty("probeTimeoutMs");
+    const rejected = await sdk.callTool({ name: "capability_report", arguments: { devices: ["fixture"], probeTimeoutMs: 0 } });
+    expect(rejected.isError).toBe(true);
+    expect(info).not.toHaveBeenCalled();
+    const result = await sdk.callTool({ name: "capability_report", arguments: { devices: ["fixture"], probeTimeoutMs: 120 } });
+    expect(result.isError).not.toBe(true);
+    expect(info).toHaveBeenCalledWith("fixture", "system", expect.objectContaining({ timeoutMs: 120, signal: expect.any(AbortSignal) }));
+  } finally { await sdk.close(); await server.close(); }
+});
+
+it("aborts a real stalled HTTP response without borrowing the execution timeout", async () => {
+  const http = createServer((_request, _response) => { /* intentionally stalled synthetic info response */ });
+  await new Promise<void>(resolve => http.listen(0, "127.0.0.1", resolve));
+  const client = new AgentClient([{ name: "fixture", url: `http://127.0.0.1:${(http.address() as { port: number }).port}` }], undefined, 0);
+  // This test runs after a separate finite-budget assertion; bound teardown too.
+  const caller = new AbortController();
+  const emergency = setTimeout(() => caller.abort(new Error("fixture safety deadline")), 1000);
+  try {
+    const [result] = await capabilityReport(client, undefined, 1, { probeTimeoutMs: 100, signal: caller.signal });
+    expect(result).toMatchObject({ probeBudgetMs: 100, endpoints: { system: { ok: false, error: expect.stringContaining("budget") } } });
+    expect(dispatchesFor(client).snapshot().total).toMatchObject({ started: 1, timeouts: 1, cancelled: 0 });
+  } finally {
+    clearTimeout(emergency);
+    http.closeAllConnections();
+    await new Promise<void>(resolve => http.close(() => resolve()));
+  }
+}, 2000);
+
+it("deduplicates aliases and canonical devices before issuing endpoint probes", async () => {
+  const client = new AgentClient([{ name: "fixture", aliases: ["fixture-alias"], url: "http://127.0.0.1:1", userUrl: "http://127.0.0.1:2" }]);
+  const info = vi.spyOn(client, "info").mockResolvedValue({ runtime: { ready: true } });
+  const rows = await capabilityReport(client, ["fixture-alias", "fixture", "fixture-alias"], 3);
+  expect(rows).toHaveLength(1);
+  expect(rows[0]).toMatchObject({ device: "fixture", probeBudgetScope: "per_endpoint_timeout", reportDeviceLimit: 64 });
+  expect(info.mock.calls.map(([name, context]) => [name, context])).toEqual([["fixture", "system"], ["fixture", "user"]]);
+});
+
+it("rejects oversized explicit and default target lists before any probe", async () => {
+  const client = new AgentClient(Array.from({ length: 65 }, (_, index) => ({ name: "fixture-" + index, url: "http://127.0.0.1:1" })));
+  const info = vi.spyOn(client, "info").mockResolvedValue({ runtime: { ready: true } });
+  await expect(capabilityReport(client)).rejects.toThrow("64");
+  await expect(capabilityReport(client, Array(65).fill("fixture-0"))).rejects.toThrow("64");
+  expect(info).not.toHaveBeenCalled();
+});
+
+it("rejects oversized capability fan-out through the actual SDK catalog before dispatch", async () => {
+  const client = new AgentClient([{ name: "fixture", url: "http://127.0.0.1:1" }]);
+  const info = vi.spyOn(client, "info").mockResolvedValue({ runtime: { ready: true } });
+  const server = new McpServer({ name: "fixture-capability-limit", version: "1" });
+  registerCapabilityTools(server, client);
+  const sdk = new Client({ name: "fixture-capability-limit-client", version: "1" });
+  const [st, ct] = InMemoryTransport.createLinkedPair();
+  try {
+    await Promise.all([server.connect(st), sdk.connect(ct)]);
+    const tool = (await sdk.listTools()).tools.find(item => item.name === "capability_report")!;
+    expect(tool.inputSchema.properties?.devices).toMatchObject({ maxItems: 64 });
+    const result = await sdk.callTool({ name: "capability_report", arguments: { devices: Array(65).fill("fixture") } });
+    expect(result.isError).toBe(true);
+    expect(info).not.toHaveBeenCalled();
+  } finally { await sdk.close(); await server.close(); }
+});
+
+it("keeps caller cancellation distinct from a capability endpoint timeout", async () => {
+  const entered = Promise.withResolvers<void>();
+  const http = createServer(() => { entered.resolve(); });
+  await new Promise<void>(resolve => http.listen(0, "127.0.0.1", resolve));
+  const client = new AgentClient([{ name: "fixture", url: "http://127.0.0.1:" + (http.address() as { port: number }).port }], undefined, 0);
+  const caller = new AbortController();
+  try {
+    const pending = capabilityReport(client, undefined, 1, { probeTimeoutMs: 1000, signal: caller.signal });
+    const rejected = expect(pending).rejects.toMatchObject({ name: "AbortError" });
+    await entered.promise;
+    caller.abort(new DOMException("Synthetic caller cancelled", "AbortError"));
+    await rejected;
+    expect(dispatchesFor(client).snapshot().total).toMatchObject({ started: 1, timeouts: 0, cancelled: 1 });
+  } finally {
+    caller.abort();
+    http.closeAllConnections();
+    await new Promise<void>(resolve => http.close(() => resolve()));
+  }
+});
+
+it("caps active device probes at 32 even for a larger direct-call concurrency request", async () => {
+  const devices = Array.from({ length: 64 }, (_, index) => ({ name: "fixture-" + index, url: "http://fixture.invalid" }));
+  const client = new AgentClient(devices);
+  const release = Promise.withResolvers<void>();
+  let active = 0, peak = 0;
+  const names: string[] = [];
+  const info = vi.spyOn(client, "info").mockImplementation(async name => {
+    names.push(name); active++; peak = Math.max(peak, active);
+    try { await release.promise; return { runtime: { ready: true } }; }
+    finally { active--; }
+  });
+  const pending = capabilityReport(client, undefined, 128, { probeTimeoutMs: 1000 });
+  try {
+    await vi.waitFor(() => expect(info).toHaveBeenCalledTimes(32), { timeout: 200, interval: 5 });
+    expect(active).toBe(32);
+    expect(peak).toBe(32);
+  } finally {
+    release.resolve();
+    await pending;
+  }
+  const rows = await pending;
+  expect(rows).toHaveLength(64);
+  expect(new Set(names).size).toBe(64);
+  expect(info).toHaveBeenCalledTimes(64);
+  expect(peak).toBe(32);
+  expect(active).toBe(0);
+});

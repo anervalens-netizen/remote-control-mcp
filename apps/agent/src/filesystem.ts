@@ -1,4 +1,5 @@
 import { fileSignature } from "./file-version.ts";
+import { fsReadModeIssues, type FsReadInput } from "../../../packages/protocol/src/execution.ts";
 import { resolveProspectivePath } from "./path-resolution.ts";
 import { beginTransfer, finalizeTransfer } from "./transfer-staging.ts";
 import { copyPath } from "./filesystem-copy.ts";
@@ -12,12 +13,6 @@ import { captureWindowsDirectRewriteMetadata, cloneExistingMetadata, existingMod
 const DEFAULT_READ_BYTES = 1024 * 1024;
 const DEFAULT_LINE_COUNT = 1000;
 const READ_CHUNK_BYTES = 64 * 1024;
-
-type FsReadInput = {
-  versioned?: boolean; expectedVersion?: string;
-  path: string; offset?: number; length?: number; encoding?: "utf8" | "base64";
-  tailBytes?: number; startLine?: number; lineCount?: number; maxBytes?: number;
-};
 
 type OpenFile = Awaited<ReturnType<typeof open>>;
 type SyncableFile = Pick<OpenFile, "stat" | "sync">;
@@ -184,11 +179,9 @@ export async function fsRead(input: FsReadInput) {
   if (input.lineCount !== undefined && input.lineCount < 1) throw new Error("lineCount must be >= 1");
   if (input.maxBytes !== undefined && input.maxBytes < 1) throw new Error("maxBytes must be >= 1");
   const lineMode = input.startLine !== undefined || input.lineCount !== undefined || input.maxBytes !== undefined;
-  if (input.tailBytes !== undefined && (input.offset !== undefined || input.length !== undefined || lineMode)) throw new Error("tailBytes cannot be combined with offset/length/line-range options");
-  if (lineMode && (input.length !== undefined || input.tailBytes !== undefined)) throw new Error("line-range options cannot be combined with length/tail options");
-  if (lineMode && input.encoding === "base64") throw new Error("line-range reads require UTF-8 encoding");
+  const modeIssue = fsReadModeIssues(input)[0];
+  if (modeIssue) throw new Error(modeIssue.message);
   const versioned = input.versioned === true || input.expectedVersion !== undefined;
-  if (versioned && (lineMode || input.tailBytes !== undefined)) throw new Error("Versioned reads require byte paging");
   const file = await open(input.path, "r");
   try {
     const before = versioned ? await file.stat({ bigint: true }) : undefined;

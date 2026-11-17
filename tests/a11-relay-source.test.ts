@@ -4,7 +4,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { z } from "zod";
 import { fsReadFields, fsReadResultSchema } from "../packages/protocol/src/execution.ts";
 import { registerTools } from "../apps/mcp-server/src/all-tools.ts";
-import { appendFile, link, stat, readdir, mkdtemp, readFile, rename, rm, truncate, utimes, writeFile } from "node:fs/promises";
+import { appendFile, chmod, link, stat, readdir, mkdtemp, readFile, rename, rm, truncate, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, expect, it } from "vitest";
@@ -22,6 +22,9 @@ async function fixture() {
   const source = path.join(root, "source"), destination = path.join(root, "destination");
   await writeFile(source, oldBytes, { mode: 0o600 }); await utimes(source, mtime, mtime);
   await writeFile(destination, "existing destination", { mode: 0o640 });
+  // Creation mode is filtered by umask. Set the existing destination's intended
+  // POSIX mode before testing its preservation across publication.
+  if (process.platform !== "win32") await chmod(destination, 0o640);
   return { root, source, destination };
 }
 function client(afterRead?: () => Promise<void>) {

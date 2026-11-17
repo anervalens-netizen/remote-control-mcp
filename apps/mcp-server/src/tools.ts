@@ -1,9 +1,10 @@
+import { registerUsageTools } from "./usage-tools.ts";
 import { assertAggregateBudget } from "./result-budget.ts";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { executionFacts } from "../../../packages/protocol/src/execution-outcome.ts";
 import type { AgentClient } from "./agent-client.ts";
-import { execRequestFields, execResultSchema, executionRouteFields, fsReadFields } from "../../../packages/protocol/src/execution.ts";
+import { execRequestFields, execResultSchema, executionRouteFields, fsReadFields, refineFsReadInput } from "../../../packages/protocol/src/execution.ts";
 import { elevationSchema, executionInputSchema, executionLabel, identitySchema, legacyContextSchema, resolveExecutionContext } from "./execution-identity.ts";
 
 function text(value: unknown) {
@@ -17,6 +18,7 @@ const execReceiptPage = z.union([execReceiptReference.extend({ state: z.enum(["r
 const targetFields = { context: legacyContextSchema, identity: identitySchema, elevation: elevationSchema };
 
 export function registerTools(server: McpServer, client: AgentClient): void {
+  registerUsageTools(server, client);
   server.registerTool("devices_list", {
     description: "List configured remote computers and their configured execution endpoints. Use capability_report for live endpoint capabilities.",
     outputSchema: {
@@ -73,14 +75,14 @@ export function registerTools(server: McpServer, client: AgentClient): void {
   });
 
   server.registerTool("fs_read", {
-    description: "Read file bytes as UTF-8/base64 using byte paging, bounded tail reads or bounded 1-based line ranges.",
-    inputSchema: {
+    description: "Read file bytes as UTF-8/base64 using byte paging, bounded tail reads or bounded 1-based line ranges. Use length for byte/versioned paging; maxBytes selects UTF-8 line mode and cannot be used with versioned or expectedVersion.",
+    inputSchema: z.object({
       device: z.string().min(1), ...fsReadFields, ...targetFields,
-    },
-  }, async ({ device, context, identity, elevation, ...input }) => {
+    }).superRefine(refineFsReadInput),
+  }, async ({ device, context, identity, elevation, ...input }, extra) => {
     const target = resolveExecutionContext(client, device, { context, identity, elevation }, "system");
     assertAggregateBudget([input.length ?? input.tailBytes ?? input.maxBytes ?? 1024 * 1024]);
-    return text(await client.fsRead(device, input, target));
+    return text(await client.fsRead(device, input, target, { signal: extra.signal }));
   });
 
   server.registerTool("fs_write", {

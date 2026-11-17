@@ -13,7 +13,7 @@ export const readOnlyTools: ReadonlySet<string> = new Set([
   "batch_recover", "batch_read", "browser_execution", "capability_report",
   "desktop_clipboard_get", "desktop_helper_status", "desktop_monitors", "desktop_observe",
   "desktop_screenshot", "desktop_session_status", "desktop_windows",
-  "device_info", "device_contexts", "devices_list", "fleet_status",
+  "device_info", "device_contexts", "devices_list", "fleet_status", "usage_report",
   "docker_snapshot", "docker_summary", "exec_recover", "fs_read", "fs_list",
   "gpu_snapshot", "host_inventory", "network_snapshot", "package_managers", "storage_snapshot", "system_metrics",
   "job_input_hash", "job_status", "job_output", "job_output_since", "job_wait", "job_list", "job_history", "job_lineage",

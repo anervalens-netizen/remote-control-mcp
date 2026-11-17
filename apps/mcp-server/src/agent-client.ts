@@ -7,7 +7,20 @@ import type { DeployInput, JobFollowInput, ProjectRunInput } from "../../../pack
 import type { DesktopUiaInput, DesktopWindowsInput, DesktopBatchInput } from "../../../packages/protocol/src/desktop.ts";
 import { filterProcesses, summarizeDockerSnapshot, type DockerSnapshot } from "../../../packages/protocol/src/filtering.ts";
 import fs from "node:fs";
-import { observeAgent, operationsFor } from "./operation-observer.ts";
+import { observeAgent, operationsFor, operationContext } from "./operation-observer.ts";
+import { randomUUID } from "node:crypto";
+import { dispatchesFor } from "./agent-dispatch-observer.ts";
+import { controllerHttpContext } from "./http-delivery-observer.ts";
+import { encodeIngressHeader, ingressCorrelationHeader, ingressReceiptHeader, type IngressCorrelation } from "../../../packages/protocol/src/ingress-correlation.ts";
+
+function agentCorrelation(client: AgentClient): IngressCorrelation {
+  const current = operationContext.getStore();
+  const observer = current?.observer ?? operationsFor(client);
+  const http = controllerHttpContext.getStore();
+  return { version: 1, controllerInstanceId: observer.controllerInstanceId, dispatchId: randomUUID(),
+    ...(http ? { httpRequestId: http.requestId } : {}),
+    ...(current ? observer.correlation(current.traceId) : {}) };
+}
 import { repoRecoveryReceipt, type RepoRecoveryReceipt } from "./repo-recovery-receipt.ts";
 import type { DeviceConfig, ExecRequest, ExecResult } from "../../../packages/protocol/src/index.ts";
 import type { AndroidFilePushInput } from "./android-file-push.ts";
@@ -202,7 +215,10 @@ export class AgentClient {
     }
     const requestStarted = performance.now();
     const endpoint = this.endpoint(name, context, route);
-    const headers: Record<string, string> = {};
+    const correlation = agentCorrelation(this);
+    const dispatchObserver = dispatchesFor(this);
+    const dispatch = dispatchObserver.begin(this.getDevice(name).name, context, route, correlation);
+    const headers: Record<string, string> = { [ingressCorrelationHeader]: encodeIngressHeader(correlation) };
     if (body !== undefined) headers["content-type"] = "application/json";
     if (endpoint.token) headers.authorization = `Bearer ${endpoint.token}`;
     const timeoutMs = options.timeoutMs ?? this.requestTimeoutMs;
@@ -217,48 +233,57 @@ export class AgentClient {
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
         ...(signal ? { signal } : {}),
       });
+      dispatchObserver.response(dispatch, response.status, response.headers.get(ingressReceiptHeader));
       if (!response.ok) {
         const { recovery, diagnostic, truncated, jobStartFailure, agentCode, coordinationConflict, repositoryRecovery } = await readAgentError(response, undefined, route);
         const detail = recovery ? " job_recovery_required" : diagnostic ? ` ${diagnostic}` : "";
         throw new AgentRequestError(`${name} ${context} ${route} failed: HTTP ${response.status}${detail}`, name, context, route, "http", response.status, recovery, truncated, jobStartFailure, agentCode, coordinationConflict, repositoryRecovery);
       }
+      let result: T;
       try {
-        const result = await response.json() as T;
-        const value = result as any;
-        const candidate = route === "/v1/jobs/start" || route === "/v1/jobs/status" || route === "/v1/jobs/follow"
-          ? value?.id ?? value?.job?.id
-          : route === "/v1/project/run" ? value?.result?.id : route === "/v1/deploy/run" ? value?.job?.id : repoRecoveryReceipt(route, value)?.jobId;
-        const returnedJob = typeof candidate === "string" ? candidate : knownJobId;
-        const deviceName = this.getDevice(name).name;
-        if (options.observeOperation !== false) await observeAgent("agent_response", deviceName, context, true, returnedJob);
-        // Only authoritative job routes carry lifecycle evidence. Output EOF,
-        // missing receipts and a cancellation request do not prove termination.
-        if (["/v1/jobs/start", "/v1/jobs/status", "/v1/jobs/follow", "/v1/jobs/cancel"].includes(route)) {
-          const status = value?.state === "resolved" ? value.job : value;
-          if (typeof returnedJob === "string" && status?.id === returnedJob) {
-            await operationsFor(this).reconcileJob({ device: deviceName,
-              identity: context === "system" ? "root" : context === "user" ? "owner" : "interactive",
-              jobId: returnedJob }, status.state);
-          }
-        }
-        return result;
+        result = await response.json() as T;
       } catch (error) {
-        if (signal?.aborted) throw error;
-        const detail = error instanceof Error ? error.message : String(error);
-        throw new AgentRequestError(`${name} ${context} ${route} invalid JSON response: ${detail}`, name, context, route, "protocol");
+        // Fetch can fail while reading an otherwise successful response body.
+        // Only a completed body with invalid JSON is a protocol failure.
+        if (signal?.aborted || !(error instanceof SyntaxError)) throw error;
+        throw new AgentRequestError(`${name} ${context} ${route} invalid JSON response: ${error.message}`, name, context, route, "protocol");
       }
+      const value = result as any;
+      const candidate = route === "/v1/jobs/start" || route === "/v1/jobs/status" || route === "/v1/jobs/follow"
+        ? value?.id ?? value?.job?.id
+        : route === "/v1/project/run" ? value?.result?.id : route === "/v1/deploy/run" ? value?.job?.id : repoRecoveryReceipt(route, value)?.jobId;
+      const returnedJob = typeof candidate === "string" ? candidate : knownJobId;
+      const deviceName = this.getDevice(name).name;
+      if (options.observeOperation !== false) await observeAgent("agent_response", deviceName, context, true, returnedJob);
+      // Only authoritative job routes carry lifecycle evidence. Output EOF,
+      // missing receipts and a cancellation request do not prove termination.
+      if (["/v1/jobs/start", "/v1/jobs/status", "/v1/jobs/follow", "/v1/jobs/cancel"].includes(route)) {
+        const status = value?.state === "resolved" ? value.job : value;
+        if (typeof returnedJob === "string" && status?.id === returnedJob) {
+          await operationsFor(this).reconcileJob({ device: deviceName,
+            identity: context === "system" ? "root" : context === "user" ? "owner" : "interactive",
+            jobId: returnedJob }, status.state);
+        }
+      }
+      dispatchObserver.finish(dispatch, "success");
+      return result;
     } catch (error) {
       if (options.observeOperation !== false) await observeAgent("agent_response", this.getDevice(name).name, context, false,
         error instanceof AgentRequestError ? error.repositoryRecovery?.jobId : undefined);
-      const kind = error instanceof AgentRequestError ? error.kind : options.signal?.aborted && !deadline.timedOut() ? "cancelled" : deadline.timedOut() ? "timeout" : "network";
+      // The combined signal preserves the first abort reason, including an
+      // outer capability budget that expires before this request's own timer.
+      const abortedKind = signal?.aborted ? signal.reason?.name === "TimeoutError" ? "timeout" : "cancelled" : undefined;
+      const kind = error instanceof AgentRequestError ? error.kind : abortedKind ?? "network";
+      dispatchObserver.finish(dispatch, kind === "context" ? "network" : kind);
       const trace = diagnosticContext.getStore();
       if (trace) trace.agentErrors[kind] = (trace.agentErrors[kind] ?? 0) + 1;
       if (error instanceof AgentRequestError) throw error;
-      if (options.signal?.aborted && !deadline.timedOut()) {
+      if (kind === "cancelled") {
         throw new AgentRequestError(`${name} ${context} ${route} cancelled by caller`, name, context, route, "cancelled");
       }
-      if (deadline.timedOut()) {
-        throw new AgentRequestError(`${name} ${context} ${route} timed out after ${timeoutMs}ms`, name, context, route, "timeout");
+      if (kind === "timeout") {
+        const detail = deadline.timedOut() && !options.signal?.aborted ? ` after ${timeoutMs}ms` : " (request deadline expired)";
+        throw new AgentRequestError(`${name} ${context} ${route} timed out${detail}`, name, context, route, "timeout");
       }
       const detail = error instanceof Error ? error.message : String(error);
       throw new AgentRequestError(`${name} ${context} ${route} network failure: ${detail}`, name, context, route, "network");
@@ -371,28 +396,50 @@ export class AgentClient {
     const endpoint = this.endpoint(name, context, "/v1/fs/raw");
     const url = new URL("/v1/fs/raw", endpoint.base);
     url.searchParams.set("path", pathname);
-    const headers: Record<string, string> = {};
-    if (endpoint.token) headers.authorization = `Bearer ${endpoint.token}`;
     const deadline = createDeadline(timeoutMs);
-
+    const correlation = agentCorrelation(this);
+    const dispatchObserver = dispatchesFor(this);
+    const dispatch = dispatchObserver.begin(this.getDevice(name).name, context, "/v1/fs/raw", correlation);
+    const headers: Record<string, string> = { [ingressCorrelationHeader]: encodeIngressHeader(correlation) };
+    if (endpoint.token) headers.authorization = `Bearer ${endpoint.token}`;
     let response: Response;
+    const finish = (outcome: Parameters<typeof dispatchObserver.finish>[1]) => {
+      dispatchObserver.finish(dispatch, outcome);
+      deadline.signal?.removeEventListener("abort", onDeadline);
+    };
+    const onDeadline = () => {
+      finish("timeout");
+      void response?.body?.cancel(deadline.signal?.reason).catch(() => undefined);
+    };
+    // A caller can retain the returned stream without starting its iterator.
+    // The deadline must still close its body and dispatch without an iterator.
+    deadline.signal?.addEventListener("abort", onDeadline, { once: true });
+
     try {
       response = await fetch(url, { headers, redirect: "error", ...(deadline.signal ? { signal: deadline.signal } : {}) });
+      dispatchObserver.response(dispatch, response.status, response.headers.get(ingressReceiptHeader));
     } catch (error) {
       if (deadline.timedOut()) {
+        finish("timeout");
         deadline.dispose();
         throw new AgentRequestError(`${name} ${context} /v1/fs/raw timed out after ${timeoutMs}ms`, name, context, "/v1/fs/raw", "timeout");
       }
+      finish("network");
       deadline.dispose();
       throw error;
     }
     if (!response.ok) {
       try {
         const { diagnostic, truncated, agentCode } = await readAgentError(response, 64 * 1024);
+        finish("http");
         throw new AgentRequestError(`${name} ${context} /v1/fs/raw failed: HTTP ${response.status}${diagnostic ? ` ${diagnostic}` : ""}`, name, context, "/v1/fs/raw", "http", response.status, undefined, truncated, undefined, agentCode);
       } catch (error) {
         if (error instanceof AgentRequestError) throw error;
-        if (deadline.timedOut()) throw new AgentRequestError(`${name} ${context} /v1/fs/raw timed out after ${timeoutMs}ms`, name, context, "/v1/fs/raw", "timeout");
+        if (deadline.timedOut()) {
+          finish("timeout");
+          throw new AgentRequestError(`${name} ${context} /v1/fs/raw timed out after ${timeoutMs}ms`, name, context, "/v1/fs/raw", "timeout");
+        }
+        finish("network");
         throw new AgentRequestError(`${name} ${context} /v1/fs/raw error response interrupted`, name, context, "/v1/fs/raw", "network", response.status);
       } finally {
         deadline.dispose();
@@ -400,12 +447,14 @@ export class AgentClient {
       }
     }
     if (!response.body) {
+      finish("protocol");
       deadline.dispose();
       throw new AgentRequestError(`${name} ${context} /v1/fs/raw returned no response body`, name, context, "/v1/fs/raw", "protocol");
     }
     const lengthHeader = response.headers.get("content-length");
     const size = lengthHeader === null ? NaN : Number(lengthHeader);
     if (!Number.isSafeInteger(size) || size < 0) {
+      finish("protocol");
       deadline.dispose();
       await response.body.cancel().catch(() => undefined);
       throw new AgentRequestError(`${name} ${context} /v1/fs/raw returned invalid content-length`, name, context, "/v1/fs/raw", "protocol");
@@ -415,21 +464,41 @@ export class AgentClient {
 
     const chunks = (async function* (): AsyncGenerator<Buffer> {
       let bytes = 0;
+      let complete = false;
+      let protocolFailure = false;
       try {
         for await (const chunk of response.body as any as AsyncIterable<Uint8Array>) {
           const buffer = Buffer.from(chunk);
           bytes += buffer.length;
-          if (bytes > size) throw new Error(`Raw file exceeded advertised size ${size}`);
+          if (bytes > size) {
+            protocolFailure = true;
+            throw new Error(`Raw file exceeded advertised size ${size}`);
+          }
           if (buffer.length) yield buffer;
         }
-        if (bytes !== size) throw new Error(`Raw file size mismatch: expected ${size}, got ${bytes}`);
+        if (bytes !== size) {
+          protocolFailure = true;
+          throw new Error(`Raw file size mismatch: expected ${size}, got ${bytes}`);
+        }
+        complete = true;
+        finish("success");
+      } catch (error) {
+        finish(deadline.timedOut() ? "timeout" : protocolFailure ? "protocol" : "network");
+        throw error;
       } finally {
+        // A consumer may stop at its known Content-Length without requesting
+        // another iterator result. Only a shorter read is abandoned here.
+        if (!complete) finish(deadline.timedOut() ? "timeout" : bytes === size ? "success" : "cancelled");
         deadline.dispose();
         await response.body?.cancel().catch(() => undefined);
       }
     })();
 
-    return { size, modifiedAt, chunks, cancel: async () => { deadline.dispose(); await response.body?.cancel().catch(() => undefined); } };
+    return { size, modifiedAt, chunks, cancel: async () => {
+      finish(deadline.timedOut() ? "timeout" : "cancelled");
+      deadline.dispose();
+      await response.body?.cancel().catch(() => undefined);
+    } };
   }
 
   async fsRead(name: string, input: unknown, context: AgentEndpointContext = "system", options?: AgentRequestOptions): Promise<unknown> {

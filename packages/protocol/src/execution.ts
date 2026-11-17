@@ -52,17 +52,44 @@ export const execResultSchema = z.object({
 export const sourceVersionSchema = z.string().regex(/^\d+:\d+:\d+:-?\d+:-?\d+$/);
 
 export const fsReadFields = {
-  versioned: z.boolean().optional().describe("Verify regular-file identity and nanosecond modification/change times around a byte read. Byte paging only."),
-  expectedVersion: sourceVersionSchema.optional().describe("Require this sourceVersion; implies versioned. A mismatch fails without returning data."),
+  versioned: z.boolean().optional().describe("Verify regular-file identity and nanosecond modification/change times around a byte read. Byte paging only: omit maxBytes, startLine, lineCount and tailBytes."),
+  expectedVersion: sourceVersionSchema.optional().describe("Require this sourceVersion; implies versioned even when versioned=false. Byte paging only; a mismatch fails without returning data."),
   path: z.string().min(1),
-  offset: z.number().int().nonnegative().optional(),
-  length: z.number().int().nonnegative().max(64 * 1024 * 1024).optional(),
-  encoding: z.enum(["utf8", "base64"]).optional(),
-  tailBytes: z.number().int().nonnegative().max(64 * 1024 * 1024).optional(),
-  startLine: z.number().int().positive().optional(),
-  lineCount: z.number().int().positive().max(100_000).optional(),
-  maxBytes: z.number().int().positive().max(64 * 1024 * 1024).optional(),
+  offset: z.number().int().nonnegative().optional().describe("Byte offset for byte paging, or the returned nextOffset continuation cursor for line reads. Not valid with tailBytes."),
+  length: z.number().int().nonnegative().max(64 * 1024 * 1024).optional().describe("Byte paging limit; use this to bound versioned reads. Zero reads metadata only. Cannot be combined with line-range options or tailBytes."),
+  encoding: z.enum(["utf8", "base64"]).optional().describe("Byte/tail encoding; defaults to UTF-8. Line-range reads require UTF-8."),
+  tailBytes: z.number().int().nonnegative().max(64 * 1024 * 1024).optional().describe("Read at most this many bytes from the end. Cannot be combined with offset, length, line-range options or versioned reads."),
+  startLine: z.number().int().positive().optional().describe("Select UTF-8 line mode at this 1-based line; incompatible with length, tailBytes and versioned reads."),
+  lineCount: z.number().int().positive().max(100_000).optional().describe("Select UTF-8 line mode with this line count; incompatible with length, tailBytes and versioned reads."),
+  maxBytes: z.number().int().positive().max(64 * 1024 * 1024).optional().describe("UTF-8 line mode only: select line mode and cap its bytes. For byte paging or versioned reads use length and omit maxBytes."),
 };
+
+export type FsReadInput = z.infer<z.ZodObject<typeof fsReadFields>>;
+
+/** One mode contract for direct callers, agent HTTP and single/batch MCP reads. */
+export function fsReadModeIssues(value: FsReadInput) {
+  const issues: Array<{ code: "custom"; path: string[]; message: string }> = [];
+  const lineMode = value.startLine !== undefined || value.lineCount !== undefined || value.maxBytes !== undefined;
+  if (value.tailBytes !== undefined && (value.offset !== undefined || value.length !== undefined || lineMode)) {
+    issues.push({ code: "custom", path: ["tailBytes"], message: "tailBytes cannot be combined with byte or line-range options" });
+  }
+  if (lineMode && (value.length !== undefined || value.tailBytes !== undefined)) {
+    issues.push({ code: "custom", path: ["length"], message: "line-range options cannot be combined with length/tail options" });
+  }
+  if (lineMode && value.encoding === "base64") {
+    issues.push({ code: "custom", path: ["encoding"], message: "line-range reads require UTF-8 encoding" });
+  }
+  if ((value.versioned === true || value.expectedVersion !== undefined) && (lineMode || value.tailBytes !== undefined)) {
+    issues.push({ code: "custom", path: [value.expectedVersion !== undefined ? "expectedVersion" : "versioned"], message: "Versioned reads require byte paging; use length and omit maxBytes, startLine, lineCount and tailBytes" });
+  }
+  return issues;
+}
+
+export function refineFsReadInput(value: FsReadInput, ctx: z.RefinementCtx) {
+  for (const issue of fsReadModeIssues(value)) ctx.addIssue(issue);
+}
+
+export const fsReadSchema = z.object(fsReadFields).superRefine(refineFsReadInput);
 
 export const fsReadResultSchema = z.object({
   sourceVersion: sourceVersionSchema.optional(),

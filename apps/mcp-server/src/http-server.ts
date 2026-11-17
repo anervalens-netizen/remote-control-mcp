@@ -1,6 +1,8 @@
 import { imageTransforms } from "./image-transform-budget.ts";
 import type { RuntimeReleaseIdentity } from "../../../packages/shared/src/release-manifest.ts";
 import { operationsFor } from "./operation-observer.ts";
+import { dispatchesFor } from "./agent-dispatch-observer.ts";
+import { controllerHttpContext, httpDeliveryFor } from "./http-delivery-observer.ts";
 import { recoveryFor } from "./result-recovery.ts";
 import { captureError } from "./error-reporting.ts";
 import { isLegacyRequest } from "@modelcontextprotocol/server";
@@ -140,6 +142,10 @@ export function createMcpHttpServer(client: AgentClient, options: {
   cleanup.unref();
 
   const http = createServer(async (req: IncomingMessage, res: ServerResponse) => {
+    const deliveryObserver = httpDeliveryFor(client);
+    const delivery = deliveryObserver.begin(req, options.token);
+    res.setHeader("x-rcmcp-delivery-id", delivery.value.requestId);
+    return controllerHttpContext.run({ requestId: delivery.value.requestId }, async () => {
     const requestStarted = performance.now();
     const requestIdHeader = req.headers["x-request-id"];
     const requestId = typeof requestIdHeader === "string" && requestIdHeader.length <= 200 ? requestIdHeader : randomUUID();
@@ -154,8 +160,18 @@ export function createMcpHttpServer(client: AgentClient, options: {
       if (failed) requestsFailed++;
       requestDurationMsTotal += performance.now() - requestStarted;
     };
-    res.once("finish", () => finishRequest(res.statusCode >= 400));
-    res.once("close", () => finishRequest(res.statusCode >= 400));
+    res.once("finish", () => {
+      deliveryObserver.finish(delivery, res, "response_finished");
+      finishRequest(res.statusCode >= 400);
+    });
+    res.once("close", () => {
+      deliveryObserver.finish(delivery, res, res.writableFinished ? "response_finished" : "connection_closed");
+      finishRequest(res.statusCode >= 400 || !res.writableFinished);
+    });
+    req.once("aborted", () => {
+      deliveryObserver.finish(delivery, res, "request_aborted");
+      finishRequest(true);
+    });
 
     try {
       if (req.url === "/health" || req.url === "/health/details") {
@@ -193,6 +209,8 @@ export function createMcpHttpServer(client: AgentClient, options: {
           },
           compatibility: { ...compatibility.snapshot(), modern: { protocolVersion: "2026-07-28", requests: modernRequests } },
           operationObserver: await operationsFor(client).health(),
+          agentDispatches: dispatchesFor(client).snapshot(),
+          httpDelivery: deliveryObserver.snapshot(),
           resultRecovery: recoveryFor(client).stats(),
           imageTransforms: imageTransforms.stats(),
           toolDiagnostics: diagnosticsFor(client).snapshot(),
@@ -282,6 +300,7 @@ export function createMcpHttpServer(client: AgentClient, options: {
       if (!res.headersSent) res.writeHead(500, { "content-type": "application/json" });
       if (!res.writableEnded) res.end(JSON.stringify({ error: "internal_error", requestId }));
     }
+    });
   });
 
   eventLoop.enable();

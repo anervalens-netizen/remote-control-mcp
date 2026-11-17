@@ -1,7 +1,10 @@
 import { ExecReceiptStore } from "./exec-receipts.ts";
-import { ensureStateDir } from "./state.ts";
+import { ensureStateDir, stateRoot } from "./state.ts";
+import path from "node:path";
+import type { Socket } from "node:net";
+import { registerAgentIngress } from "./ingress-http.ts";
 import { filesystemReadResponse } from "./filesystem-read-response.ts";
-import { fsReadFields } from "../../../packages/protocol/src/execution.ts";
+import { fsReadSchema } from "../../../packages/protocol/src/execution.ts";
 import { registerFilesystemManageRoute } from "./filesystem-routes.ts";
 import { timeoutMsField } from "../../../packages/protocol/src/deadline.ts";
 import { registerBrowserRoutes } from "./browser-routes.ts";
@@ -36,18 +39,6 @@ if (!token && !allowUnauthenticated) {
 }
 
 const execReceipts = new ExecReceiptStore(ensureStateDir("exec-receipts-v1"));
-const fsReadSchema = z.object({
-  ...fsReadFields,
-}).superRefine((value, ctx) => {
-  const lineMode = value.startLine !== undefined || value.lineCount !== undefined || value.maxBytes !== undefined;
-  if (value.tailBytes !== undefined && (value.offset !== undefined || value.length !== undefined || lineMode)) {
-    ctx.addIssue({ code: "custom", message: "tailBytes cannot be combined with byte or line-range options" });
-  }
-  if (lineMode && (value.length !== undefined || value.tailBytes !== undefined)) {
-    ctx.addIssue({ code: "custom", message: "line-range options cannot be combined with length/tail options" });
-  }
-  if (lineMode && value.encoding === "base64") ctx.addIssue({ code: "custom", message: "line-range reads require UTF-8 encoding" });
-});
 const fsWriteSchema = z.object({
   path: z.string().min(1),
   data: z.string(),
@@ -96,6 +87,96 @@ if (configuredBodyLimitBytes !== null && (!Number.isSafeInteger(configuredBodyLi
 // a numeric parser limit, so MAX_SAFE_INTEGER is the practical no-fixed-cap value.
 const bodyLimit = configuredBodyLimitBytes ?? Number.MAX_SAFE_INTEGER;
 const app = Fastify({ logger: true, bodyLimit });
+// Track the primary listener's accepted sockets and every admitted HTTP socket,
+// including Fastify's additional localhost listeners. Unparsed secondary sockets
+// have no admitted request to cancel; process termination closes those descriptors.
+const connections = new Set<Socket>();
+let connectionsDrained: (() => void) | undefined;
+const trackConnection = (socket: Socket) => {
+  if (connections.has(socket)) return;
+  connections.add(socket);
+  socket.once("close", () => {
+    connections.delete(socket);
+    if (connections.size === 0) connectionsDrained?.();
+  });
+};
+app.server.on("connection", trackConnection);
+app.addHook("onRequest", async request => { trackConnection(request.raw.socket); });
+
+let ingress: ReturnType<typeof registerAgentIngress> | undefined;
+let closing: Promise<void> | undefined;
+const SHUTDOWN_GRACE_MS = 5000;
+const SHUTDOWN_DRAIN_MS = 3000;
+const closeConnections = () => {
+  for (const socket of connections) {
+    try { socket.destroy(); }
+    catch { process.exitCode = 1; }
+  }
+};
+const requestClose = (signal: "SIGTERM" | "SIGINT") => {
+  closing ??= (async () => {
+    let cancelGrace = () => {};
+    let closeSettled = false;
+    try {
+      const closed = app.close().catch(error => {
+        process.exitCode = 1;
+        app.log.error({ err: error }, "Agent shutdown failed");
+      }).then(() => new Promise<void>(resolve => {
+        // Fastify's primary close can settle while secondary HTTP requests remain.
+        if (connections.size === 0) resolve();
+        else connectionsDrained = resolve;
+      })).finally(() => { closeSettled = true; });
+      const grace = new Promise<void>(resolve => {
+        const timer = setTimeout(() => resolve(), SHUTDOWN_GRACE_MS);
+        cancelGrace = () => clearTimeout(timer);
+      });
+      await Promise.race([closed, grace]);
+      cancelGrace();
+      if (!closeSettled) {
+        closeConnections();
+        // Socket closure starts existing request-owned cancellation. Fastify
+        // may close before that async cleanup settles, so retain its drain time.
+        await new Promise<void>(resolve => setTimeout(resolve, SHUTDOWN_DRAIN_MS));
+        if (!closeSettled) {
+          process.exitCode = 1;
+          app.log.error("Agent shutdown cleanup exceeded its drain deadline");
+        }
+      }
+    } catch (error) {
+      process.exitCode = 1;
+      app.log.error({ err: error }, "Agent shutdown failed");
+    } finally {
+      cancelGrace();
+      closeConnections();
+      // Idempotent after onClose; otherwise persist only observed HTTP endings.
+      // Unfinished requests remain unfinished, not successful workload effects.
+      try { ingress?.close(); }
+      catch (error) {
+        process.exitCode = 1;
+        app.log.error({ err: error }, "Agent ingress shutdown failed");
+      }
+      if (process.platform === "win32") process.exit(process.exitCode ?? 0);
+      // POSIX process.exit() can join a worker blocked in fs.open indefinitely.
+      // Restore the requested signal after cleanup and signal only this process.
+      // A cleanup failure uses uncatchable SIGKILL (no core), not a clean-stop
+      // signal. Neither outcome proves termination of detached jobs or effects.
+      const finalSignal = Number(process.exitCode ?? 0) === 0 ? signal : "SIGKILL";
+      process.removeAllListeners(finalSignal);
+      process.kill(process.pid, finalSignal);
+    }
+  })();
+};
+// Install before acquiring the writer claim: a startup stop must run cleanup too.
+process.on("SIGTERM", () => requestClose("SIGTERM"));
+process.on("SIGINT", () => requestClose("SIGINT"));
+const ingressRuntime = runtimeStatus();
+const retentionDays = Number(process.env.RCMCP_INGRESS_RETENTION_DAYS ?? 90);
+ingress = registerAgentIngress(app, {
+  token, allowUnauthenticated, instanceId: ingressRuntime.instanceId,
+  identity: ingressRuntime.context === "system" ? "root" : ingressRuntime.context === "user" ? "owner" : ingressRuntime.context === "desktop" ? "interactive" : "unknown",
+  stateDirectory: path.join(stateRoot, "agent-ingress-v1"),
+  retentionDays: Number.isSafeInteger(retentionDays) && retentionDays >= 60 && retentionDays <= 90 ? retentionDays : 90,
+});
 const runtimeWithHttpLimits = () => ({ ...runtimeStatus(), maxBodyBytes: configuredBodyLimitBytes, transferStagingVersion: 1, relaySourceVersion: 1, pathResolutionVersion: 1 });
 
 app.addHook("onRequest", async (request, reply) => {
@@ -209,4 +290,10 @@ registerExtraRoutes(app);
 registerBrowserRoutes(app);
 if (process.env.RCMCP_DESKTOP_ENABLED === "1") registerDesktopRoutes(app);
 if (semanticDesktopConfigured()) registerSemanticDesktopRoutes(app);
-await app.listen({ host, port });
+try {
+  await app.listen({ host, port });
+} catch (error) {
+  // A failed bind must release this process's new telemetry claim as well.
+  await app.close();
+  throw error;
+}
