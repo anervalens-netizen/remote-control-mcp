@@ -40,24 +40,19 @@ privacy checks and console build remain required alongside these suites.
 - Historical persistence gaps do not automatically invalidate current hooks;
   undetectable observation loss between reads cannot be reconstructed.
 
-## PR57 follow-up verification
+## Review-driven synthetic regression coverage
 
-The first DSH review of head `8cbcb9d` identified four follow-ups. The
-corrections isolate the legacy usage_report input from the new agent-only
-sequence cursor, classify valid wrong-identity snapshots independently, drain
-up to ten pages in one five-second close budget with safe deferred retries, and
-move route assertions out of a detached HTTP request callback. Regression
-tests explicitly exercise a strict old-agent query, wrong identity, 100-event
-tail, deferred/retried close and the user-service route.
+The `usage_window` contract is covered by synthetic fixtures for legacy
+`usage_report` agent compatibility, explicitly mismatched agent identity,
+a 100-event collection tail, deferred/retried close and safe HTTP service
+route handling. An agent with malformed correlation metadata can supply valid
+immutable event locators: collection advances past those locators while
+excluding their data from trusted reconciliation. The 32-invalid-header case
+ensures a full page of rejected correlations cannot indefinitely block later
+event collection. Invalid, conflicting and missing details remain visible.
 
-Isolated HP source verification after these edits: TypeScript passed; focused
-four-file suite 63/63; broad suite 187 test files passed, 8 skipped and 1,487
-tests passed, 65 skipped; two privileged systemd suites excluded. Public-data
-guard and history regression checks passed (514 files; zero issues); console
-build passed. These are local source tests, not installed runtime qualification.
-
-Next engineering gate: commit and publish exact-head candidate, obtain current
-Codex Connector + DSH reviews and required CI, publish version-bound review
-dispositions and verify review-task closure. Then qualify an explicitly
-configured deployed route privately before changing acceptance status.
-Console implementation remains a separate next scope.
+Complete source, reviewer, CI, host and release verification receipts belong
+in private task evidence, not in this public engineering contract. Production
+acceptance must independently establish installed source, runtime identity,
+authenticated tool discovery and same-window behavior. Console integration is
+a separate scope.

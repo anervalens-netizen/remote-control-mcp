@@ -113,7 +113,11 @@ export class UsageWindows {
       if (!id.success) return;
       const { instanceId, sequence, eventId } = id.data;
       if (instanceId !== b.instanceId || sequence <= w.start!.sequence || sequence > b.sequence || eventId !== instanceId + ":" + sequence) return;
+      // Advance only when the producer's immutable event locator is valid.
+      // Invalid correlation payloads are excluded from reconciliation, but
+      // must not pin every subsequent cursor page to the same 32 events.
       markConflict(eventId);
+      w.sampleAfterSequence = Math.max(w.sampleAfterSequence, sequence);
     };
     for (const rawEvent of samples) {
       const event = eventSchema.safeParse(rawEvent);

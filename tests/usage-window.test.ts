@@ -9,7 +9,7 @@ import { AgentClient } from "../apps/mcp-server/src/agent-client.ts";
 import { AgentDispatchObserver, dispatchesFor } from "../apps/mcp-server/src/agent-dispatch-observer.ts";
 import { UsageWindows, windowLimits } from "../apps/mcp-server/src/usage-windows.ts";
 import { registerUsageTools } from "../apps/mcp-server/src/usage-tools.ts";
-import { encodeIngressHeader } from "../packages/protocol/src/ingress-correlation.ts";
+import { encodeIngressHeader, ingressCorrelationHeader } from "../packages/protocol/src/ingress-correlation.ts";
 
 const closes: Array<() => Promise<unknown>> = [];
 afterEach(async () => { while (closes.length) await closes.pop()!(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
@@ -91,6 +91,20 @@ it("drains a hundred retained arrivals at close without losing the 32-event tail
     reconciliation: { attributed: 4, unattributed: 100, collectionResidual: 0 } });
   expect(result.report.end.sequence).toBe(ingress.snapshot().sequence);
   expect(result.report.nextSampleAfterSequence).toBe(result.report.end.sequence);
+});
+
+it("does not stall a close behind thirty-two invalid correlation headers", async () => {
+  const { call, app, ingress } = await fixture();
+  const w = (await call("open")).report;
+  for (let i = 0; i < 32; i++) await app.inject({
+    method: "GET", url: "/v1/info", headers: { [ingressCorrelationHeader]: "invalid-correlation" },
+  });
+  await app.inject({ method: "GET", url: "/v1/info" });
+  const r = (await call("close", w.windowId)).report;
+  expect(r).toMatchObject({ state: "closed", closeDeferred: false, complete: false,
+    invalidEventObservations: 32, missingEventDetail: 32 });
+  expect(r.agentSequencesBeyondCursor).toBe(0);
+  expect(r.nextSampleAfterSequence).toBe(ingress.snapshot().sequence);
 });
 
 it("defers close on a bounded partial-page producer and can retry without freezing a partial end", async () => {
