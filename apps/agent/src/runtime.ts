@@ -158,7 +158,7 @@ export function runtimeStatus() {
     "fs-edit", "repo-checkpoint-selection", "repo-apply-patch", "project-multistack", "deploy-phases", "job-follow",
     "high-level-idempotency-v1",
     "exec-receipts-v1", "agent-ingress-v1",
-    "job-key-recovery-v1", "utf8-byte-pages-v1", "high-level-coordination-v1", "coordination-recovery-v1",
+    "job-key-recovery-v1", "utf8-byte-pages-v1", "high-level-coordination-v1", "coordination-recovery-v1", "coordination-capacity-v1",
     ...(jobIsolation.ready ? ["job-cgroup-isolation-v1"] : []),
     ...(desktopEnabled && process.platform === "linux" ? ["linux-desktop-v1"] : []),
     ...(desktopEnabled ? ["desktop", "desktop-session", "desktop-batch", "desktop-helper", "desktop-window-enumeration", "desktop-uia", "clipboard", "browser"] : []),

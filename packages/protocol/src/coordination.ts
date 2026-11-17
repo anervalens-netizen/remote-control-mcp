@@ -5,6 +5,25 @@ export const coordinationTokenSchema = z.object({
   generation: z.number().int().positive(), baseVersion: z.string().regex(/^[a-f0-9]{64}$/),
 }).strict();
 export const coordinationFields = { coordination: coordinationTokenSchema.optional() };
+// A sanitized, four-slot diagnostic. No raw resource path, token, operation ID,
+// job ID or credential crosses this contract. State is not effect/exit proof.
+export const coordinationCapacitySlotSchema = z.object({
+  slot: z.number().int().min(0).max(3),
+  state: z.enum(["free", "reserved", "active", "uncertain", "released", "orphan", "unreadable"]),
+  identityScope: z.enum(["same", "other", "unknown"]),
+  ageBand: z.enum(["under_hour", "under_day", "over_day", "unknown"]),
+  lease: z.enum(["valid", "elapsed", "unknown"]),
+  jobEvidence: z.enum(["no_binding", "bound_unverified", "disposition_recorded", "unavailable"]),
+}).strict();
+export const coordinationCapacitySnapshotSchema = z.object({
+  version: z.literal(1), observedAt: z.string().datetime(),
+  budget: z.number().int().min(1).max(4),
+  freeSlots: z.number().int().min(0).max(4),
+  occupiedSlots: z.number().int().min(0).max(4),
+  visibility: z.enum(["complete", "partial"]),
+  noAutoRelease: z.literal(true), snapshotConsistency: z.literal("non_atomic"),
+  slots: z.array(coordinationCapacitySlotSchema).min(1).max(4),
+}).strict();
 export const coordinationResourceSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("repo"), path: z.string().min(1).max(4096) }).strict(),
   z.object({ kind: z.literal("service"), name: z.string().min(1).max(256), scope: z.enum(["user", "system"]).optional() }).strict(),

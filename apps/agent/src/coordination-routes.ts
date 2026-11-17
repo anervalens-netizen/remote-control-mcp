@@ -44,6 +44,17 @@ export function registerCoordinationRoutes(app: FastifyInstance) {
       } catch { /* Different identity or unavailable job: never release by age. */ }
     }
   }
+  app.post("/v1/coordination/capacity", async (request, reply) => {
+    // Sensitive operational diagnostics remain bearer-protected even in a
+    // deliberately unauthenticated development agent configuration.
+    const credential = process.env.RCMCP_AGENT_TOKEN;
+    if (!credential || request.headers.authorization !== "Bearer " + credential) {
+      return reply.code(401).send({ error: "unauthorized" });
+    }
+    if (!request.body || typeof request.body !== "object" || Array.isArray(request.body)
+      || Object.keys(request.body).length !== 0) return reply.code(400).send({ error: "invalid_request" });
+    return coordinator.inspectCapacity(coordinationDevice, coordinationIdentity);
+  });
   app.post("/v1/coordination", async (request, reply) => {
     const parsed = coordinationRequestSchema.safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: "invalid_request" });

@@ -26,6 +26,34 @@ not evidence that a process stopped. The original token's `baseVersion` remains
 unchanged, even if a partial operation changed refs or other repository data.
 Generation, operation, resource, device and execution identity must all match.
 
+### Read-only device capacity diagnosis
+
+The additive MCP tool `coordination_capacity` selects one configured device and
+explicit execution identity; the selected agent must advertise
+`coordination-capacity-v1`. Older agents fail capability checking before the
+diagnostic request is dispatched. The authenticated agent endpoint
+`POST /v1/coordination/capacity` accepts an empty JSON object only, and uses the
+agent's own device identity to read at most four local capacity slots.
+
+The diagnostic reports slot indices, occupied/free counts, recorded state,
+same/different execution identity, approximate age and lease bands, and whether
+a job binding or disposition exists. Missing/mismatched journals are
+`orphan`; unreadable records are `unreadable` with partial visibility.
+No repository path, resource key, operation/token/job identifier, credential,
+command or producer-controlled error is serialized. The view is **non-atomic**
+and may change during collection; free slots are an observation, not a promise
+of immediate admission. A bound job is **not** verified terminal evidence.
+A recorded disposition does not establish successful effects.
+
+This read never probes process identity, runs a job, retries a request, settles a
+writer, releases a slot or alters any journal. `active`, `uncertain`, orphan
+and invalid records remain fenced. An elapsed lease does not demonstrate
+quiescence or make an uncertain operation safe to replay. Recovery must still
+follow the original token, full execution identity and independent containment
+contract below. Actual terminal/job qualification and safely reconciling any
+historical exhausted capacity remain separate work under
+[RC26-REC-06](https://github.com/anervalens-netizen/remote-control-mcp/issues/58).
+
 The main journal retains the exact strict v1 schema. Execution bindings live in
 versioned sidecars under `executions/`; dispositions and original journal bytes
 live under `reconciliations/`. Old agents can still parse active and released

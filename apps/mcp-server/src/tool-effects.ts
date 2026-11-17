@@ -10,7 +10,7 @@ export type EffectAnnotations = {
 
 export const readOnlyTools: ReadonlySet<string> = new Set([
   "android_observe", "android_command_status", "android_status",
-  "batch_recover", "batch_read", "browser_execution", "capability_report",
+  "batch_recover", "batch_read", "browser_execution", "capability_report", "coordination_capacity",
   "desktop_clipboard_get", "desktop_helper_status", "desktop_monitors", "desktop_observe",
   "desktop_screenshot", "desktop_session_status", "desktop_windows",
   "device_info", "device_contexts", "devices_list", "fleet_status", "usage_report", "usage_window",

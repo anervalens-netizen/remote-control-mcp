@@ -37,7 +37,11 @@ live-discovered follow-ups remain tracked in GitHub without silently deleting
 or relabeling existing items:
 [issue #58 — coordination-capacity diagnostics](https://github.com/anervalens-netizen/remote-control-mcp/issues/58)
 and [issue #59 — DSH provider-capacity and deferred-review continuity](https://github.com/anervalens-netizen/remote-control-mcp/issues/59).
-Both require their own evidence before closure.
+The REC-06 follow-up now has an isolated candidate source contract for
+`coordination_capacity`: a read-only bounded snapshot of slot categories and
+unverified binding evidence, without changing historical fences. Its merge,
+native rollout, job-terminal verification, and capacity clearance remain
+separate acceptance gates. Both issues require their own evidence before closure.
 
 Lot2 adds ingress correlation/counters/history, bounded usage reports, finite capability probes and the fs_read input-contract correction. All four candidate review checkpoints and the 52-finding public disposition are retained in the [development disposition matrix](2026-11-16-lot2-review.md). The public same-window collection/retention source follow-up is documented above; its review and deployed acceptance, automatic orphan recovery and complete history/inventory/console, stage/export and pressure acceptance retain their explicit remaining work.
 
