@@ -18,16 +18,31 @@ async function within<T>(promise: Promise<T>, ms: number): Promise<T | undefined
   });
   try { return await Promise.race([promise, timeout]); } finally { cancel(); }
 }
-async function identity(pid: number): Promise<string | undefined> {
+async function identity(
+  pid: number,
+  readStat: (file: string, encoding: "utf8") => Promise<string> = readFile,
+): Promise<string | undefined> {
   try {
-    const text = await readFile(`/proc/${pid}/stat`, "utf8");
+    const text = await readStat(`/proc/${pid}/stat`, "utf8");
     const fields = text.slice(text.lastIndexOf(")") + 2).trim().split(/\s+/);
     return ["Z", "X"].includes(fields[0]!) ? undefined : `${pid}:${fields[19]}`;
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === "ESRCH") return undefined;
     throw error;
   }
 }
+
+it.each(["ENOENT", "ESRCH"])("treats deadline procfs %s as a vanished process", async code => {
+  const error = Object.assign(new Error("synthetic procfs read failure"), { code });
+  await expect(identity(12345, async () => { throw error; })).resolves.toBeUndefined();
+});
+
+it.each(["EACCES", "EIO"])("preserves unexpected deadline procfs %s errors", async code => {
+  const error = Object.assign(new Error("synthetic procfs read failure"), { code });
+  await expect(identity(12345, async () => { throw error; })).rejects.toBe(error);
+});
+
 const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
 
 async function fixture(options: { host?: string; preload?: string; waitForReady?: boolean } = {}) {

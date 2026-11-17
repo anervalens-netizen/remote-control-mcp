@@ -19,16 +19,30 @@ async function within<T>(promise: Promise<T>, timeoutMs: number): Promise<T | un
     return await Promise.race([promise, timeout]);
   } finally { cancelTimer(); }
 }
-async function liveIdentity(pid: number): Promise<string | undefined> {
+async function liveIdentity(
+  pid: number,
+  readStat: (file: string, encoding: "utf8") => Promise<string> = readFile,
+): Promise<string | undefined> {
   try {
-    const stat = await readFile(`/proc/${pid}/stat`, "utf8");
+    const stat = await readStat(`/proc/${pid}/stat`, "utf8");
     const fields = stat.slice(stat.lastIndexOf(")") + 2).trim().split(/\s+/);
     return fields[0] === "Z" || fields[0] === "X" ? undefined : `${pid}:${fields[19]}`;
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === "ESRCH") return undefined;
     throw error;
   }
 }
+
+it.each(["ENOENT", "ESRCH"])("treats procfs %s as a vanished process", async code => {
+  const error = Object.assign(new Error("synthetic procfs read failure"), { code });
+  await expect(liveIdentity(12345, async () => { throw error; })).resolves.toBeUndefined();
+});
+
+it.each(["EACCES", "EIO"])("preserves unexpected procfs %s errors", async code => {
+  const error = Object.assign(new Error("synthetic procfs read failure"), { code });
+  await expect(liveIdentity(12345, async () => { throw error; })).rejects.toBe(error);
+});
 
 it.skipIf(process.platform !== "linux").each(["SIGTERM", "SIGINT"] as const)(
   "exits the real agent by %s after cleanup with an attached live PTY", async signal => {
