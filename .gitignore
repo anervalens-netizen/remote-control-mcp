@@ -32,3 +32,7 @@ private/
 apps/console/dist/
 
 /artifacts/private-source-maps/
+
+# Review sandbox Python compile caches
+__pycache__/
+*.pyc
