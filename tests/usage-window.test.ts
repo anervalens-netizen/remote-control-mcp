@@ -93,6 +93,17 @@ it("drains a hundred retained arrivals at close without losing the 32-event tail
   expect(result.report.nextSampleAfterSequence).toBe(result.report.end.sequence);
 });
 
+it("does not count invalid pre-opening agent samples against the measured window", async () => {
+  const { call, app } = await fixture();
+  await app.inject({ method: "GET", url: "/v1/info",
+    headers: { [ingressCorrelationHeader]: "pre-open-invalid-correlation" } });
+  const opened = (await call("open")).report;
+  expect(opened.invalidEventObservations).toBe(0);
+  const closed = (await call("close", opened.windowId)).report;
+  expect(closed).toMatchObject({ state: "closed", complete: true,
+    invalidEventObservations: 0, missingEventDetail: 0 });
+});
+
 it("does not stall a close behind thirty-two invalid correlation headers", async () => {
   const { call, app, ingress } = await fixture();
   const w = (await call("open")).report;

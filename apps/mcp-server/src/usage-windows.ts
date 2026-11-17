@@ -24,7 +24,9 @@ const boundarySchema = z.object({
 type Boundary = Omit<z.infer<typeof boundarySchema>, "samples" | "history"> & {
   history: { retentionDays: number; collectionStartedAt: string; retainedGapCount: number; omittedGaps: number };
 };
-const eventSchema = z.object({ eventId: z.string().max(80), instanceId: z.string().uuid(), sequence: count,
+const eventLocatorSchema = z.object({ eventId: z.string().max(80),
+  instanceId: z.string().uuid(), sequence: count });
+const eventSchema = eventLocatorSchema.extend({
   identity, correlation: ingressCorrelationSchema.optional(), correlationInvalid: z.boolean() });
 type Event = { eventId: string; correlation?: z.infer<typeof ingressCorrelationSchema> };
 type Window = {
@@ -109,7 +111,7 @@ export class UsageWindows {
       else w.coverageGap = true;
     };
     const poison = (raw: unknown) => {
-      const id = z.object({ instanceId: z.string().uuid(), sequence: count, eventId: z.string().max(80) }).safeParse(raw);
+      const id = eventLocatorSchema.safeParse(raw);
       if (!id.success) return;
       const { instanceId, sequence, eventId } = id.data;
       if (instanceId !== b.instanceId || sequence <= w.start!.sequence || sequence > b.sequence || eventId !== instanceId + ":" + sequence) return;
@@ -120,6 +122,13 @@ export class UsageWindows {
       w.sampleAfterSequence = Math.max(w.sampleAfterSequence, sequence);
     };
     for (const rawEvent of samples) {
+      // Open reads a historical sample page. A valid immutable locator at or
+      // before the opening boundary belongs to the past, regardless of whether
+      // its later correlation metadata parses successfully.
+      const prior = eventLocatorSchema.safeParse(rawEvent);
+      if (prior.success && prior.data.instanceId === b.instanceId &&
+        prior.data.eventId === prior.data.instanceId + ":" + prior.data.sequence &&
+        prior.data.sequence <= w.start!.sequence) continue;
       const event = eventSchema.safeParse(rawEvent);
       if (!event.success) { w.invalidEvents++; poison(rawEvent); continue; }
       const e = event.data;
