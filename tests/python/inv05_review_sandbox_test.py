@@ -58,7 +58,7 @@ class TestReviewSandbox(unittest.TestCase):
              "workspaceRootDev": st.st_dev, "workspaceRootIno": st.st_ino},
             str(self.root), ["/usr/bin/true"],
         )
-        self.assertIn("--bind", args)
+        self.assertIn("--bind-fd", args)
         self.assertRejected({**self.policy, "workspaceRoot": str(Path.home())},
                             str(self.workspace), ["/usr/bin/true"])
 
@@ -79,7 +79,7 @@ class TestReviewSandbox(unittest.TestCase):
                          ["/usr/bin/python3", "-c", "print('synthetic')"])
         self.assertIn("--clearenv", cmd)
         for flag in ("--unshare-pid", "--unshare-net", "--unshare-user",
-                     "--die-with-parent", "--new-session", "--bind", "--proc"):
+                     "--die-with-parent", "--new-session", "--bind-fd", "--proc"):
             self.assertIn(flag, cmd)
         self.assertNotIn("/root", cmd)
         self.assertNotIn("/run/systemd", cmd)
@@ -98,9 +98,9 @@ class TestReviewSandbox(unittest.TestCase):
             arguments, kwargs = start.call_args
             cmd = arguments[0]
             pinned = next(cmd[i + 1] for i in range(len(cmd) - 1)
-                          if cmd[i] == "--bind" and cmd[i + 2] == "/work")
-            self.assertRegex(pinned, r"^/proc/self/fd/[0-9]+$")
-            self.assertEqual(kwargs["pass_fds"], (int(pinned.rsplit("/", 1)[-1]),))
+                          if cmd[i] == "--bind-fd" and cmd[i + 2] == "/work")
+            self.assertRegex(pinned, r"^[0-9]+$")
+            self.assertEqual(kwargs["pass_fds"], (int(pinned),))
             self.assertTrue(kwargs["start_new_session"])
 
     def test_symlinked_checkout_ancestor_is_rejected_even_if_it_is_user_owned(self):
@@ -132,10 +132,21 @@ class TestReviewSandbox(unittest.TestCase):
 
     def test_validation_and_fd_unit_tests_work_without_bubblewrap(self):
         with mock.patch.object(sandbox, "BWRAP", "/invalid/no-bwrap-here"):
-            self.assertIn("--bind", self.build(
+            self.assertIn("--bind-fd", self.build(
                 self.policy, str(self.workspace), ["/usr/bin/true"]))
             with self.assertRaisesRegex(sandbox.SandboxError, "bwrap_missing"):
                 sandbox.run_probe(self.policy, str(self.workspace), ["/usr/bin/true"])
+
+    def test_optional_runtime_requires_a_consumed_pinned_fd(self):
+        pseudo = {**self.policy, "runtimeDirs": ["/opt/runtimes/private-synthetic"]}
+        workspace_fd = sandbox.open_review_workspace(self.policy, str(self.workspace))
+        try:
+            with mock.patch.object(sandbox, "validate_policy", return_value=pseudo):
+                with self.assertRaisesRegex(sandbox.SandboxError, "runtime_fd_required"):
+                    sandbox.build_command(pseudo, str(self.workspace), ["/usr/bin/true"],
+                                          workspace_fd=workspace_fd)
+        finally:
+            os.close(workspace_fd)
 
     def sandbox_available(self):
         if sys.platform != "linux" or not Path(sandbox.BWRAP).is_file():
@@ -174,6 +185,20 @@ peer=socket.create_connection(('127.0.0.1',sock.getsockname()[1]),1);peer.close(
 print('isolated-test-PASS')
 """
         code = code.replace("'__OPERATOR_PRIVATE__'", repr(str(Path.home() / ".dsh")))
+        inode = self.workspace.stat()
+        # The old /proc/self/fd/N bind exposed the open host workspace FD to
+        # the probe. --bind-fd must consume it before executing COMMAND.
+        fd_probe = """
+import stat
+for candidate_fd in range(3, 256):
+    try:
+        entry = os.fstat(candidate_fd)
+    except OSError:
+        continue
+    assert not (stat.S_ISDIR(entry.st_mode) and
+                (entry.st_dev, entry.st_ino) == (%d, %d)), 'host descriptor leaked'
+""" % (inode.st_dev, inode.st_ino)
+        code = code.replace("print('isolated-test-PASS')", fd_probe + "\nprint('isolated-test-PASS')")
         os.environ["INV05_TEST_SECRET"] = "fake-synthetic-secret"
         try:
             fd = sandbox.open_review_workspace(self.policy, str(self.workspace))

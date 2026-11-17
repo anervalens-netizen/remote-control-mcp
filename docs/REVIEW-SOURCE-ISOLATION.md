@@ -31,9 +31,12 @@ owned by root, not writable by group/other, at most 4096 bytes. Do not accept
 the policy filename from a worker's command line or environment. The trusted
 workspace root must be a physical directory, not a broad system root; every
 selected checkout must be an owned, physical descendant. Optional runtime
-directories must be physical descendants of /opt/runtimes, selected by the
-trusted policy. On hosts with Node in /usr/bin, no additional runtime mounts
-are necessary. The command arguments themselves have no allowlist.
+directories must be physical descendants of /opt/runtimes with root-owned,
+non-group/world-writable ancestry. Each selected runtime is opened through
+pinned, symlink-free directory descriptors and mounted read-only via the
+descriptor-consuming --ro-bind-fd operation. A mutable runtime directory is
+rejected rather than bound by its pathname. On hosts with Node in /usr/bin,
+no additional runtime mounts are necessary. The command arguments themselves have no allowlist.
 
 Invocation:
 
@@ -42,9 +45,11 @@ Invocation:
       /usr/bin/node --test /work/fixture.test.mjs
 
 Each invocation pins the approved checkout inode with an open directory
-file descriptor and passes that descriptor to bubblewrap. A rename or symlink
-swap between validation and the mount cannot redirect the source to a
-different host directory.
+descriptor and passes it to bubblewrap using --bind-fd, which consumes the FD
+during mount setup. The source descriptor must **not** be inherited by the
+executed test process: otherwise openat("..") on it can escape the sandbox.
+A rename or symlink swap between validation and mount cannot redirect the
+source to a different host directory.
 
 Every invocation starts a separate bubblewrap user/PID/network/IPC/UTS
 namespace. The sole host writable mount is the selected checkout at /work.
@@ -67,8 +72,10 @@ into these probes.
 ## Acceptance boundary
 
 The synthetic test executes the actual runner, checks private paths and host
-processes cannot be observed/signalled, verifies own checkout build/test and
-localhost behavior, and confirms time-bounded process termination. A host
+processes cannot be observed/signalled, checks that mount-source directory
+descriptors have been consumed before the probe executes, verifies own
+checkout build/test and localhost behavior, and confirms time-bounded process
+termination. A host
 without working Linux namespaces explicitly skips native exercise; the
 configuration and syntax tests still run.
 

@@ -53,6 +53,32 @@ def _pinned_absolute_dir(raw: str) -> int:
         raise SandboxError("nonphysical_directory") from None
 
 
+def _trusted_runtime_fd(raw: str) -> int:
+    # Optional runtime mounts cannot be renamed by the untrusted worker.
+    # Require root-owned, non-group/world-writable ancestry and pin the
+    # selected inode until bubblewrap consumes its descriptor.
+    if not isinstance(raw, str) or not raw.startswith("/") or "\0" in raw:
+        raise SandboxError("invalid_runtime_dir")
+    path = Path(raw)
+    if ".." in path.parts or not path.is_relative_to(Path("/opt/runtimes")):
+        raise SandboxError("runtime_root_not_permitted")
+    fd = os.open("/", _DIR_FLAGS)
+    try:
+        for component in path.parts[1:]:
+            next_fd = os.open(component, _DIR_FLAGS, dir_fd=fd)
+            os.close(fd)
+            fd = next_fd
+            entry = os.fstat(fd)
+            if entry.st_uid != 0 or (entry.st_mode & 0o022):
+                raise SandboxError("runtime_path_mutable")
+        return fd
+    except Exception as error:
+        os.close(fd)
+        if isinstance(error, SandboxError):
+            raise
+        raise SandboxError("invalid_runtime_dir") from None
+
+
 def _absolute_directory(raw: str) -> Path:
     fd = _pinned_absolute_dir(raw)
     os.close(fd)
@@ -103,9 +129,8 @@ def validate_policy(policy: Any) -> dict[str, Any]:
     if not isinstance(runtimes, list) or len(runtimes) > 3 or len(set(map(str, runtimes))) != len(runtimes):
         raise SandboxError("invalid_runtime_roots")
     for entry in runtimes:
-        dirname = _absolute_directory(entry)
-        if not dirname.is_relative_to(Path("/opt/runtimes")):
-            raise SandboxError("runtime_root_not_permitted")
+        fd = _trusted_runtime_fd(entry)
+        os.close(fd)
     seconds = policy["timeoutSeconds"]
     if isinstance(seconds, bool) or not isinstance(seconds, int) or not 1 <= seconds <= 900:
         raise SandboxError("invalid_timeout")
@@ -145,7 +170,8 @@ def open_review_workspace(policy: dict[str, Any], workspace: str) -> int:
         raise SandboxError("nonphysical_workspace") from None
 
 
-def build_command(policy: dict[str, Any], workspace: str, requested: list[str], workspace_fd: int | None = None) -> list[str]:
+def build_command(policy: dict[str, Any], workspace: str, requested: list[str], workspace_fd: int | None = None,
+                  runtime_fds: list[int] | None = None) -> list[str]:
     validated = validate_policy(policy)
     _workspace(Path(validated["workspaceRoot"]), workspace)
     if not 1 <= len(requested) <= MAX_ARGS or any(
@@ -160,8 +186,17 @@ def build_command(policy: dict[str, Any], workspace: str, requested: list[str], 
             raise SandboxError("invalid_pinned_workspace")
     except OSError:
         raise SandboxError("invalid_pinned_workspace") from None
-    # The FD is an immutable inode reference opened by open_review_workspace.
-    # Do not resolve a mutable pathname as the source mount.
+    # All mount sources must be inherited, trusted descriptors, consumed by
+    # bubblewrap (never forwarded to COMMAND in the child process).
+    runtime_fds = runtime_fds if runtime_fds is not None else []
+    if len(runtime_fds) != len(validated["runtimeDirs"]):
+        raise SandboxError("runtime_fd_required")
+    for runtime_fd in runtime_fds:
+        try:
+            if not stat.S_ISDIR(os.fstat(runtime_fd).st_mode):
+                raise SandboxError("invalid_runtime_fd")
+        except OSError:
+            raise SandboxError("invalid_runtime_fd") from None
     cmd = [BWRAP, "--unshare-user", "--unshare-pid", "--unshare-net", "--unshare-ipc",
            "--unshare-uts", "--die-with-parent", "--new-session", "--cap-drop", "ALL",
            "--clearenv"]
@@ -174,16 +209,16 @@ def build_command(policy: dict[str, Any], workspace: str, requested: list[str], 
             cmd.extend(["--ro-bind", filename, filename])
     if Path("/etc/ssl/certs").is_dir():
         cmd.extend(["--dir", "/etc/ssl", "--ro-bind", "/etc/ssl/certs", "/etc/ssl/certs"])
-    for runtime in validated["runtimeDirs"]:
+    for runtime, runtime_fd in zip(validated["runtimeDirs"], runtime_fds, strict=True):
         relative = Path(runtime).relative_to("/")
         parent = Path("/")
         for segment in relative.parts[:-1]:
             parent = parent / segment
             cmd.extend(["--dir", str(parent)])
-        cmd.extend(["--ro-bind", runtime, runtime])
+        cmd.extend(["--ro-bind-fd", str(runtime_fd), runtime])
     cmd.extend([
         "--tmpfs", "/tmp", "--proc", "/proc", "--dev", "/dev",
-        "--dir", "/home", "--dir", "/work", "--bind", f"/proc/self/fd/{workspace_fd}", "/work",
+        "--dir", "/home", "--dir", "/work", "--bind-fd", str(workspace_fd), "/work",
         "--setenv", "HOME", "/tmp", "--setenv", "TMPDIR", "/tmp",
         "--setenv", "XDG_CACHE_HOME", "/tmp/cache", "--setenv", "XDG_CONFIG_HOME", "/tmp/config",
         "--setenv", "RCMCP_STATE_DIR", "/tmp/rcmcp-tests", "--setenv", "CI", "true",
@@ -198,13 +233,18 @@ def build_command(policy: dict[str, Any], workspace: str, requested: list[str], 
 
 def run_probe(policy: dict[str, Any], workspace: str, requested: list[str]) -> int:
     fd = open_review_workspace(policy, workspace)
+    runtime_fds: list[int] = []
     try:
-        command = build_command(policy, workspace, requested, workspace_fd=fd)
+        for runtime in policy["runtimeDirs"]:
+            runtime_fds.append(_trusted_runtime_fd(runtime))
+        command = build_command(policy, workspace, requested, workspace_fd=fd, runtime_fds=runtime_fds)
         if not Path(BWRAP).is_file():
             raise SandboxError("bwrap_missing")
-        process = subprocess.Popen(command, start_new_session=True, pass_fds=(fd,))
+        process = subprocess.Popen(command, start_new_session=True, pass_fds=(fd, *runtime_fds))
     finally:
         os.close(fd)
+        for runtime_fd in runtime_fds:
+            os.close(runtime_fd)
     # Its process group is owned by this launcher only; timeout never signals
     # an unrelated service or searches for a process by an untrusted PID.
     try:

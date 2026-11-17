@@ -9,7 +9,7 @@ it.skipIf(process.platform !== "linux")("qualifies INV-05 review source-probe co
   });
   expect(result.error).toBeUndefined();
   expect(result.status, result.stderr).toBe(0);
-  expect(result.stderr).toContain("Ran 10 tests");
+  expect(result.stderr).toContain("Ran 11 tests");
   expect(result.stderr).toContain("OK");
-  console.info(result.stderr.split("\n").filter(line => /Ran 10 tests|OK|skipped=/.test(line)).join(" | "));
+  console.info(result.stderr.split("\n").filter(line => /Ran 11 tests|OK|skipped=/.test(line)).join(" | "));
 }, 50_000);
