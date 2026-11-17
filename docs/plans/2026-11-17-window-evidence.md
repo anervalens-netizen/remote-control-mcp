@@ -1,7 +1,9 @@
 # OBS-04 → HIS-02 bounded-window source evidence
 
-This is public contract and synthetic fixture coverage, not a deployment record
-or acceptance of an installed console/runtime. OBS-04 and HIS-02 remain active.
+This page records public API contracts and synthetic fixture coverage rather
+than private deployment receipts. After the PR57 source merge, selected native
+SDK window collection was separately qualified; OBS-04 and HIS-02 remain active
+because fleet-wide and console acceptance is incomplete.
 The [ingress contract](../INGRESS-OBSERVABILITY.md#public-same-window-workflow)
 defines the API, counting boundaries, trust boundary and capacity limits.
 
@@ -23,9 +25,10 @@ privacy checks and console build remain required alongside these suites.
 ## Explicit remaining limits
 
 - No console implementation or acceptance; HIS-02/UX-07 remain open.
-- No deployed/native-platform, connector-host or private recent-window
-  qualification in this source lot. No runtime, production data, REC-05 fence,
-  original recovery record or installed service is changed.
+- Synthetic source tests alone do not qualify deployed runtime or ChatGPT-host
+  catalog exposure. Selected native Linux SDK collection and mixed-version
+  compatibility were qualified separately following the source merge; other
+  client/platform coverage remains unverified. REC-05 remains preserved.
 - No window durability/export, background polling, multi-agent aggregation or
   automatic resumption. Controller restart/expiry loses retained windows.
 - Each individual collection reads at most 32 current event samples. Close drains
@@ -51,8 +54,9 @@ excluding their data from trusted reconciliation. The 32-invalid-header case
 ensures a full page of rejected correlations cannot indefinitely block later
 event collection. Invalid, conflicting and missing details remain visible.
 
-Complete source, reviewer, CI, host and release verification receipts belong
-in private task evidence, not in this public engineering contract. Production
-acceptance must independently establish installed source, runtime identity,
-authenticated tool discovery and same-window behavior. Console integration is
-a separate scope.
+Full source, reviewer, CI, host and release receipts remain in private task
+evidence, not in this public engineering contract. The final PR source has
+green CI and a clean Codex result; DSH's final-head review was explicitly
+deferred by the owner and is **not** treated as approval. Native qualification
+covers a selected Linux route only. Other runtime, host-discovery and console
+claims require separate evidence.
