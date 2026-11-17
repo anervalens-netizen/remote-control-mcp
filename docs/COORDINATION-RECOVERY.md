@@ -19,7 +19,7 @@ dispatching these new actions:
 | --- | --- | --- |
 | `inspect_recovery` | None | The current v1 record, observed base, and separate execution/resolution metadata. |
 | `prepare_recovery` | Original token and `expectedCurrentBaseVersion` | A durable recovery intent with the original journal hash, execution identity, base and boot identity. |
-| `reconcile` | Original token and `expectedCurrentBaseVersion`; optional `recoveryIntentId` | An evidence-bound disposition for that generation, or an explicit conflict. |
+| `reconcile` | Original token and `expectedCurrentBaseVersion`; optional `recoveryIntentId` | An evidence-bound disposition for that generation, or an explicit conflict. A rejected Git command boundary is reconciled from its retained hook evidence instead of a durable job binding. |
 
 `expectedCurrentBaseVersion` acknowledges the freshly inspected resource. It is
 not evidence that a process stopped. The original token's `baseVersion` remains
@@ -75,8 +75,8 @@ A v1 agent can refresh only `updatedAt` on an already released journal before
 reserving the next generation. Recovery tolerates that interrupted rollback state
 without rewriting its journal; every other field must still match the disposition.
 Back up the main journals and slots, `executions/`, `recovery-intents/`,
-`reconciliations/`, `repo-operations/` and the corresponding existing job/key
-stores together. A checkout or release-directory rollback is not a state migration.
+`reconciliations/`, `hook-failures/`, `repo-operations/` and the corresponding
+existing job/key stores together. A checkout or release-directory rollback is not a state migration.
 
 ### Sharing between trusted Unix identities
 
@@ -109,8 +109,8 @@ hardening and fault coverage remain deferred under HIS-04/REC-04/MCP-04. This
 limitation concerns recreated directories; it does not change the configured
 mode of the receipt file being written.
 
-This policy covers execution sidecars, recovery intents, reconciliations and nested
-`repo-operations/` directories. Repository request and result receipts use the same
+This policy covers execution sidecars, recovery intents, reconciliations, retained
+hook-failure outcomes and nested `repo-operations/` directories. Repository request and result receipts use the same
 configured file mode on both successful and failed worker paths. The existing job
 state remains separate and keeps its own permissions and execution identity.
 
@@ -168,6 +168,68 @@ whole-tree proof. Removing a job before reconciliation may leave only an older
 terminal tombstone without containment evidence; that is insufficient for this
 new recovery path.
 
+### Rejected Git command boundary
+
+A high-level checkpoint runs its commit as one observed command boundary. When
+that boundary fails, the agent retains an invocation-bound outcome for that
+exact generation before it answers the caller:
+
+* the command boundary (`commit`) with its flags and whether a message was
+  supplied, never the message text, the paths or the repository location;
+* the hook boundary (`pre-commit`, `prepare-commit-msg`, `commit-msg`,
+  `post-commit`, `none` or `unavailable`) and the hook's own exit code. The
+  repository's hooks are executed unchanged through a thin observation
+  wrapper that only records the exit status; when the hook set cannot be
+  mirrored exactly, no wrapper is used and the exit code stays unavailable.
+  A guard hook is never skipped, and the recorded code is the hook's, not
+  Git's collapsed status;
+* the refs before and after the boundary (HEAD and the newest reflog entry);
+* index and worktree observations before and after the boundary, as digests of
+  the tracked index entries and of the porcelain worktree state;
+* the containment state of the command's own process group: verified empty, a
+  surviving descendant, or unavailable.
+
+The outcome is classified. `pre_effect` requires a non-zero command exit, an
+unchanged HEAD, reflog, index and worktree, and a verified empty process
+group. `partially_applied` means one of those observations changed, so an
+effect may exist. `unverified` covers a timeout, a signal, an unavailable
+observation, a surviving descendant or an unknown hook boundary.
+
+A failed hook, an unchanged HEAD, an elapsed lease or a missing job never
+releases an `active` or `uncertain` writer. The rejected commit leaves the
+generation `uncertain`, and the next coordinated write is refused with
+`active_or_uncertain_writer`. The retained outcome does not change that.
+
+The supported recovery path uses the existing coordinator with the exact
+original token, its generation and the freshly observed base:
+
+1. Inspect the resource and the original token. The retained outcome is part of
+   `inspect_recovery`; the original journal, hook evidence and any disposition
+   stay immutable and are never rewritten to fit a later observation.
+2. Reconcile the same token with `expectedCurrentBaseVersion`. The agent
+   re-probes the resource and requires that the observed base still equals the
+   base the rejected invocation was admitted with. An unchanged base is the
+   independent no-effect proof: the same refs, index and worktree were observed
+   before and after the rejected command.
+3. The disposition is published only when the retained outcome is classified
+   `pre_effect` and its containment is verified. It records
+   `kind: "hook_failure"`, `outcome: "completed"` and
+   `effectVerification: "no_effect_proved"`, and it releases only that
+   generation's budget slot. The original journal bytes, their digest and the
+   retained outcome are archived with it.
+
+Any other state keeps the writer fenced: a changed base, a different token or
+generation, an unavailable or mismatched outcome, a partially applied or
+unverified classification, and a failed disposition publication all leave the
+generation `uncertain`. Reconciliation is idempotent: repeating it returns the
+same disposition and never repeats the rejected command. Nothing in this path
+authorises a replay of the rejected commit, and the repository repair after a
+rejection remains a separate, explicit operation.
+
+The retained outcome lives in `hook-failures/` beside the existing sidecars
+and follows the same bounded retention and failure-closed rules. It contains no
+repository path, file name, credential, process identity or log receipt.
+
 ## Outcomes and publication
 
 The API preserves separate facts:
@@ -179,7 +241,9 @@ The API preserves separate facts:
   its exit outcome is lost.
 * `resultPublication` states whether the original result is available.
 * `effectVerification` remains `unverified`; successful execution does not prove
-  that the user's intended repository state was achieved.
+  that the user's intended repository state was achieved. Only the disposition
+  of a rejected command boundary that was reconciled with proved no-effect
+  evidence records `no_effect_proved` for that generation.
 
 A pull can fetch new refs, fail to merge because of an index lock, return an error,
 and still release the resource after verified whole-job termination. The partial

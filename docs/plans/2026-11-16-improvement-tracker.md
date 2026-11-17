@@ -37,6 +37,24 @@ live-discovered follow-ups remain tracked in GitHub without silently deleting
 or relabeling existing items:
 [issue #58 — coordination-capacity diagnostics](https://github.com/anervalens-netizen/remote-control-mcp/issues/58)
 and [issue #59 — DSH provider-capacity and deferred-review continuity](https://github.com/anervalens-netizen/remote-control-mcp/issues/59).
+The REC-07 follow-up is tracked in
+[issue #62 — evidence-bound reconciliation after a failed Git pre-commit hook](https://github.com/anervalens-netizen/remote-control-mcp/issues/62).
+Its source candidate retains an invocation-bound outcome for a rejected Git
+command boundary: the command boundary, the hook's own exit code, before/after
+refs, index/worktree digests and the containment state of the command's process
+group. A rejected commit leaves its generation `uncertain`; a failed hook, an
+unchanged HEAD, an elapsed lease or a missing job never release it. The
+supported recovery path is the existing coordinator with the exact token,
+generation and the freshly observed base, which must still equal the base the
+rejected invocation was admitted with; only a proved no-effect classification
+with verified containment produces a disposition, and the original journal,
+evidence and disposition stay immutable. The synthetic regression covers a
+privacy guard rejection, the absent published success, the blocked second
+commit, an unrelated fresh worktree that still publishes, preserved staged
+files, a transport disconnect, hooks that touch the worktree or spawn
+descendants, and a failed disposition publication. The source change is not
+merged, deployed or runtime-qualified, and the REC-05 incident and its
+evidence are unchanged.
 The REC-06 follow-up was merged in [PR #60](https://github.com/anervalens-netizen/remote-control-mcp/pull/60)
 as `4331c00` with current-head Codex and Linux/Windows/public-source CI green.
 Selected Linux owner/root/controller activation and an additional Linux owner

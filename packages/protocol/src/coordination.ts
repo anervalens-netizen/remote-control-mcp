@@ -40,13 +40,42 @@ export type CoordinationResource = z.infer<typeof coordinationResourceSchema>;
 export const coordinationExecutionSchema = z.object({
   kind: z.literal("repo_job"), key: z.string().min(1).max(200), fingerprint: hash, requestHash: hash,
 }).strict();
+/** Invocation-bound observation of a failed Git command boundary and its hook.
+ * It carries digests and bounded command output only: no repository path, file
+ * name, credential, process identity or log receipt. */
+export const coordinationHookFailureSchema = z.object({
+  version: z.literal(1),
+  command: z.object({
+    boundary: z.literal("commit"),
+    flags: z.array(z.string().max(64)).max(16),
+    message: z.enum(["provided", "generated"]),
+  }).strict(),
+  hook: z.object({
+    boundary: z.enum(["pre_commit", "prepare_commit_msg", "commit_msg", "post_commit", "none", "unavailable"]),
+    exitCode: z.number().int().nullable(),
+    exitCodeSource: z.enum(["hook", "command", "unavailable"]),
+    output: z.string().max(4096).optional(),
+  }).strict(),
+  refs: z.object({
+    beforeHead: z.string().max(64).nullable(), afterHead: z.string().max(64).nullable(),
+    beforeReflog: z.string().max(512).nullable(), afterReflog: z.string().max(512).nullable(),
+  }).strict(),
+  index: z.object({ before: hash.nullable(), after: hash.nullable(), changed: z.boolean().nullable() }).strict(),
+  worktree: z.object({ before: hash.nullable(), after: hash.nullable(), changed: z.boolean().nullable() }).strict(),
+  containment: z.object({
+    verified: z.boolean(), detail: z.enum(["process_group_empty", "descendants_present", "unavailable"]),
+  }).strict(),
+  classification: z.enum(["pre_effect", "partially_applied", "unverified"]),
+  observedAt: z.string().datetime(),
+}).strict();
+export type CoordinationHookFailure = z.infer<typeof coordinationHookFailureSchema>;
 export const coordinationResolutionSchema = z.object({
-  kind: z.enum(["durable_job", "boot_transition"]), at: z.string().datetime(),
+  kind: z.enum(["durable_job", "boot_transition", "hook_failure"]), at: z.string().datetime(),
   originalRecordHash: hash, originalJournalHash: hash, observedBaseVersion: hash, evidenceHash: hash,
   jobId: z.string().uuid().optional(), recoveryIntentId: hash.optional(),
   preparedBaseVersion: hash.optional(),
   outcome: z.enum(["completed", "cancelled", "unknown"]),
-  effectVerification: z.literal("unverified"), noReplay: z.literal(true),
+  effectVerification: z.enum(["unverified", "no_effect_proved"]), noReplay: z.literal(true),
 }).strict();
 export const coordinationRecoveryIntentSchema = z.object({
   version: z.literal(1), id: hash, token: coordinationTokenSchema,
@@ -63,7 +92,7 @@ export const coordinationRecordSchema = coordinationTokenSchema.extend({
 }).strict();
 export type CoordinationRecord = z.infer<typeof coordinationRecordSchema>;
 /** Recovery metadata is a sidecar; the v1 disk journal and legacy wire record stay unchanged. */
-export const coordinationRecoveryViewSchema = z.object({ execution: coordinationExecutionSchema.nullable(), resolution: coordinationResolutionSchema.nullable() }).strict();
+export const coordinationRecoveryViewSchema = z.object({ execution: coordinationExecutionSchema.nullable(), resolution: coordinationResolutionSchema.nullable(), hookFailure: coordinationHookFailureSchema.nullable().optional() }).strict();
 export const coordinationRecordViewSchema = coordinationRecordSchema.extend({ execution: coordinationExecutionSchema.optional(), resolution: coordinationResolutionSchema.optional() });
 export type CoordinationRecordView = z.infer<typeof coordinationRecordViewSchema>;
 export type CoordinationExecution = z.infer<typeof coordinationExecutionSchema>;

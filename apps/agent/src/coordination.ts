@@ -4,7 +4,7 @@ import path from "node:path";
 import { hostname, userInfo } from "node:os";
 import { z } from "zod";
 import { atomicWriteJson } from "./state.ts";
-import { coordinationRecordSchema as baseRecordSchema, coordinationRecordViewSchema as recordSchema, coordinationTokenSchema, coordinationExecutionSchema, coordinationRecoveryIntentSchema, coordinationCapacitySlotSchema, coordinationCapacitySnapshotSchema, type CoordinationRecordView as CoordinationRecord, type CoordinationToken, type CoordinationExecution, type CoordinationResolution } from "../../../packages/protocol/src/coordination.ts";
+import { coordinationRecordSchema as baseRecordSchema, coordinationRecordViewSchema as recordSchema, coordinationTokenSchema, coordinationExecutionSchema, coordinationRecoveryIntentSchema, coordinationCapacitySlotSchema, coordinationCapacitySnapshotSchema, coordinationHookFailureSchema, type CoordinationRecordView as CoordinationRecord, type CoordinationToken, type CoordinationExecution, type CoordinationResolution, type CoordinationHookFailure } from "../../../packages/protocol/src/coordination.ts";
 
 export const coordinationHash = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 export const coordinationDevice = coordinationHash(hostname());
@@ -22,9 +22,12 @@ const journalSnapshotSchema = { originalJournal: z.string().max(16_384), origina
 const archiveSchema = z.object({ version: z.literal(1), original: recordSchema, resolved: recordSchema, ...journalSnapshotSchema }).strict();
 const intentArchiveSchema = z.object({ intent: coordinationRecoveryIntentSchema, original: recordSchema, ...journalSnapshotSchema, integrityHash: hash }).strict();
 const executionArchiveSchema = z.object({ version: z.literal(1), token: coordinationTokenSchema, device: hash, identity: hash, execution: coordinationExecutionSchema }).strict();
+const hookFailureArchiveSchema = z.object({ version: z.literal(1), token: coordinationTokenSchema, device: hash, identity: hash, failure: coordinationHookFailureSchema, evidenceHash: hash }).strict();
 const journalHash = (text: string) => createHash("sha256").update(text).digest("hex");
 export function coordinationPublicRecord(record: CoordinationRecord) { const { execution: _execution, resolution: _resolution, ...base } = record; return baseRecordSchema.parse(base); }
-export function coordinationRecoveryView(record: CoordinationRecord | null) { return { execution: record?.execution ?? null, resolution: record?.resolution ?? null }; }
+export function coordinationRecoveryView(record: CoordinationRecord | null, hookFailure?: CoordinationHookFailure | null) {
+  return { execution: record?.execution ?? null, resolution: record?.resolution ?? null, ...(hookFailure ? { hookFailure } : {}) };
+}
 export type ResourceVersion = { device: string; identity: string; canonicalKey: string; baseVersion: string };
 type Override = { expectedGeneration: number; expectedBaseVersion: string; reason: "abandoned_reservation" | "owner_takeover" };
 export class CoordinationError extends Error {
@@ -123,6 +126,7 @@ export class ResourceCoordinator {
   private artifactDirectory(name: string) { return ensureCoordinationDirectory(path.join(this.root, name), this.fileMode, this.root); }
   private archiveFile(token: CoordinationToken) { coordinationTokenSchema.parse(token); return path.join(this.root, "reconciliations", `${token.resourceId}-${token.operationId}.json`); }
   private executionFile(token: CoordinationToken) { coordinationTokenSchema.parse(token); return path.join(this.root, "executions", `${token.resourceId}-${token.operationId}.json`); }
+  private hookFailureFile(token: CoordinationToken) { coordinationTokenSchema.parse(token); return path.join(this.root, "hook-failures", `${token.resourceId}-${token.operationId}.json`); }
   private checkRecoveryCapacity(name: string) { if (readdirSync(this.artifactDirectory(name)).length >= 4096) throw new CoordinationError("recovery_retention_full"); }
   private assertResource(record: CoordinationRecord, resource: ResourceVersion, expectedBase?: string) {
     if (record.resourceId !== this.resourceId(resource) || record.device !== resource.device || record.identity !== resource.identity || record.canonicalKey !== resource.canonicalKey) throw new CoordinationError("resource_or_identity_changed", record);
@@ -166,10 +170,10 @@ export class ResourceCoordinator {
     }
     return { record: resolved, alreadyReconciled: true, noReplay: true as const };
   }
-  private resolve(record: CoordinationRecord, resource: ResourceVersion, resolution: Omit<CoordinationResolution, "at" | "originalRecordHash" | "originalJournalHash" | "observedBaseVersion" | "effectVerification" | "noReplay">) {
+  private resolve(record: CoordinationRecord, resource: ResourceVersion, resolution: Omit<CoordinationResolution, "at" | "originalRecordHash" | "originalJournalHash" | "observedBaseVersion" | "effectVerification" | "noReplay"> & { effectVerification?: CoordinationResolution["effectVerification"] }) {
     if (!this.ownsSlot(record)) throw new CoordinationError("budget_fence_changed", record);
     const snapshot = this.journalSnapshot(record);
-    const complete: CoordinationResolution = { ...resolution, at: new Date(this.now()).toISOString(), originalRecordHash: coordinationHash(record), originalJournalHash: snapshot.originalJournalHash, observedBaseVersion: resource.baseVersion, effectVerification: "unverified", noReplay: true };
+    const complete: CoordinationResolution = { ...resolution, at: new Date(this.now()).toISOString(), originalRecordHash: coordinationHash(record), originalJournalHash: snapshot.originalJournalHash, observedBaseVersion: resource.baseVersion, effectVerification: resolution.effectVerification ?? "unverified", noReplay: true };
     const resolved: CoordinationRecord = { ...record, state: "released", conflictReason: null, updatedAt: complete.at, resolution: complete };
     this.checkRecoveryCapacity("reconciliations");
     // Preserve the original before publishing release. A failed publication stays fenced;
@@ -276,7 +280,7 @@ export class ResourceCoordinator {
   }
   inspect(resource: ResourceVersion) { return this.inspection(resource, this.current(resource)); }
   current(resource: ResourceVersion) { return this.read(this.resourceId(resource)); }
-  inspectRecovery(resource: ResourceVersion) { const record = this.current(resource); return { ...this.inspection(resource, record), recovery: coordinationRecoveryView(record) }; }
+  inspectRecovery(resource: ResourceVersion) { const record = this.current(resource); const failure = record ? this.hookFailure(coordinationToken(record)) : null; return { ...this.inspection(resource, record), recovery: coordinationRecoveryView(record, failure?.failure ?? null) }; }
   acquire(resource: ResourceVersion, leaseMs = 30_000, override?: Override): CoordinationRecord {
     return this.transaction(this.resourceId(resource), () => {
       const id = this.resourceId(resource), previous = this.read(id), now = this.now();
@@ -355,6 +359,53 @@ export class ResourceCoordinator {
       const record = this.match(token); z.string().uuid().parse(jobId);
       if (!record.execution || !["active", "uncertain"].includes(record.state) || record.jobId && record.jobId !== jobId) throw new CoordinationError("execution_binding_mismatch", record);
       record.jobId = jobId; record.updatedAt = new Date(this.now()).toISOString(); this.save(record); return record;
+    });
+  }
+  /** Retain the invocation-bound outcome of a rejected Git command boundary.
+   * The sidecar is immutable: a later, different observation for the same
+   * generation is refused instead of overwriting the original evidence. */
+  publishHookFailure(token: CoordinationToken, failure: CoordinationHookFailure) {
+    return this.transaction(token.resourceId, () => {
+      const record = this.match(token);
+      if (!["active", "uncertain"].includes(record.state)) throw new CoordinationError("writer_not_recoverable", record);
+      coordinationHookFailureSchema.parse(failure);
+      const file = this.hookFailureFile(token);
+      const previous = this.artifact(file, hookFailureArchiveSchema);
+      const archive = { version: 1 as const, token, device: record.device, identity: record.identity, failure,
+        evidenceHash: coordinationHash([token, failure]) };
+      if (previous) {
+        if (coordinationHash(previous) !== coordinationHash(archive)) throw new CoordinationError("hook_failure_binding_mismatch", record);
+        return { failure: previous.failure, evidenceHash: previous.evidenceHash, alreadyPublished: true as const };
+      }
+      this.checkRecoveryCapacity("hook-failures");
+      atomicWriteJson(file, archive, this.fileMode);
+      return { failure, evidenceHash: archive.evidenceHash, alreadyPublished: false as const };
+    });
+  }
+  hookFailure(token: CoordinationToken) {
+    coordinationTokenSchema.parse(token);
+    const archive = this.artifact(this.hookFailureFile(token), hookFailureArchiveSchema);
+    if (!archive) return null;
+    if (coordinationHash(archive.token) !== coordinationHash(token)
+      || archive.evidenceHash !== coordinationHash([archive.token, archive.failure])) throw new CoordinationError("hook_failure_evidence_invalid");
+    return { failure: archive.failure, evidenceHash: archive.evidenceHash };
+  }
+  /** Retire a rejected command boundary with independent no-effect proof.
+   * The freshly observed base must still equal the base the failed invocation
+   * was admitted with, and the retained evidence must itself prove that no
+   * effect and no descendant survived. A failed hook or an unchanged HEAD
+   * alone never releases the writer. */
+  reconcileHookFailure(token: CoordinationToken, resource: ResourceVersion, expectedBase: string) {
+    return this.transaction(token.resourceId, () => {
+      const previous = this.archived(token, resource, expectedBase); if (previous) return previous;
+      const record = this.match(token); this.assertResource(record, resource, expectedBase);
+      if (!["active", "uncertain"].includes(record.state)) throw new CoordinationError("writer_not_recoverable", record);
+      if (expectedBase !== token.baseVersion) throw new CoordinationError("hook_failure_effect_unverified", record);
+      const archive = this.artifact(this.hookFailureFile(token), hookFailureArchiveSchema);
+      if (!archive || coordinationHash(archive.token) !== coordinationHash(token) || archive.device !== record.device || archive.identity !== record.identity
+        || archive.evidenceHash !== coordinationHash([archive.token, archive.failure])) throw new CoordinationError("hook_failure_evidence_unavailable", record);
+      if (archive.failure.classification !== "pre_effect" || !archive.failure.containment.verified) throw new CoordinationError("hook_failure_effect_unverified", record);
+      return this.resolve(record, resource, { kind: "hook_failure", evidenceHash: archive.evidenceHash, outcome: "completed", effectVerification: "no_effect_proved" });
     });
   }
   prepareRecovery(token: CoordinationToken, resource: ResourceVersion, expectedBase: string) {

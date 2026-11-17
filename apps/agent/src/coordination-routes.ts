@@ -1,13 +1,14 @@
 import { noEffectSubmittedProof, withExecutionProof } from "./execution-boundary.ts";
 import path from "node:path";
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
-import { isCoordinationReadOnly, coordinationRequestSchema, coordinationResourceSchema, coordinationTokenSchema, type CoordinationResource } from "../../../packages/protocol/src/coordination.ts";
+import { isCoordinationReadOnly, coordinationRequestSchema, coordinationResourceSchema, coordinationTokenSchema, type CoordinationResource, type CoordinationHookFailure } from "../../../packages/protocol/src/coordination.ts";
 import { ResourceCoordinator, CoordinationError, coordinationFileMode, coordinationToken, coordinationHash, coordinationDevice, coordinationIdentity, coordinationPublicRecord, coordinationRecoveryView, type ResourceVersion } from "./coordination.ts";
 import type { CoordinationRecordView } from "../../../packages/protocol/src/coordination.ts";
 import { resolveCoordinationResource } from "./coordination-resource.ts";
 import { stateRoot } from "./state.ts";
 import { jobStartKeyStatus, jobCoordinationStatus } from "./jobs.ts";
 import { coordinatedRepoMode, runCoordinatedRepo, coordinatedRepoEvidence, coordinationJobEvidence, type CoordinatedRepoReceipt } from "./coordinated-repo.ts";
+import { hookFailureFromError } from "./repo-hook-failure.ts";
 import type { RepoOperation } from "./repo-operation-contract.ts";
 
 export function operationResource(route: string, input: Record<string, unknown>): CoordinationResource | null {
@@ -17,8 +18,8 @@ export function operationResource(route: string, input: Record<string, unknown>)
   if (route === "/v1/deploy/run" && target === undefined) return null;
   return coordinationResourceSchema.parse({ kind: "repo", path: target });
 }
-function recoveryReply<T extends { record: CoordinationRecordView }>(result: T) {
-  return { ...result, record: coordinationPublicRecord(result.record), recovery: coordinationRecoveryView(result.record) };
+function recoveryReply<T extends { record: CoordinationRecordView }>(result: T, hookFailure?: CoordinationHookFailure | null) {
+  return { ...result, record: coordinationPublicRecord(result.record), recovery: coordinationRecoveryView(result.record, hookFailure) };
 }
 
 /** Installed before the high-level routes. Raw exec, jobs and reads do not use this lane. */
@@ -82,9 +83,17 @@ export function registerCoordinationRoutes(app: FastifyInstance) {
           const current = await probe(input.resource);
           return recoveryReply(coordinator.reconcileRecovery(input.token, current, input.expectedCurrentBaseVersion, input.recoveryIntentId, evidence));
         }
-        const evidence = await coordinatedRepoEvidence(record);
         const current = await probe(input.resource);
-        return recoveryReply(coordinator.reconcileJob(input.token, current, input.expectedCurrentBaseVersion, evidence));
+        if (record.execution) {
+          const evidence = await coordinatedRepoEvidence(record);
+          return recoveryReply(coordinator.reconcileJob(input.token, current, input.expectedCurrentBaseVersion, evidence));
+        }
+        // A rejected Git command boundary has no durable job binding. It is
+        // reconciled with the retained hook evidence and the freshly observed
+        // base, never by repeating the rejected command.
+        const failure = coordinator.hookFailure(input.token);
+        if (!failure) throw new CoordinationError("execution_receipt_unavailable", record);
+        return recoveryReply(coordinator.reconcileHookFailure(input.token, current, input.expectedCurrentBaseVersion), failure.failure);
       }
       const record = coordinator.acquire(resource, input.leaseMs, input.ownerOverride);
       return { record, token: coordinationToken(record) };
@@ -150,6 +159,14 @@ export function registerCoordinationRoutes(app: FastifyInstance) {
         let failedRecord;
         const executionNotStarted = Boolean(noEffectSubmittedProof(error, proofScope));
         let releasedBeforeDispatch = false;
+        // A rejected Git command boundary is retained as durable evidence for
+        // this exact generation. It never releases the writer by itself.
+        const hookFailure = hookFailureFromError(error);
+        let hookFailureEvidence: { failure: CoordinationHookFailure; evidenceHash: string } | undefined;
+        if (hookFailure && token && began) {
+          try { hookFailureEvidence = coordinator.publishHookFailure(token, hookFailure); }
+          catch { /* Publication failure keeps the writer fenced and uncertain. */ }
+        }
         if (token && began) {
           // Only this invocation's successful begin authorizes settlement. A
           // rejected duplicate must never settle the active invocation's token.
@@ -187,6 +204,17 @@ export function registerCoordinationRoutes(app: FastifyInstance) {
         if (recovery) return reply.code(500).send({ error: recovery.recoveryMode === "durable_job" && !releasedBeforeDispatch ? "repository_execution_requires_recovery" : "repository_operation_failed",
           message: recovery.recoveryMode === "durable_job" && releasedBeforeDispatch ? "Repository operation failed before dispatch; no execution was started and the coordination fence was released."
             : recovery.recoveryMode === "legacy" && error instanceof Error ? error.message : "Repository execution requires recovery; inspect the original receipt without replay.", ...recovery });
+        if (hookFailure) {
+          // No published success: the rejected commit is reported as a failure
+          // with its retained evidence and the exact reconciliation token.
+          return reply.code(500).send({ error: "repository_hook_rejected",
+            message: error instanceof Error ? error.message : "The Git command boundary failed.",
+            noReplay: true, effectVerification: "unverified",
+            hookFailure: hookFailureEvidence?.failure ?? hookFailure,
+            evidencePublication: hookFailureEvidence ? "available" : "unavailable",
+            ...(failedRecord ? { coordination: { ...coordinationPublicRecord(failedRecord), token } } : {}),
+            recovery: coordinationRecoveryView(failedRecord ?? null, hookFailureEvidence?.failure ?? hookFailure) });
+        }
         throw error;
       }
   };

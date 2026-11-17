@@ -38,7 +38,7 @@ function needsSafeDirectory(): boolean {
   return typeof process.geteuid === "function" && process.geteuid() === 0;
 }
 
-async function gitPrefix(repoPath: string): Promise<string[]> {
+export async function gitPrefix(repoPath: string): Promise<string[]> {
   return needsSafeDirectory()
     ? ["-c", `safe.directory=${await resolveRepoSafeDirectory(repoPath)}`]
     : [];
