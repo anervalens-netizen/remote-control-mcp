@@ -74,10 +74,28 @@ jobs:
           $prefix = Join-Path $env:RUNNER_TEMP 'rcmcp-pnpm'
           npm install --global --prefix $prefix pnpm@10.29.3
           $prefix | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-      - name: Install ripgrep (GitHub-hosted Windows)
+      - name: Install pinned ripgrep (GitHub-hosted Windows)
         if: runner.environment == 'github-hosted'
         shell: powershell
-        run: choco install ripgrep --no-progress --yes
+        run: |
+          # Chocolatey feed timeouts must not block native regression tests.
+          # SHA-256 is pinned to the publisher's official GitHub release asset.
+          $ErrorActionPreference = 'Stop'
+          $version = '15.2.0'
+          $expectedSha = '71b2fef860abe467217a538ff31de02f5258807c0129f771846f87bd029aafc5'
+          $asset = 'ripgrep-' + $version + '-x86_64-pc-windows-msvc'
+          $archive = Join-Path $env:RUNNER_TEMP ($asset + '.zip')
+          $url = 'https://github.com/BurntSushi/ripgrep/releases/download/' + $version + '/' + $asset + '.zip'
+          Invoke-WebRequest -Uri $url -OutFile $archive -UseBasicParsing
+          $actualSha = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actualSha -ne $expectedSha) { throw 'Pinned ripgrep archive hash mismatch' }
+          $destination = Join-Path $env:RUNNER_TEMP 'rcmcp-ripgrep'
+          Expand-Archive -LiteralPath $archive -DestinationPath $destination
+          $exe = Join-Path (Join-Path $destination $asset) 'rg.exe'
+          if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) { throw 'Missing rg.exe in pinned archive' }
+          (Split-Path -Parent $exe) | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          & $exe --version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Verify native runtime tools
         shell: powershell
         run: |

@@ -20,4 +20,16 @@ Selected earlier native HP tests independently confirmed that cancelling job_wai
 - Cross-version and cross-host process/effect counting, restart durability, and concurrency under real client reconnects.
 - Actual ChatGPT-host catalog refresh and client compatibility for all newly implemented tools.
 
+## CI dependency provenance
+
+One Windows hosted CI attempt failed before tests because Chocolatey timed out
+reading the community V2 package feed for ripgrep. A second rerun failed at
+the same external installation step. The Windows CI workflow now installs the
+official ripgrep 15.2.0 Windows x64 GitHub release archive with a pinned
+SHA-256 (71b2fef860abe467217a538ff31de02f5258807c0129f771846f87bd029aafc5),
+checks the archive before extraction, and exposes only the verified rg.exe
+directory to subsequent steps. The archive hash and ZIP path were verified
+independently against upstream GitHub release metadata and a downloaded copy.
+This is CI dependency hardening, not a change to installed agent behavior.
+
 Therefore **MCP-04 remains active**, not verified. These test-only changes add no workload retry or production behavior and do not authorize clearing historical uncertain coordinator operations.
