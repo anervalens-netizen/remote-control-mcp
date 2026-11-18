@@ -1,4 +1,6 @@
 import { withJobDiagnostics } from "./job-diagnostics.ts";
+import { withActionableJobProgress } from "./job-progress-hint.ts";
+import { diagnosticDoctor, diagnosticDoctorOutputSchema } from "./diagnostic-doctor.ts";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -71,9 +73,9 @@ const context = (identity: "root" | "owner" | "interactive") => identity === "ro
 function jobSummary(input: unknown): Record<string, unknown> {
   if (!input || typeof input !== "object") return { state: "unknown" };
   const value = input as Record<string, unknown>;
-  return withJobDiagnostics(Object.fromEntries(["id", "state", "code", "exitCode", "signal", "pid", "startedAt", "finishedAt", "stdoutBytes", "stderrBytes", "trackedProcessCount", "terminationVerified", "terminationVerificationScope"]
+  return withActionableJobProgress(withJobDiagnostics(Object.fromEntries(["id", "state", "code", "exitCode", "signal", "pid", "startedAt", "finishedAt", "stdoutBytes", "stderrBytes", "trackedProcessCount", "terminationVerified", "terminationVerificationScope", "lastOutputAt", "retryAfterMs", "waitExpired"]
     .filter(key => typeof value[key] === "string" || typeof value[key] === "number" || typeof value[key] === "boolean" || value[key] === null)
-    .map(key => [key, value[key]])));
+    .map(key => [key, value[key]]))));
 }
 async function snapshot(client: AgentClient, input: z.infer<z.ZodObject<typeof snapshotInput>>, signal?: AbortSignal) {
   const [operations, fleet, jobs] = await Promise.all([
@@ -113,6 +115,12 @@ export function registerConsoleTools(server: McpServer, client: AgentClient) {
     description: "Read bounded fleet and associated operation metadata; optional selected-device job history. No raw logs or commands.",
     inputSchema: snapshotInput, outputSchema: snapshotSchema, annotations: readOnly, _meta: { ui: { visibility: ["app"] } },
   }, async (input, extra) => json(await snapshot(client, input, extra.signal)));
+  registerAppTool(server, "dashboard_doctor", {
+    description: "Read bounded endpoint and graphical-session observations for the selected inventory device.",
+    inputSchema: { device: z.string().min(1).max(256) },
+    outputSchema: diagnosticDoctorOutputSchema,
+    annotations: readOnly, _meta: { ui: { visibility: ["app"] } },
+  }, async ({ device }, extra) => json(await diagnosticDoctor(client, device, {}, extra.signal)));
   registerAppTool(server, "operation_inspect", {
     description: "Inspect one observed trace or a durable job reference. Output is read only on explicit bounded page request; never replays execution.",
     inputSchema: { reference, detailOffset: z.number().int().nonnegative().optional(), output: z.object({ stream: z.enum(["stdout", "stderr"]), offset: z.number().int().optional(), length: z.number().int().min(1).max(8192).optional() }).strict().optional() },

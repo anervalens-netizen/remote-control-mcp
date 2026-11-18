@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ToolDiagnostics, startToolProgress, toolOutcome } from '../apps/mcp-server/src/tool-diagnostics.ts';
+import { ToolDiagnostics, aggregateDiagnosticStages, startToolProgress, toolOutcome } from '../apps/mcp-server/src/tool-diagnostics.ts';
+import { createTrace } from '../packages/protocol/src/diagnostic-context.ts';
 afterEach(() => vi.useRealTimers());
 describe('bounded tool observations', () => {
   it('bounds cardinality and samples without capturing arguments or arbitrary device names', () => {
@@ -41,4 +42,30 @@ describe('optional truthful progress',()=>{
     const throwing=vi.fn(()=>{throw Error('transport closed')});const close=startToolProgress('job_wait',{_meta:{progressToken:'y'},sendNotification:throwing});close();
     expect(throwing).toHaveBeenCalledTimes(1);
   });
+});
+
+
+it("aggregates measured stage durations while marking absent stages and queue as unknown", () => {
+  const first = createTrace("exec", { command: "PRIVATE_TEST_COMMAND" }, 1);
+  first.stages = { handler: { ms: 40, count: 1 }, agentRequest: { ms: 30, count: 1 } };
+  const second = createTrace("job_wait", {}, 2);
+  second.stages = { handler: { ms: 90, count: 1 }, executionWait: { ms: 80, count: 1 } };
+  const diagnostic = new ToolDiagnostics(["fixture"]);
+  diagnostic.record("exec", { device: "fixture", command: "PRIVATE_TEST_COMMAND" }, 40, "success", { trace: first });
+  diagnostic.record("job_wait", { device: "fixture" }, 90, "success", { trace: second });
+  const observed = diagnostic.snapshot().stageMeasurements;
+  expect(observed.traceCount).toBe(2);
+  expect(observed.queueDurationMs).toBeNull();
+  expect(observed.items.find(item => item.name === "handler")).toMatchObject({
+    observedTraces: 2, notObservedTraces: 0, stageCalls: 2, totalMeasuredMs: 130,
+    p50MeasuredMs: 40, p95MeasuredMs: 90,
+  });
+  expect(observed.items.find(item => item.name === "agentRequest")).toMatchObject({
+    observedTraces: 1, notObservedTraces: 1, totalMeasuredMs: 30,
+  });
+  expect(observed.items.find(item => item.name === "finalValidation")).toMatchObject({
+    observedTraces: 0, notObservedTraces: 2, p50MeasuredMs: null, p95MeasuredMs: null,
+  });
+  expect(JSON.stringify(observed)).not.toContain("PRIVATE_TEST_COMMAND");
+  expect(aggregateDiagnosticStages([])).toMatchObject({ traceCount: 0, queueDurationMs: null });
 });

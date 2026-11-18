@@ -63,6 +63,77 @@ function Badge({ value }: { value: string }) {
   return <span className={`badge ${tone}`}>{value.replaceAll("_", " ")}</span>;
 }
 
+const identityLabel: Record<string, string> = { root: "Root / system", owner: "Owner", interactive: "Interactive" };
+const readable = (value: string) => value.replaceAll("_", " ");
+const timestamp = (value?: string) => value && Number.isFinite(Date.parse(value)) ? new Date(value).toLocaleString() : "Not observed";
+const doctorStageName: Record<string, string> = {
+  controller: "Controller", agent: "Agent", graphical_session: "Graphical session",
+  managed_desktop_engine: "Managed desktop engine", capture_capability: "Capture", input_capability: "Input",
+};
+const nextJobRead: Record<string, string> = {
+  job_wait: "Refresh the original job status. Use job_wait for a bounded wait.",
+  job_lineage: "Use job_lineage with this original job reference to inspect retained receipts.",
+  job_output_since: "Read retained stdout or stderr using the original job reference.",
+};
+function ObservationFacts({ observation, reference }: { observation: Json; reference: Json }) {
+  const progress = observation.progressGuidance;
+  const output = progress?.outputBytes;
+  const noOutputBytes = output?.stdout == null && output?.stderr == null;
+  const exitCode = observation.exitCode ?? observation.code;
+  return <>{exitCode != null && <p>Exit code: {pretty(exitCode)}</p>}<dl className="observation-facts">
+    {reference.job ? <>
+      <dt>Route</dt><dd>{reference.job.device} · {identityLabel[reference.job.identity] ?? reference.job.identity}</dd>
+      <dt>Job record</dt><dd><Badge value={observation.state ?? "unknown"}/></dd>
+      <dt>Termination</dt><dd>{progress?.terminationEvidence ?? "Unknown"}</dd>
+      <dt>Last output</dt><dd>{timestamp(progress?.lastOutputAt)}
+        {!noOutputBytes && <small>stdout {output.stdout ?? "unknown"} B · stderr {output.stderr ?? "unknown"} B</small>}
+      </dd>
+      {progress?.nextCheck && <><dt>Next check</dt><dd>{nextJobRead[progress.nextCheck] ?? "Inspect the original job receipt."}
+        {progress.retryAfterMs != null && <small>Suggested retry interval {progress.retryAfterMs} ms</small>}
+        {progress.waitExpiredWithoutTermination && <small>The last wait expired while the job was active.</small>}
+      </dd></>}
+    </> : <>
+      <dt>Request handler</dt><dd><Badge value={observation.state ?? "unknown"}/>{observation.callerDisconnected && <small>Caller disconnected</small>}</dd>
+      <dt>Execution outcome</dt><dd>{readable(observation.executionOutcome ?? "unknown")}</dd>
+      {observation.observationOutcome === "failed" && <><dt>Observation</dt><dd>Read failed</dd></>}
+      {observation.recoveryId && <><dt>Result receipt</dt><dd><code>{observation.recoveryId}</code><small>Use result_recover while the original receipt is retained.</small></dd></>}
+    </>}
+    <dt>Verified effect</dt><dd>{readable(observation.effectVerification ?? progress?.effectVerification ?? "unverified")}</dd>
+    <dt>Client acceptance</dt><dd>{readable(observation.clientAcceptance ?? "unknown")}</dd>
+  </dl></>;
+}
+
+function DeviceDoctor({ device, identity, ready, disconnected }: { device: string; identity: string; ready: boolean; disconnected: boolean }) {
+  const [report, setReport] = useState<Json>();
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState(false);
+  async function diagnose() {
+    setPending(true); setError(false);
+    try { setReport(await call("dashboard_doctor", { device })); }
+    catch { setError(true); }
+    finally { setPending(false); }
+  }
+  return <div className="device-doctor">
+    <div className="section-title"><h3>Device diagnosis</h3>
+      <button type="button" disabled={!ready || pending} onClick={diagnose}>{pending ? "Checking…" : report ? "Refresh diagnosis" : "Check endpoints"}</button>
+    </div>
+    <p className="muted">Selected route is {identityLabel[identity] ?? identity}. Use Owner for owner files and processes, Interactive for desktop sessions, or Root / system for system services. Inspect known jobs using their original identity.</p>
+    {error && <p className="notice" role="status">Diagnosis unavailable. Any previous results are cached observations.</p>}
+    {report && <>
+      <p><Badge value={report.status ?? "unknown"}/> <small>{error || pending || disconnected ? "Last observed" : "Observed"} {timestamp(report.observedAt)}</small></p>
+      <div className="table-wrap"><table><thead><tr><th>Check</th><th>State and cause</th><th>Source and time</th></tr></thead><tbody>
+        {report.stages?.map((stage: Json) => <tr key={`${stage.name}:${stage.identity ?? ""}`}>
+          <th scope="row">{doctorStageName[stage.name] ?? readable(stage.name)}{stage.identity && <small>{identityLabel[stage.identity] ?? stage.identity}</small>}</th>
+          <td><Badge value={stage.state}/><small>{readable(stage.cause)}</small></td>
+          <td><small>{stage.source} · {timestamp(stage.observedAt)}</small></td>
+        </tr>)}
+      </tbody></table></div>
+      {report.nextCheck && <p>{report.nextCheck}</p>}
+      {report.coverage?.caveat && <p className="muted">{report.coverage.caveat}</p>}
+    </>}
+  </div>;
+}
+
 function Console() {
   const [ready, setReady] = useState(connected);
   const lastLaunch = useRef(launchVersion);
@@ -180,6 +251,7 @@ function Console() {
   }
   useEffect(() => { if (ready && scope) void associate(); }, [ready, scope]);
   const operations = (all ? !data?.diagnosticScopeId : data?.diagnosticScopeId === scope) ? data?.operations?.items ?? [] : [];
+  const coverage = data?.operations?.coverage;
   const jobs = data?.jobs?.device === device && data?.jobs?.identity === identity ? data.jobs : undefined;
   const disconnected = error.startsWith("Connection unavailable");
   return <main>
@@ -200,12 +272,14 @@ function Console() {
     <section><div className="section-title"><h2>{all ? "Observed operations" : "Associated operations"}</h2><label><input type="checkbox" checked={all} disabled={!scope} onChange={e => { setAll(e.target.checked); setCursor(undefined); }}/> All observed scopes</label></div>
       <div className="scope"><code>{scope ?? "All observed scopes"}</code><button disabled={!scope} onClick={associate}>Associate future operations</button></div>
       <p className="muted">Association is explicit. An empty view does not mean the conversation has no active work.</p>
-      {data?.operations?.coverage?.partial && <div className="notice">Partial observation history: {data.operations.coverage.historyHasGaps ? "older records were evicted; the full requested period may not be retained. " : ""}{data.operations.coverage.faults?.join(", ")}</div>}
+      {coverage?.partial && <div className="notice">Partial observation history. {coverage.historyHasGaps ? "Older records were evicted. " : ""}{coverage.faults?.map(readable).join(", ")}</div>}
+      {coverage?.oldestRetainedAt && coverage.newestRetainedAt && <p className="muted">Controller retention spans {timestamp(coverage.oldestRetainedAt)} to {timestamp(coverage.newestRetainedAt)}.</p>}
       <div className="table-wrap"><table><thead><tr><th>Operation</th><th>Association</th><th>Handler</th><th>Started</th><th>Observed duration</th><th>Jobs</th></tr></thead><tbody>{operations.map((op: Json) => <tr key={op.traceId}><td><button className="link" onClick={() => setSelection({ traceId: op.traceId })}>{op.tool}</button><code>{op.traceId.slice(0, 8)}</code></td><td>{op.diagnosticScopeId ? <code title={op.diagnosticScopeId}>{op.diagnosticScopeId === scope ? "This scope" : op.diagnosticScopeId.slice(0, 8)}</code> : <span>Unassociated</span>}</td><td><Badge value={op.state}/>{op.executionOutcome && <small>{op.executionOutcome}</small>}</td><td>{when(op.startedAt)}</td><td title="Controller time between first and latest recorded events; not workload runtime">{observedDuration(op)}</td><td>{op.jobCount}</td></tr>)}</tbody></table></div>
       {!operations.length && <p className="empty">No operations in this observed scope.</p>}
       <div className="pagination"><button disabled={!cursor} onClick={() => setCursor(undefined)}>Newest</button><button disabled={!data?.operations?.nextCursor} onClick={() => setCursor(data?.operations?.nextCursor)}>Older observations</button></div>
     </section>
     {device && <section><div className="section-title"><h2>Jobs · {device}</h2><select aria-label="Job execution identity" value={identity} onChange={e => { setIdentity(e.target.value); setJobCursor(undefined); }}><option value="root">Root / system</option><option value="owner">Owner</option><option value="interactive">Interactive</option></select></div>
+      <DeviceDoctor key={device} device={device} identity={identity} ready={ready} disconnected={disconnected}/>
       <form className="scope" onSubmit={e => { e.preventDefault(); if (manualJob.trim()) setSelection({ job: { device, identity, jobId: manualJob.trim() } }); }}><input aria-label="Known job ID" placeholder="Known job ID" value={manualJob} maxLength={256} onChange={e => setManualJob(e.target.value)}/><button disabled={!manualJob.trim()}>Inspect job</button></form>
       {jobs?.partial && <div className="notice">Job history is incomplete or unavailable.</div>}
       {(jobs?.items ?? []).map((job: Json) => <button className="job-row" key={job.id} onClick={() => setSelection({ job: { device, identity, jobId: job.id } })}><code>{job.id}</code><Badge value={job.state ?? "unknown"}/>{job.lifecycleDiagnostics?.reviewRecommended && <span>Long running · review activity</span>}<span>{when(job.startedAt)}</span></button>)}
@@ -215,9 +289,9 @@ function Console() {
       {detailError && <div className="notice">{detailError}</div>}
       {!detail && !detailError && <p>Reading observation…</p>}
       {detail && <><p className="muted">{detail.coverage}</p>{detail.observation ? <>
-        <Badge value={detail.observation.state ?? "unknown"}/>{detail.observation.lifecycleDiagnostics?.reviewRecommended && <div className="notice">{detail.observation.lifecycleDiagnostics.guidance}</div>}<p>Observed: {when(detail.observedAt)}</p>
+        <ObservationFacts observation={detail.observation} reference={detail.reference ?? selection}/>
+        {detail.observation.lifecycleDiagnostics?.reviewRecommended && <div className="notice">{detail.observation.lifecycleDiagnostics.guidance}</div>}<p>Observed: {timestamp(detail.observedAt)}</p>
         {detail.observation.contextKeep && <p>ContextKeep task <code>{detail.observation.contextKeep.taskId}</code></p>}
-        {detail.observation.exitCode !== undefined && <p>Exit code: {pretty(detail.observation.exitCode)}</p>}{detail.observation.code !== undefined && <p>Exit code: {pretty(detail.observation.code)}</p>}
         {detail.observation.events?.map((event: Json, i: number) => <div className="event" key={i}><time>{when(event.at)}</time><span>{event.stage.replaceAll("_", " ")}</span><small>{event.device} {event.identity}</small></div>)}
         {detail.observation.eventsPartial && <p className="notice">Additional stages were omitted by the observation limit.</p>}
         {detail.observation.nextDetailOffset != null && <button disabled={busy} onClick={async () => {

@@ -18,7 +18,7 @@ it.skipIf(!executablePath)("isolates panels, pages text output and recovers stal
     operations: { items: [{ tool: "fixture-operation", traceId, diagnosticScopeId, state: "returned", startedAt: new Date().toISOString(), jobCount: 1 }], nextCursor: null, coverage: { partial: false } }, jobs: null }));
   const host = await build({ stdin: { contents: `
     import {AppBridge, PostMessageTransport} from '@modelcontextprotocol/ext-apps/app-bridge';
-    window.calls=[]; window.fail=false;
+    window.calls=[]; window.fail=false; window.failDoctor=false;
     const fixtures=${JSON.stringify(data)};
     (async()=>{for(let i=0;i<2;i++){
       const frame=document.createElement('iframe');frame.id='panel-'+i;document.body.append(frame);
@@ -28,8 +28,15 @@ it.skipIf(!executablePath)("isolates panels, pages text output and recovers stal
         if(window.fail)throw new Error('synthetic disconnected');
         let value;
         if(params.name==='dashboard_snapshot')value={...fixtures[i],...(params.arguments.diagnosticScopeId?{}:{diagnosticScopeId:undefined,operations:{...fixtures[i].operations,items:[...fixtures[i].operations.items,{tool:'unassociated-fixture',traceId:'44444444-4444-4444-8444-444444444444',state:'returned',jobCount:0}]}}),...(params.arguments.includeFleet===false?{fleet:null}:{})};
-        else if(params.arguments.reference.traceId)value={observedAt:new Date().toISOString(),reference:params.arguments.reference,observation:{state:'returned',events:[],jobs:[{device:'lab-fixture',identity:'root',jobId:'fixture-job'}]},output:null,coverage:'Observed metadata only'};
-        else value={observedAt:new Date().toISOString(),reference:params.arguments.reference,observation:{id:'fixture-job',state:'completed',code:7},output:params.arguments.output?{stream:'stdout',data:params.arguments.output.offset===0?'<img src=x onerror="window.__injected=true">':'second page: end',nextOffset:params.arguments.output.offset===0?45:61,eof:params.arguments.output.offset!==0}:null,coverage:'Fresh agent observation'};
+        else if(params.name==='dashboard_doctor') {
+          if(window.failDoctor)throw new Error('synthetic unreadable device');
+          value={status:'partial',observedAt:new Date().toISOString(),stages:[
+            {name:'agent',identity:'root',state:'ready',cause:'agent_reports_ready',source:'agent:/v1/info',observedAt:new Date().toISOString()},
+            {name:'agent',identity:'owner',state:'not_configured',cause:'endpoint_not_configured_no_request',source:'configuration',observedAt:new Date().toISOString()},
+          ],nextCheck:'Configure an owner endpoint only if owner operations are required.',coverage:{caveat:'Physical power and job effects are unverified.'}};
+        }
+        else if(params.arguments.reference.traceId)value={observedAt:new Date().toISOString(),reference:params.arguments.reference,observation:{state:'returned',executionOutcome:'exit_nonzero',exitCode:23,events:[],jobs:[{device:'lab-fixture',identity:'root',jobId:'fixture-job'}]},output:null,coverage:'Observed metadata only'};
+        else value={observedAt:new Date().toISOString(),reference:params.arguments.reference,observation:{id:'fixture-job',state:'completed',code:7,progressGuidance:{terminationEvidence:'verified',effectVerification:'unknown',lastOutputAt:'2026-01-01T00:00:00Z',outputBytes:{stdout:45,stderr:0},nextCheck:'job_output_since'}},output:params.arguments.output?{stream:'stdout',data:params.arguments.output.offset===0?'<img src=x onerror="window.__injected=true">':'second page: end',nextOffset:params.arguments.output.offset===0?45:61,eof:params.arguments.output.offset!==0}:null,coverage:'Fresh agent observation'};
         return {content:[],structuredContent:value};
       };
       bridge.oninitialized=async()=>{await bridge.sendToolInput({arguments:{diagnosticScopeId:fixtures[i].diagnosticScopeId}});await bridge.sendToolResult({content:[],structuredContent:fixtures[i]});};
@@ -59,6 +66,7 @@ it.skipIf(!executablePath)("isolates panels, pages text output and recovers stal
   await first.getByText("This scope", { exact: true }).waitFor();
   expect(await first.getByText("Unassociated", { exact: true }).count()).toBe(0);
   await first.getByRole("button", { name: "fixture-operation", exact: true }).click();
+  await first.getByRole("complementary").getByText("Exit code: 23", { exact: true }).waitFor();
   await first.getByRole("button", { name: /fixture-job/ }).click();
   await first.getByRole("button", { name: "Read stdout", exact: true }).click();
   await first.locator("pre").waitFor();
@@ -72,7 +80,12 @@ it.skipIf(!executablePath)("isolates panels, pages text output and recovers stal
   expect(summaryData.observation.code).toBe(7);
   expect(summaryData).not.toHaveProperty("output");
   expect(await summary.getAttribute("readonly")).not.toBeNull();
-  expect(await first.getByRole("complementary").innerText()).toContain("Exit code: 7");
+  const details = first.getByRole("complementary");
+  await details.getByText("Exit code: 7", { exact: true }).waitFor();
+  await details.getByText("lab-fixture · Root / system", { exact: true }).waitFor();
+  await details.getByText("Read retained stdout or stderr using the original job reference.").waitFor();
+  await details.getByText("stdout 45 B · stderr 0 B").waitFor();
+  await details.getByText("Verified effect", { exact: true }).waitFor();
   await first.getByRole("button", { name: "Next output page", exact: true }).click();
   await expect.poll(() => first.locator("pre").innerText()).toBe("second page: end");
   expect(await first.getByRole("button", { name: "Next output page", exact: true }).isEnabled()).toBe(false);
@@ -82,6 +95,15 @@ it.skipIf(!executablePath)("isolates panels, pages text output and recovers stal
   expect(await second.getByRole("complementary").count()).toBe(0);
   await first.getByRole("button", { name: "Close", exact: true }).click();
   expect(await summary.count()).toBe(0);
+  await first.getByRole("button", { name: /lab-fixture/ }).click();
+  await first.getByRole("button", { name: "Check endpoints" }).click();
+  await first.getByText("endpoint not configured no request").waitFor();
+  await first.getByText("Configure an owner endpoint only if owner operations are required.").waitFor();
+  expect(await second.getByRole("heading", { name: "Device diagnosis" }).count()).toBe(0);
+  await page.evaluate(() => { (window as any).failDoctor = true; });
+  await first.getByRole("button", { name: "Refresh diagnosis" }).click();
+  await first.getByText(/previous results are cached/).waitFor();
+  await first.getByText(/Last observed /).waitFor();
   await page.evaluate(() => { (window as any).fail = true; });
   await first.getByRole("button", { name: "Refresh", exact: true }).click();
   await first.getByRole("alert").waitFor();
@@ -99,7 +121,7 @@ it.skipIf(!executablePath)("isolates panels, pages text output and recovers stal
   expect(await first.locator(".device-title .badge").innerText()).toBe("REACHABLE");
   expect(await second.getByText(scopes[1]!, { exact: true }).count()).toBe(1);
   const calls = await page.evaluate(() => (window as any).calls);
-  expect(calls.every((call: any) => ["dashboard_snapshot", "operation_inspect"].includes(call.name))).toBe(true);
+  expect(calls.every((call: any) => ["dashboard_snapshot", "dashboard_doctor", "operation_inspect"].includes(call.name))).toBe(true);
   expect(calls.filter((call: any) => call.name === "dashboard_snapshot").every((call: any) => (call.panel === 0 && !call.arguments.diagnosticScopeId) || call.arguments.diagnosticScopeId === scopes[call.panel])).toBe(true);
   await page.screenshot({ path: path.join(evidence, "recovered.png"), fullPage: true });
   expect(errors).toEqual([]);

@@ -1,4 +1,5 @@
 import { withJobDiagnostics } from "./job-diagnostics.ts";
+import { withActionableJobProgress } from "./job-progress-hint.ts";
 import { configuredContextKeepBridge, jobInputHash } from "./contextkeep-bridge.ts";
 import { toolErrorDetails, withToolErrors } from "./tool-errors.ts";
 import { jobFollowFields, jobLineageFields } from "../../../packages/protocol/src/project.ts";
@@ -85,7 +86,8 @@ export function registerJobTools(server: McpServer, client: AgentClient): void {
   server.registerTool("job_status", { description: "Get durable job status by job ID, or inspect an idempotency-key reservation without replaying it.", inputSchema: jobStatusInputSchema },
     async ({ device, id, idempotencyKey, context, identity, elevation }) => {
       const target = resolveExecutionContext(client, device, { context, identity, elevation }, "system");
-      return routedText(id ? await client.jobStatus(device, id, target) : await client.jobStatusByKey(device, idempotencyKey!, target), target);
+      const result = id ? await client.jobStatus(device, id, target) : await client.jobStatusByKey(device, idempotencyKey!, target);
+      return routedText(withActionableJobProgress(result), target);
     });
   server.registerTool("job_output", { description: "Read a bounded byte range from a durable job stdout or stderr; negative offsets tail from the end.", inputSchema: executionInputSchema({ device: z.string().min(1), id: z.string().min(1), stream: z.enum(["stdout", "stderr"]).optional(), offset: z.number().int().optional(), length: z.number().int().positive().max(1024 * 1024).optional(), encoding: z.enum(["utf8", "base64"]).optional() }) },
     async ({ device, context, identity, elevation, ...input }) => {
@@ -100,7 +102,9 @@ export function registerJobTools(server: McpServer, client: AgentClient): void {
   }, async ({ device, context, identity, elevation, ...input }, extra) => {
     const target = resolveExecutionContext(client, device, { context, identity, elevation }, "system");
     const requestedWaitMs = input.waitMs ?? mcpJobWaitDefaultMs, effectiveWaitMs = Math.min(requestedWaitMs, mcpJobWaitMaxMs);
-    return routedText(mcpJobWaitResult(await client.jobFollow(device, { ...input, waitMs: effectiveWaitMs }, target, extra.signal), requestedWaitMs, effectiveWaitMs), target);
+    return routedText(withActionableJobProgress(mcpJobWaitResult(
+      await client.jobFollow(device, { ...input, waitMs: effectiveWaitMs }, target, extra.signal),
+      requestedWaitMs, effectiveWaitMs)), target);
   });
   server.registerTool("job_output_since", {
     description: "Read both durable job streams since the previous cursor with current status/progress in one call. UTF-8 boundaries are preserved; pages can exceed maxBytes by up to 3 bytes for one code point. Base64 preserves arbitrary bytes. Repeat until outputComplete=true.",
@@ -108,7 +112,9 @@ export function registerJobTools(server: McpServer, client: AgentClient): void {
   }, async ({ device, context, identity, elevation, ...input }, extra) => {
     const target = resolveExecutionContext(client, device, { context, identity, elevation }, "system");
     const requestedWaitMs = input.waitMs ?? 0, effectiveWaitMs = Math.min(requestedWaitMs, mcpJobWaitMaxMs);
-    return routedText(mcpJobWaitResult(await client.jobFollow(device, { ...input, waitMs: effectiveWaitMs, until: "output" }, target, extra.signal), requestedWaitMs, effectiveWaitMs), target);
+    return routedText(withActionableJobProgress(mcpJobWaitResult(
+      await client.jobFollow(device, { ...input, waitMs: effectiveWaitMs, until: "output" }, target, extra.signal),
+      requestedWaitMs, effectiveWaitMs)), target);
   });
   server.registerTool("job_cancel", { description: "Cancel a durable job and its process tree.", inputSchema: executionInputSchema({ device: z.string().min(1), id: z.string().min(1) }) },
     async ({ device, id, context, identity, elevation }) => {

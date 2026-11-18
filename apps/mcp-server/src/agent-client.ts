@@ -296,9 +296,14 @@ export class AgentClient {
   private request<T>(name: string, route: string, body?: unknown, context: AgentEndpointContext = "system", options?: AgentRequestOptions): Promise<T> {
     return this.requestRoute(name, route, body, context, options);
   }
-  private async linuxOwnerDesktopRequest<T>(name: string, route: string, body?: unknown, options?: AgentRequestOptions): Promise<T> {
-    const info = await this.info(name, "user", { signal: options?.signal }) as { runtime?: { platform?: string; capabilities?: string[] } };
-    if (info.runtime?.platform !== "linux" || !info.runtime?.capabilities?.includes("linux-desktop-v1")) throw new AgentRequestError(`${name} desktop context is not configured and owner Linux desktop capability is unavailable`, name, "desktop", route, "context");
+  supportsLinuxOwnerDesktop(info: unknown): boolean {
+    const runtime = (info as { runtime?: { platform?: string; capabilities?: unknown } } | undefined)?.runtime;
+    return runtime?.platform === "linux" && Array.isArray(runtime.capabilities) &&
+      runtime.capabilities.includes("linux-desktop-v1");
+  }
+  private async linuxOwnerDesktopRequest<T>(name: string, route: string, body?: unknown, options?: AgentRequestOptions, ownerInfo?: unknown): Promise<T> {
+    const info = ownerInfo ?? await this.info(name, "user", { signal: options?.signal });
+    if (!this.supportsLinuxOwnerDesktop(info)) throw new AgentRequestError(`${name} desktop context is not configured and owner Linux desktop capability is unavailable`, name, "desktop", route, "context");
     return this.requestRoute(name, route, body, "user", options);
   }
   private desktopRequest<T>(name: string, route: string, body?: unknown, options?: AgentRequestOptions): Promise<T> {
@@ -587,7 +592,11 @@ export class AgentClient {
   desktopMonitors(name: string, signal?: AbortSignal): Promise<unknown> { return this.desktopRequest(name, "/v1/desktop/monitors", undefined, { signal }); }
   desktopUia(name: string, input: DesktopUiaInput, signal?: AbortSignal): Promise<unknown> { return this.desktopRequest(name, "/v1/desktop/uia", input, { signal }); }
   desktopWindows(name: string, input: DesktopWindowsInput = {}, signal?: AbortSignal): Promise<unknown> { return this.desktopRequest(name, "/v1/desktop/windows", Object.keys(input).length ? input : undefined, { signal }); }
-  desktopSessionStatus(name: string, signal?: AbortSignal): Promise<unknown> { return this.desktopRequest(name, "/v1/desktop/session", undefined, { signal }); }
+  desktopSessionStatus(name: string, signal?: AbortSignal, ownerInfo?: unknown): Promise<unknown> {
+    if (ownerInfo !== undefined && !this.getDevice(name).desktopUrl)
+      return this.linuxOwnerDesktopRequest(name, "/v1/desktop/session", undefined, { signal }, ownerInfo);
+    return this.desktopRequest(name, "/v1/desktop/session", undefined, { signal });
+  }
   desktopHelperStatus(name: string, signal?: AbortSignal): Promise<unknown> { return this.desktopRequest(name, "/v1/desktop/helper/status", undefined, { signal }); }
   desktopScreenshot(name: string, input: unknown, signal?: AbortSignal): Promise<unknown> { return this.desktopRequest(name, "/v1/desktop/screenshot", input, { signal }); }
   desktopFocus(name: string, input: unknown, signal?: AbortSignal): Promise<unknown> { return this.desktopRequest(name, "/v1/desktop/focus", input, { signal }); }

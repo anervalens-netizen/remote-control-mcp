@@ -13,14 +13,14 @@ export const readOnlyTools: ReadonlySet<string> = new Set([
   "batch_recover", "batch_read", "browser_execution", "capability_report", "coordination_capacity",
   "desktop_clipboard_get", "desktop_helper_status", "desktop_monitors", "desktop_observe",
   "desktop_screenshot", "desktop_session_status", "desktop_windows",
-  "device_info", "device_contexts", "devices_list", "fleet_status", "usage_report", "usage_window",
+  "device_info", "device_contexts", "devices_list", "diagnostic_doctor", "fleet_status", "usage_report", "usage_window",
   "docker_snapshot", "docker_summary", "exec_recover", "fs_read", "fs_list",
   "gpu_snapshot", "host_inventory", "network_snapshot", "package_managers", "storage_snapshot", "system_metrics",
   "job_input_hash", "job_status", "job_output", "job_output_since", "job_wait", "job_list", "job_history", "job_lineage",
   "process_find", "process_list", "pty_list", "pty_output",
   "repo_compare", "repo_git_path", "repo_snapshot", "search", "search_results", "search_sessions", "search_status",
   "secret_list", "secret_status", "service_inspect", "service_logs",
-  "open_remote_control_console", "dashboard_snapshot", "operation_inspect", "result_recover",
+  "open_remote_control_console", "dashboard_snapshot", "dashboard_doctor", "operation_inspect", "result_recover",
 ]);
 
 type Input = Record<string, unknown>;
