@@ -24,7 +24,7 @@
 
 ## Exact open-item crosswalk
 
-| ID | Batch | Priority | Current state | Scope |
+| ID | Batch | Priority | State at batch creation | Scope |
 |---|---|---|---|---|
 | RC26-BASE-03 | A — Runtime and diagnostics | P2 | active | Create a small repeatable behavior and ergonomics benchmark |
 | RC26-REC-05 | Incident evidence | P1 | blocked | Resolve the existing incident through the qualified path |
@@ -71,3 +71,31 @@
 ## Current worktree
 
 Working branch: `feat/rc26-consolidated-delivery-20261118`, based on main `2b747cdc256c8a14467ac91d2957fb8017304d9b`. This is an **unreviewed development worktree**, not merged or deployed.
+
+
+## Batch A first integrated source checkpoint (2026-11-18)
+
+Source-only checkpoint: `9b5bd9b50dcfffbdc05d12f5d3fec1b473bf99e8`.
+The consolidated branch includes read-only doctor, provenance-separated
+runtime/declared version layers in the existing capability_report, actionable
+job progress via existing status/wait tools, bounded stage aggregation in the
+existing ToolDiagnostics, and measured per-item read batching using batch_read.
+No new generic polling daemon, retry-on-unknown behavior or installed-host
+service permissions were added.
+
+Local integrated qualification: TypeScript/console build passed, public-data,
+public-history and privacy guards passed, and Linux nonprivileged regression
+suite **1,517 tests passed / 65 skipped** (two privileged native systemd test
+files intentionally excluded). B01/B06/UX synthetic coverage is additive;
+B01-B07 full comparable native benchmark remains open.
+
+Six planned IDs moved to active in the canonical tracker after code/test work
+began: OBS-05, UX-01, UX-04, UX-05, UX-06 and DOC-01. The 61 IDs remain
+unchanged; none was marked verified solely from this local test result.
+
+This checkpoint is local only: **no GitHub PR, independent Codex/DSH review,
+CI on the final candidate, merge or runtime deployment**. The main production
+runtime remains separately versioned. Remaining acceptance includes native
+version/install/startup evidence, paired live traffic windows, full protocol
+conformance, longer-term history/pressure, full B01-B07 measurements and
+Console Batch B. Historical uncertain coordination slots stay fenced.
