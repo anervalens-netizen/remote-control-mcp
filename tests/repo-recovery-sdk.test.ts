@@ -26,7 +26,7 @@ function receipt(operation: "fetch" | "pull" | "push") {
   };
 }
 
-async function connect(operation: "fetch" | "pull" | "push", status: number, body: Record<string, unknown>, jobExitCode = status === 500 ? 1 : 0) {
+async function connect(operation: "fetch" | "pull" | "push" | "checkpoint", status: number, body: Record<string, unknown>, jobExitCode = status === 500 ? 1 : 0) {
   const directory = await mkdtemp(path.join(os.tmpdir(), "rcmcp-repo-sdk-")); closers.push(() => rm(directory, { recursive: true, force: true }));
   vi.stubEnv("RCMCP_STATE_DIR", directory);
   const app = Fastify(); let repositoryDispatches = 0, statusReads = 0;
@@ -244,4 +244,55 @@ it.each(["missing_success_fields", "pending_claims_process_success"] as const)("
   const result = await call();
   expect(result.isError).toBe(true);
   expect(result.structuredContent).toMatchObject({ ok: false, code: "result_validation_failed" });
+});
+
+
+function checkpointFailureFixture(evidencePublication: "available" | "unavailable") {
+  const observedAt = new Date().toISOString();
+  return {
+    error: "repository_commit_failed", message: "private-fixture-message", details: { path: "private-fixture-path" },
+    noReplay: true, effectVerification: "unverified", evidencePublication,
+    hookFailure: {
+      version: 1, command: { boundary: "commit", flags: [], message: "generated" },
+      hook: { boundary: "unavailable", exitCode: 1, exitCodeSource: "command" },
+      refs: { beforeHead: null, afterHead: null, beforeReflog: null, afterReflog: null },
+      index: { before: null, after: null, changed: null },
+      worktree: { before: null, after: null, changed: null },
+      containment: { verified: false, detail: "unavailable" },
+      classification: "unverified", observedAt,
+    },
+    rawOutput: "private-fixture-output",
+  };
+}
+
+it.each(["available", "unavailable"] as const)("delivers compact MCP checkpoint guidance when evidence is %s", async evidencePublication => {
+  const body = checkpointFailureFixture(evidencePublication);
+  const observedAt = body.hookFailure.observedAt;
+  const { call, counters } = await connect("checkpoint", 500, body);
+  const result = await call();
+  expect(result.isError).toBe(true);
+  expect(result.structuredContent).toMatchObject({
+    noReplay: true, effectVerification: "unverified", route: "/v1/repo/checkpoint", context: "user",
+    checkpointFailure: {
+      commandExitCode: 1, classification: "unverified", observedAt, evidencePublication,
+      nextAction: expect.stringContaining("inspect_recovery"),
+    },
+  });
+  expect(result.structuredContent).not.toHaveProperty("hookFailure");
+  expect(JSON.stringify(result)).not.toMatch(/private-fixture-(message|path|output)/);
+  expect(counters()).toEqual({ repositoryDispatches: 1, statusReads: 0 });
+});
+
+it("keeps an invalid checkpoint claim and lookalike error on another route out of MCP evidence", async () => {
+  const body = {
+    error: "repository_commit_failed", noReplay: true, effectVerification: "unverified",
+    evidencePublication: "available", hookFailure: { classification: "unverified", observedAt: "made up" },
+  };
+  const checkpoint = await connect("checkpoint", 500, body);
+  const result = await checkpoint.call();
+  expect(result.isError).toBe(true);
+  expect(result.structuredContent).not.toHaveProperty("checkpointFailure");
+  expect(result.structuredContent).not.toHaveProperty("noReplay");
+  const push = await connect("push", 500, checkpointFailureFixture("available"));
+  expect((await push.call()).structuredContent).not.toHaveProperty("checkpointFailure");
 });

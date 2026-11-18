@@ -182,6 +182,10 @@ containment is unavailable for this synchronous commit. Observed changes yield
 `partially_applied`. Otherwise the effect is `unverified`. Neither state
 qualifies for fence release from this evidence.
 
+The MCP checkpoint error reports the observed command exit code, classification
+and evidence availability. Its next action points to `inspect_recovery` with
+the same repository and identity. The compact error carries `noReplay`.
+
 Use `inspect_recovery` to read the observation tied to the original generation.
 It is stored in a bounded, immutable `hook-failures/` sidecar. The uncertain
 writer remains fenced. A recovery attempt needs independent quiescence/effect

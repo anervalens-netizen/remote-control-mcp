@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { coordinationExecutionSchema, coordinationRecordSchema, coordinationRecoveryViewSchema, coordinationTokenSchema } from "../../../packages/protocol/src/coordination.ts";
+import { coordinationExecutionSchema, coordinationHookFailureSchema, coordinationRecordSchema, coordinationRecoveryViewSchema, coordinationTokenSchema } from "../../../packages/protocol/src/coordination.ts";
 
 const repoRoutes = new Map<string, "fetch" | "pull" | "push">([
   ["/v1/repo/fetch", "fetch"], ["/v1/repo/pull", "pull"], ["/v1/repo/push", "push"],
@@ -55,6 +55,31 @@ export function repoRecoveryReceipt(route: string, value: unknown): RepoRecovery
   const jobId = receipt.jobId ?? receipt.job?.id ?? receipt.coordination.jobId ?? receipt.recovery?.resolution?.jobId;
   return { ...receipt, ...(jobId ? { jobId } : {}) };
 }
+
+const checkpointFailureSchema = z.object({
+  error: z.literal("repository_commit_failed"),
+  noReplay: z.literal(true),
+  effectVerification: z.literal("unverified"),
+  hookFailure: coordinationHookFailureSchema,
+  evidencePublication: z.enum(["available", "unavailable"]),
+});
+
+/** The checkpoint error needs only a compact locator hint. Inspect the
+ * original repository recovery record for the complete bounded observation. */
+export function checkpointFailureReceipt(route: string, status: number, value: unknown) {
+  if (route !== "/v1/repo/checkpoint" || status !== 500) return undefined;
+  const parsed = checkpointFailureSchema.safeParse(value);
+  if (!parsed.success) return undefined;
+  const { hookFailure, evidencePublication } = parsed.data;
+  return {
+    commandExitCode: hookFailure.hook.exitCode,
+    classification: hookFailure.classification,
+    observedAt: hookFailure.observedAt,
+    evidencePublication,
+    nextAction: "Inspect the same repository and identity with resource_coordination action=inspect_recovery. Preserve the original writer fence and do not repeat the checkpoint.",
+  };
+}
+export type CheckpointFailureReceipt = NonNullable<ReturnType<typeof checkpointFailureReceipt>>;
 
 /** Pending is its own result alternative. It must not weaken completed success
  * fields or claim process/application success before a later authoritative read.

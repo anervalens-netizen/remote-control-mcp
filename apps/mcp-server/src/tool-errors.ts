@@ -17,6 +17,7 @@ export function toolErrorDetails(error: unknown) {
       ...(error.recovery ? { recovery: error.recovery } : {}),
       ...(error.coordinationConflict ? { coordinationConflict: error.coordinationConflict } : {}),
       ...(error.repositoryRecovery ?? {}),
+      ...(error.checkpointFailure ? { noReplay: true, effectVerification: "unverified", checkpointFailure: error.checkpointFailure } : {}),
       ...(error.jobStartFailure ? error.jobStartFailure : {}),
       ...(error.responseBodyTruncated ? { responseBodyTruncated: true } : {}),
     } : {}),

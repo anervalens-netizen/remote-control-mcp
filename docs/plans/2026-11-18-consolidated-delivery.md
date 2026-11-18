@@ -107,13 +107,35 @@ runtime was read back at this source revision. Authenticated read-only checks
 verified App and text doctor parity, configured root and owner observations,
 version provenance, retained latency stage measurements, the console asset
 hash and inspection of an existing durable job on selected Linux routes.
-The selected agent runtimes may run different revisions. App parity on this
-controller does not establish discovery on all MCP hosts or certify installed
-and startup versions. Detailed receipts remain private.
+Both selected Linux agent identities were later promoted to the same pinned
+application release. Each was activated separately after native idle checks.
+Coordinator journal and sidecar checksums stayed unchanged. Other agent
+revisions and independent startup attestations retain separate acceptance. Detailed receipts remain private.
+
+## Later native compatibility checks
+
+Authenticated live modern HTTP (2026-07-28), initialized legacy HTTP and a
+fresh legacy reconnect exposed the same configured catalogue and console asset.
+All three read the same existing terminal job with effect verification still
+unknown. Two physical Android companions completed bounded metadata-only
+observations through reverse polling. The response contained dimensions,
+rotation and a snapshot identity. Both configured Windows routes returned no
+response within their read-only probe budget. Hosted Windows CI qualifies
+compatibility in its runner environment. Physical Windows and interactive
+Android remain open.
+
+Later selected Linux root and owner windows were complete and reconciled with
+zero residual and no missing detail. The root window contained both attributed
+and unmatched arrivals.
+A bound ContextKeep integration run also read the existing executor receipt,
+matched the observed runtime and verified the exact run revision. Bulk
+history and fleet-wide accounting remain open.
 
 The independent DSH review was deferred due to reviewer quota and remains
-outstanding. Windows and Android host qualification, broader paired traffic
-windows, history under pressure and protocol conformance retain their own
-acceptance gates. PR #63 adds diagnostic evidence for rejected Git checkpoints
-while preserving their uncertain writer fence. The historical incidents are
-separate and still require their own recovery evidence.
+outstanding. Broader paired traffic windows, history under pressure, ChatGPT-host
+rendering and wider protocol conformance retain their own acceptance gates.
+PR #63 adds diagnostic evidence for rejected Git checkpoints while preserving
+their uncertain writer fence. A native fixture with isolated state verified
+the original index and retained diagnosis. The controller follow-up reports
+a concise failure notice and points to the original recovery inspection.
+The historical incidents remain evidence-gated.
