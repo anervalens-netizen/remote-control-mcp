@@ -21,7 +21,7 @@ function agentCorrelation(client: AgentClient): IngressCorrelation {
     ...(http ? { httpRequestId: http.requestId } : {}),
     ...(current ? observer.correlation(current.traceId) : {}) };
 }
-import { repoRecoveryReceipt, type RepoRecoveryReceipt } from "./repo-recovery-receipt.ts";
+import { checkpointFailureReceipt, repoRecoveryReceipt, type CheckpointFailureReceipt, type RepoRecoveryReceipt } from "./repo-recovery-receipt.ts";
 import type { DeviceConfig, ExecRequest, ExecResult } from "../../../packages/protocol/src/index.ts";
 import type { AndroidFilePushInput } from "./android-file-push.ts";
 import type { AndroidController } from "./android-controller.ts";
@@ -57,8 +57,9 @@ export class AgentRequestError extends Error {
   readonly jobStartFailure: JobStartFailure | undefined;
   readonly coordinationConflict: CoordinationConflict | undefined;
   readonly repositoryRecovery: RepoRecoveryReceipt | undefined;
+  readonly checkpointFailure: CheckpointFailureReceipt | undefined;
 
-  constructor(message: string, device: string, context: AgentEndpointContext, route: string, kind: "timeout" | "network" | "http" | "protocol" | "context" | "cancelled", status?: number, recovery?: JobRecoveryPayload, responseBodyTruncated = false, jobStartFailure?: JobStartFailure, agentCode?: string, coordinationConflict?: CoordinationConflict, repositoryRecovery?: RepoRecoveryReceipt) {
+  constructor(message: string, device: string, context: AgentEndpointContext, route: string, kind: "timeout" | "network" | "http" | "protocol" | "context" | "cancelled", status?: number, recovery?: JobRecoveryPayload, responseBodyTruncated = false, jobStartFailure?: JobStartFailure, agentCode?: string, coordinationConflict?: CoordinationConflict, repositoryRecovery?: RepoRecoveryReceipt, checkpointFailure?: CheckpointFailureReceipt) {
     super(message);
     this.name = "AgentRequestError";
     this.device = device;
@@ -72,6 +73,7 @@ export class AgentRequestError extends Error {
     this.jobStartFailure = jobStartFailure;
     this.coordinationConflict = coordinationConflict;
     this.repositoryRecovery = repositoryRecovery;
+    this.checkpointFailure = checkpointFailure;
   }
 }
 
@@ -96,7 +98,7 @@ function ordinaryHttpDiagnostic(value: unknown): { diagnostic: string; truncated
   return boundedHttpDiagnostic(diagnostic === "{}" ? "" : diagnostic ?? "");
 }
 
-async function readAgentError(response: Response, maxBytes = 1024 * 1024, route = ""): Promise<{ coordinationConflict?: CoordinationConflict; repositoryRecovery?: RepoRecoveryReceipt; recovery?: JobRecoveryPayload; jobStartFailure?: JobStartFailure; agentCode?: string; diagnostic?: string; truncated: boolean }> {
+async function readAgentError(response: Response, maxBytes = 1024 * 1024, route = ""): Promise<{ checkpointFailure?: CheckpointFailureReceipt; coordinationConflict?: CoordinationConflict; repositoryRecovery?: RepoRecoveryReceipt; recovery?: JobRecoveryPayload; jobStartFailure?: JobStartFailure; agentCode?: string; diagnostic?: string; truncated: boolean }> {
   const reader = response.body?.getReader();
   if (!reader) return { truncated: false };
   const chunks: Uint8Array[] = [];
@@ -121,6 +123,8 @@ async function readAgentError(response: Response, maxBytes = 1024 * 1024, route 
     if (recovery) return { recovery, truncated: false };
     const payload = value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
     const repositoryRecovery = repoRecoveryReceipt(route, value);
+    const checkpointFailure = checkpointFailureReceipt(route, response.status, value);
+    if (checkpointFailure) return { checkpointFailure, diagnostic: "Repository checkpoint failed.", truncated: false };
     if (payload?.error === "coordination_conflict") {
       const parsed = coordinationConflictSchema.safeParse(payload.details);
       if (parsed.success) return { diagnostic: `coordination_conflict: ${parsed.data.reason}`, agentCode: "COORDINATION_CONFLICT", coordinationConflict: parsed.data,
@@ -160,7 +164,7 @@ export class AgentClient {
     const names = new Set<string>();
     for (const device of [...devices, ...configured] as DeviceConfig[]) {
       if (device.aliases !== undefined && !Array.isArray(device.aliases)) throw new Error("Device aliases must be an array");
-      if (device.expectedAvailability !== undefined && !["continuous", "intermittent"].includes(device.expectedAvailability)) throw new Error("Invalid expectedAvailability");
+      if (device.expectedAvailability !== undefined && !["continuous", "intermittent", "manual"].includes(device.expectedAvailability)) throw new Error("Invalid expectedAvailability");
       for (const name of [device.name, ...(device.aliases ?? [])]) {
         if (typeof name !== "string" || !name.trim() || name !== name.trim()) throw new Error("Invalid device name or alias");
         const key = name.toLowerCase();
@@ -235,9 +239,9 @@ export class AgentClient {
       });
       dispatchObserver.response(dispatch, response.status, response.headers.get(ingressReceiptHeader));
       if (!response.ok) {
-        const { recovery, diagnostic, truncated, jobStartFailure, agentCode, coordinationConflict, repositoryRecovery } = await readAgentError(response, undefined, route);
+        const { recovery, diagnostic, truncated, jobStartFailure, agentCode, coordinationConflict, repositoryRecovery, checkpointFailure } = await readAgentError(response, undefined, route);
         const detail = recovery ? " job_recovery_required" : diagnostic ? ` ${diagnostic}` : "";
-        throw new AgentRequestError(`${name} ${context} ${route} failed: HTTP ${response.status}${detail}`, name, context, route, "http", response.status, recovery, truncated, jobStartFailure, agentCode, coordinationConflict, repositoryRecovery);
+        throw new AgentRequestError(`${name} ${context} ${route} failed: HTTP ${response.status}${detail}`, name, context, route, "http", response.status, recovery, truncated, jobStartFailure, agentCode, coordinationConflict, repositoryRecovery, checkpointFailure);
       }
       let result: T;
       try {

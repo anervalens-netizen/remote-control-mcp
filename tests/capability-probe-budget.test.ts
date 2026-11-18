@@ -3,6 +3,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createServer } from "node:http";
 import { afterEach, expect, it, vi } from "vitest";
+import { fleetSnapshot } from "../apps/mcp-server/src/fleet-snapshot.ts";
 import { AgentClient } from "../apps/mcp-server/src/agent-client.ts";
 import { dispatchesFor } from "../apps/mcp-server/src/agent-dispatch-observer.ts";
 import { capabilityReport, registerCapabilityTools } from "../apps/mcp-server/src/capability-tools.ts";
@@ -185,4 +186,19 @@ it("caps active device probes at 32 even for a larger direct-call concurrency re
   expect(info).toHaveBeenCalledTimes(64);
   expect(peak).toBe(32);
   expect(active).toBe(0);
+});
+
+it("retains a manual inventory row without network requests until explicitly selected", async () => {
+  const client = new AgentClient([{ name: "archived", aliases: ["old"], url: "http://127.0.0.1:1", expectedAvailability: "manual" }], undefined, 0);
+  const info = vi.spyOn(client, "info").mockResolvedValue({ hostname: "fixture" });
+  const fleet = await fleetSnapshot(client);
+  expect(fleet.devices[0]).toMatchObject({ device: "archived", connectivity: "unknown", probeSkipped: "manual_selection_required" });
+  const consolePage = await fleetSnapshot(client, { devices: ["archived"] }, undefined, "automatic");
+  expect(consolePage.devices[0]).toMatchObject({ probeSkipped: "manual_selection_required" });
+  const implicit = await capabilityReport(client, []);
+  expect(implicit[0]).toMatchObject({ device: "archived", probeSkipped: "manual_selection_required", configured: {system: true} });
+  expect(info).not.toHaveBeenCalled();
+  const selected = await capabilityReport(client, ["old"]);
+  expect(selected[0]?.endpoints.system).toMatchObject({ ok: true });
+  expect(info).toHaveBeenCalledTimes(1);
 });

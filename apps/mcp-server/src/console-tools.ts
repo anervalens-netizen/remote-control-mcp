@@ -33,12 +33,12 @@ async function sharedFleet(client: AgentClient, cursor?: string) {
       const names = client.devices.map(device => device.name).sort();
       const remaining = cursor ? names.filter(name => name > cursor) : names;
       const selected = remaining.slice(0, 10);
-      const result = selected.length ? await fleetSnapshot(client, { devices: selected, identity: "auto", concurrency: 4 }) : { devices: [] };
+      const result = selected.length ? await fleetSnapshot(client, { devices: selected, identity: "auto", concurrency: 4 }, undefined, "automatic") : { devices: [] };
       const devices = result.devices.map(raw => {
         const row = raw as Record<string, any>;
         // UI observations use a deliberate summary, never unbounded host data.
         const summary: Record<string, unknown> = { device: row.device };
-        for (const field of ["identity", "connectivity", "readiness", "observedAt", "expectedAvailability", "platform", "metricsStatus", "reason"]) {
+        for (const field of ["identity", "connectivity", "readiness", "observedAt", "expectedAvailability", "probeSkipped", "platform", "metricsStatus", "reason"]) {
           const value = row[field];
           if (typeof value === "string") summary[field] = utf8Preview(value, field === "reason" ? 512 : 128);
           else if (value === null) summary[field] = null;

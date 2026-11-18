@@ -122,10 +122,11 @@ interpreting a fleet result. An entry left in a transport catalog does not prove
 that its historical production role still exists.
 
 Record retired, intermittent and active roles privately. The current transport
-configuration's `expectedAvailability` supports `continuous` and
-`intermittent`; it does not by itself express retirement or remove an endpoint
-from automatic probes. Changing a live inventory must account for existing
-durable references and routing.
+configuration's `expectedAvailability` supports `continuous`, `intermittent`
+and `manual`. Manual entries stay visible and keep their aliases and durable
+references. Automatic inventory views skip network probes for them. Explicit
+reads still use the configured route. Record retirement separately from this
+probe policy.
 
 Report identity configuration, endpoint reachability, runtime readiness and
 capabilities separately. A failed diagnostic request does not prove a device is

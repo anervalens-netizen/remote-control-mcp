@@ -187,6 +187,11 @@ before tool handlers construct durable keys or coordination resources. Names and
 aliases must be unique across HTTP and Android devices, ignoring case. Alias
 resolution never rewrites command text, environment variables or arbitrary data.
 
+Set `expectedAvailability: "manual"` for a retained device that should be
+contacted only when selected by name or alias. Fleet, capability, and console
+inventory reads keep its row and report that the automatic probe was skipped.
+An explicit device read uses the original route and identity.
+
 `fleet_status` accepts `identity: "auto" | "root" | "owner" | "interactive"`.
 Auto chooses system for HTTP agents and owner for Android; the selected identity
 and whether it is configured are reported separately from reachability. A missing

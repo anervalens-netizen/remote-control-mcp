@@ -13,9 +13,16 @@ const executablePath = process.env.RCMCP_TEST_BROWSER ?? [chromium.executablePat
 it.skipIf(!executablePath)("isolates panels, pages text output and recovers stale observations without replay", async () => {
   const scopes = ["11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222"];
   const traceId = "33333333-3333-4333-8333-333333333333";
-  const data = scopes.map(diagnosticScopeId => ({ diagnosticScopeId, observedAt: new Date().toISOString(),
-    fleet: { devices: [{ device: "lab-fixture", identity: "root", online: true, connectivity: "reachable", readiness: "ready", observedAt: new Date().toISOString() }] },
-    operations: { items: [{ tool: "fixture-operation", traceId, diagnosticScopeId, state: "returned", startedAt: new Date().toISOString(), jobCount: 1 }], nextCursor: null, coverage: { partial: false } }, jobs: null }));
+  const data = scopes.map((diagnosticScopeId, panel) => ({
+    diagnosticScopeId, observedAt: new Date().toISOString(),
+    fleet: { devices: [
+      { device: "lab-fixture", identity: "root", online: true, connectivity: "reachable", readiness: "ready", observedAt: new Date().toISOString() },
+      ...(panel === 1 ? [{ device: "manual-fixture", identity: "root", online: false, connectivity: "unknown",
+        readiness: null, observedAt: null, expectedAvailability: "manual", probeSkipped: "manual_selection_required" }] : []),
+    ] },
+    operations: { items: [{ tool: "fixture-operation", traceId, diagnosticScopeId, state: "returned", startedAt: new Date().toISOString(), jobCount: 1 }], nextCursor: null, coverage: { partial: false } },
+    jobs: null,
+  }));
   const host = await build({ stdin: { contents: `
     import {AppBridge, PostMessageTransport} from '@modelcontextprotocol/ext-apps/app-bridge';
     window.calls=[]; window.fail=false; window.failDoctor=false;
@@ -57,6 +64,9 @@ it.skipIf(!executablePath)("isolates panels, pages text output and recovers stal
   const first = page.frameLocator("#panel-0"), second = page.frameLocator("#panel-1");
   await first.getByText(scopes[0]!, { exact: true }).waitFor();
   await second.getByText(scopes[1]!, { exact: true }).waitFor();
+  const manual = second.getByRole("button", { name: /manual-fixture/ });
+  await manual.getByText("Manual checks only", { exact: false }).waitFor();
+  expect(await manual.locator(".badge").innerText()).toBe("MANUAL");
   expect(await page.evaluate(() => (window as any).calls.length)).toBe(0);
   expect(await first.getByText("This scope", { exact: true }).count()).toBe(1);
   await first.getByRole("checkbox", { name: "All observed scopes" }).check();

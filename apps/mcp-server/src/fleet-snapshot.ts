@@ -5,7 +5,7 @@ import { fleetProbeBudget, probeFleetHost } from "./fleet-probe.ts";
 
 export type FleetInput = { devices?: string[]; context?: "system" | "user"; identity?: ExecutionIdentity; concurrency?: number; probeTimeoutMs?: number };
 
-export async function fleetSnapshot(client: AgentClient, input: FleetInput = {}, signal?: AbortSignal) {
+export async function fleetSnapshot(client: AgentClient, input: FleetInput = {}, signal?: AbortSignal, selection: "automatic" | "explicit" = input.devices?.length ? "explicit" : "automatic") {
   const explicit = input.identity && input.identity !== "auto" ? input.identity : undefined;
   const requested = explicit === "root" ? "system" : explicit === "owner" ? "user" : explicit === "interactive" ? "desktop" : input.context;
   if (explicit && input.context && requested !== input.context) throw new Error("Conflicting fleet identity and context");
@@ -27,6 +27,11 @@ export async function fleetSnapshot(client: AgentClient, input: FleetInput = {},
         configuredIdentities: android ? ["owner"] : ["root", ...(config.userUrl ?? config.desktopUrl ? ["owner"] : []), ...(config.desktopUrl ? ["interactive"] : [])],
         expectedAvailability: config.expectedAvailability ?? (android ? "intermittent" : "continuous"),
       };
+      if (selection === "automatic" && config.expectedAvailability === "manual") {
+        return { ...common, online: false, connectivity: "unknown", readiness: null, metricsStatus: "not_probed",
+          probeSkipped: "manual_selection_required", observedAt: null, endpointResponded: false, agentResponseValid: false,
+          reason: "Automatic probes disabled for this device. Select it explicitly to check its current state." };
+      }
       if (android) {
         const status = client.androidStatus(device) as { name: string; online: boolean; readiness: string; readinessReason: string; state: null | Record<string, unknown> };
         return { ...common, online: status.online, connectivity: status.online ? "reachable" : "unknown",
