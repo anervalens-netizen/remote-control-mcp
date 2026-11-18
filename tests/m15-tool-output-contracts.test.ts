@@ -13,12 +13,13 @@ it("publishes an output contract for every registered MCP tool", async () => {
   await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
   try {
     const listed = await client.listTools();
-    expect(listed.tools).toHaveLength(108);
+    expect(listed.tools).toHaveLength(109);
     expect(listed.tools.some(tool => tool.name === "usage_report")).toBe(true);
     expect(listed.tools.some(tool => tool.name === "usage_window")).toBe(true);
     expect(listed.tools.some(tool => tool.name === "diagnostic_doctor")).toBe(true);
     expect(listed.tools.some(tool => tool.name === "coordination_capacity")).toBe(true);
-    expect(listed.tools.filter(t => ["open_remote_control_console", "dashboard_snapshot", "operation_inspect"].includes(t.name))).toHaveLength(3);
+    expect(listed.tools.filter(t => ["open_remote_control_console", "dashboard_snapshot", "dashboard_doctor", "operation_inspect"].includes(t.name))
+      .map(t => t.name).sort()).toEqual(["dashboard_doctor", "dashboard_snapshot", "open_remote_control_console", "operation_inspect"]);
     expect(listed.tools.filter(t => ["batch_recover", "diagnostic_wait_report"].includes(t.name)).map(t => t.name).sort()).toEqual(["batch_recover", "diagnostic_wait_report"]);
     expect(listed.tools.filter(t => t.name.startsWith("result_recover")).map(t => t.name).sort()).toEqual(["result_recover", "result_recovery_prepare", "result_recovery_release"]);
     expect(listed.tools.filter((tool) => !tool.outputSchema).map((tool) => tool.name)).toEqual([]);
