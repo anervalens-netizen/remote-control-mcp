@@ -25,7 +25,7 @@ export function registerTools(server: McpServer, client: AgentClient): void {
       devices: z.array(z.object({
         name: z.string(),
         aliases: z.array(z.string()).optional(),
-        expectedAvailability: z.enum(["continuous", "intermittent"]).optional(),
+        expectedAvailability: z.enum(["continuous", "intermittent", "manual"]).optional(),
         url: z.string(),
         contexts: z.object({ system: z.boolean(), user: z.boolean(), desktop: z.boolean() }),
       })),

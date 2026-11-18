@@ -263,7 +263,7 @@ function Console() {
       <div className="device-title">{row.device}<Badge value={disconnected || !row.observedAt || Date.now() - Date.parse(row.observedAt) > 60_000 ? "stale" : row.connectivity ?? "unknown"}/></div><p>{row.identity ?? "Unselected identity"} · {disconnected ? "Last observed: " : ""}{row.readiness ?? "Readiness unknown"}</p>
       <div className="device-meta">
         <small>Configured: {row.configuredIdentities?.join(", ") ?? "Not reported"}</small>
-        <small>{row.expectedAvailability === "intermittent" ? "Intermittent availability · " : ""}{when(row.observedAt)}</small>
+        <small>{row.expectedAvailability === "manual" ? "Manual checks only · " : row.expectedAvailability === "intermittent" ? "Intermittent availability · " : ""}{when(row.observedAt)}</small>
         {row.runtime?.sha && <code title={row.runtime.sha}>{String(row.runtime.sha).slice(0, 12)}</code>}
       </div>
       {row.reason && <p className="muted">{row.reason}</p>}

@@ -1,7 +1,7 @@
 export type DeviceConfig = {
   name: string;
   aliases?: string[];
-  expectedAvailability?: "continuous" | "intermittent";
+  expectedAvailability?: "continuous" | "intermittent" | "manual";
   url: string;
   transport?: "http" | "android-reverse";
   token?: string;

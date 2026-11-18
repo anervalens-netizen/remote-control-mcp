@@ -50,19 +50,25 @@ export async function capabilityReport(
   return mapLimit(devices, concurrency === undefined ? undefined : Math.min(32, concurrency), async (device) => {
     const started = performance.now();
     const configured = client.configuredContexts(device);
+    const skipAutomatic = !requestedDevices?.length && client.devices.some(entry => entry.name === device && entry.expectedAvailability === "manual");
     const contexts: AgentEndpointContext[] = [];
     if (configured.system) contexts.push("system");
     if (configured.user) contexts.push("user");
     if (configured.desktop) contexts.push("desktop");
     const entries = await mapLimit(contexts, Math.min(contexts.length, 3),
-      async (context) => [context, await endpointInfo(client, device, context, probeBudgetMs, options.signal)] as const,
+      async (context) => {
+        const result: EndpointResult = skipAutomatic
+          ? { ok: false, error: "Manual selection required; endpoint was not probed." }
+          : await endpointInfo(client, device, context, probeBudgetMs, options.signal);
+        return [context, result] as const;
+      },
       options.signal);
     const endpoints = Object.fromEntries(entries);
     const versions = Object.fromEntries(entries.map(([context, result]) => {
       const selected = context === "system" ? "root" : context === "user" ? "owner" : "interactive";
       return [selected, endpointVersionEvidence(result, versionInventory, device, selected)] as const;
     }));
-    return { device, configured, endpoints, versions,
+    return { device, configured, endpoints, versions, ...(skipAutomatic ? { probeSkipped: "manual_selection_required" } : {}),
       probeBudgetMs, probeBudgetScope: "per_endpoint_timeout" as const, reportDeviceLimit: maxCapabilityDevices,
       probeDurationMs: performance.now() - started, observedAt: new Date().toISOString() };
   }, options.signal);
@@ -70,7 +76,7 @@ export async function capabilityReport(
 
 export function registerCapabilityTools(server: McpServer, client: AgentClient): void {
   server.registerTool("capability_report", {
-    description: "Probe up to 64 configured device entries, resolving aliases and probing each canonical device once. Each endpoint has a finite read-only timeout; concurrent calls have independent limits, not a shared rate quota. Reports runtime SHA/version/context plus separately sourced desired, installed and startup targets, with explicit unknowns and operator-declaration provenance. Endpoint probe failures retain independent runtime uncertainty. A probe timeout does not establish physical power state.",
+    description: "Probe up to 64 configured device entries, resolving aliases and probing each canonical device once. Each endpoint has a finite read-only timeout; concurrent calls have independent limits, not a shared rate quota. Manual-only devices require explicit selection. Reports runtime SHA/version/context plus separately sourced desired, installed and startup targets, with explicit unknowns and operator-declaration provenance. Endpoint probe failures retain independent runtime uncertainty. A probe timeout does not establish physical power state.",
     inputSchema: {
       devices: z.array(z.string().min(1)).max(maxCapabilityDevices).optional().describe("At most 64 entries; aliases and repeated canonical devices are deduplicated before probing. Omitted or empty selects the configured inventory, which must also fit the limit."),
       concurrency: z.number().int().min(1).max(32).optional(),
