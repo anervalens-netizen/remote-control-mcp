@@ -170,10 +170,10 @@ export class ResourceCoordinator {
     }
     return { record: resolved, alreadyReconciled: true, noReplay: true as const };
   }
-  private resolve(record: CoordinationRecord, resource: ResourceVersion, resolution: Omit<CoordinationResolution, "at" | "originalRecordHash" | "originalJournalHash" | "observedBaseVersion" | "effectVerification" | "noReplay"> & { effectVerification?: CoordinationResolution["effectVerification"] }) {
+  private resolve(record: CoordinationRecord, resource: ResourceVersion, resolution: Omit<CoordinationResolution, "at" | "originalRecordHash" | "originalJournalHash" | "observedBaseVersion" | "effectVerification" | "noReplay">) {
     if (!this.ownsSlot(record)) throw new CoordinationError("budget_fence_changed", record);
     const snapshot = this.journalSnapshot(record);
-    const complete: CoordinationResolution = { ...resolution, at: new Date(this.now()).toISOString(), originalRecordHash: coordinationHash(record), originalJournalHash: snapshot.originalJournalHash, observedBaseVersion: resource.baseVersion, effectVerification: resolution.effectVerification ?? "unverified", noReplay: true };
+    const complete: CoordinationResolution = { ...resolution, at: new Date(this.now()).toISOString(), originalRecordHash: coordinationHash(record), originalJournalHash: snapshot.originalJournalHash, observedBaseVersion: resource.baseVersion, effectVerification: "unverified", noReplay: true };
     const resolved: CoordinationRecord = { ...record, state: "released", conflictReason: null, updatedAt: complete.at, resolution: complete };
     this.checkRecoveryCapacity("reconciliations");
     // Preserve the original before publishing release. A failed publication stays fenced;
@@ -389,24 +389,6 @@ export class ResourceCoordinator {
     if (coordinationHash(archive.token) !== coordinationHash(token)
       || archive.evidenceHash !== coordinationHash([archive.token, archive.failure])) throw new CoordinationError("hook_failure_evidence_invalid");
     return { failure: archive.failure, evidenceHash: archive.evidenceHash };
-  }
-  /** Retire a rejected command boundary with independent no-effect proof.
-   * The freshly observed base must still equal the base the failed invocation
-   * was admitted with, and the retained evidence must itself prove that no
-   * effect and no descendant survived. A failed hook or an unchanged HEAD
-   * alone never releases the writer. */
-  reconcileHookFailure(token: CoordinationToken, resource: ResourceVersion, expectedBase: string) {
-    return this.transaction(token.resourceId, () => {
-      const previous = this.archived(token, resource, expectedBase); if (previous) return previous;
-      const record = this.match(token); this.assertResource(record, resource, expectedBase);
-      if (!["active", "uncertain"].includes(record.state)) throw new CoordinationError("writer_not_recoverable", record);
-      if (expectedBase !== token.baseVersion) throw new CoordinationError("hook_failure_effect_unverified", record);
-      const archive = this.artifact(this.hookFailureFile(token), hookFailureArchiveSchema);
-      if (!archive || coordinationHash(archive.token) !== coordinationHash(token) || archive.device !== record.device || archive.identity !== record.identity
-        || archive.evidenceHash !== coordinationHash([archive.token, archive.failure])) throw new CoordinationError("hook_failure_evidence_unavailable", record);
-      if (archive.failure.classification !== "pre_effect" || !archive.failure.containment.verified) throw new CoordinationError("hook_failure_effect_unverified", record);
-      return this.resolve(record, resource, { kind: "hook_failure", evidenceHash: archive.evidenceHash, outcome: "completed", effectVerification: "no_effect_proved" });
-    });
   }
   prepareRecovery(token: CoordinationToken, resource: ResourceVersion, expectedBase: string) {
     return this.transaction(token.resourceId, () => {

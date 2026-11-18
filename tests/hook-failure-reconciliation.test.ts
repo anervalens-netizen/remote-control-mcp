@@ -1,7 +1,7 @@
 import Fastify from "fastify";
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdtempSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
@@ -57,15 +57,15 @@ it("keeps a rejected commit fenced, publishes no success and never loses staged 
   expect(failed.statusCode, failed.body).toBe(500);
   const body = failed.json();
   // No published success for the rejected commit.
-  expect(body).toMatchObject({ error: "repository_hook_rejected", noReplay: true, evidencePublication: "available" });
+  expect(body).toMatchObject({ error: "repository_commit_failed", noReplay: true, evidencePublication: "available" });
   expect(body.ok).toBeUndefined();
   expect(body.created).toBeUndefined();
   expect(body.hookFailure).toMatchObject({
     version: 1, command: { boundary: "commit" },
-    hook: { boundary: "pre_commit", exitCode: 42, exitCodeSource: "hook" },
-    classification: "pre_effect", containment: { verified: true, detail: "process_group_empty" },
+    hook: { boundary: "unavailable", exitCode: 1, exitCodeSource: "command" },
+    classification: "unverified", containment: { verified: false },
   });
-  expect(body.hookFailure.hook.output).toContain("privacy guard");
+  expect(body.hookFailure.hook.output).toBeUndefined();
   expect(body.hookFailure.refs.beforeHead).toBe(head);
   expect(body.hookFailure.refs.afterHead).toBe(head);
   expect(body.coordination).toMatchObject({ state: "uncertain", conflictReason: "effect_or_termination_unverified" });
@@ -94,7 +94,7 @@ it("keeps a rejected commit fenced, publishes no success and never loses staged 
   expect(released.json().details.reason).toBe("active_or_uncertain_writer");
 }, 20_000);
 
-it("reconciles the rejected commit with the exact token and the freshly observed base", async () => {
+it("retains the original fence on repeated inspection and reconciliation requests", async () => {
   const root = repo(guard), f = harness();
   const head = git(root, "rev-parse", "HEAD");
   writeFileSync(path.join(root, "file.txt"), "changed\n");
@@ -102,31 +102,19 @@ it("reconciles the rejected commit with the exact token and the freshly observed
   const failed = await f.post("/v1/repo/checkpoint", { path: root });
   expect(failed.statusCode, failed.body).toBe(500);
   const token = failed.json().coordination.token;
-
-  // The exact token, generation and freshly observed base retire the writer.
   const current = await resolveCoordinationResource({ kind: "repo", path: root });
-  const reconciled = await f.post("/v1/coordination", {
-    action: "reconcile", resource: { kind: "repo", path: root }, token, expectedCurrentBaseVersion: current.baseVersion,
-  });
-  expect(reconciled.statusCode, reconciled.body).toBe(200);
-  expect(reconciled.json()).toMatchObject({ alreadyReconciled: false, noReplay: true,
-    record: { state: "released" },
-    recovery: { resolution: { kind: "hook_failure", outcome: "completed", effectVerification: "no_effect_proved", noReplay: true } } });
-
-  // Reconciliation is idempotent and never repeats the rejected command.
-  const repeated = await f.post("/v1/coordination", {
-    action: "reconcile", resource: { kind: "repo", path: root }, token, expectedCurrentBaseVersion: current.baseVersion,
-  });
-  expect(repeated.statusCode).toBe(200);
-  expect(repeated.json().alreadyReconciled).toBe(true);
+  const original = f.coordinator.inspectRecovery(current);
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const result = await f.post("/v1/coordination", {
+      action: "reconcile", resource: { kind: "repo", path: root }, token, expectedCurrentBaseVersion: current.baseVersion,
+    });
+    expect(result.statusCode, result.body).toBe(409);
+    expect(result.json().details.reason).toBe("hook_failure_effect_unverified");
+    expect(f.coordinator.inspectRecovery(current)).toEqual(original);
+  }
+  expect(original.record?.state).toBe("uncertain");
   expect(git(root, "rev-parse", "HEAD")).toBe(head);
-
-  // The released generation admits the next coordinated commit once the
-  // operator has corrected the guard that rejected the staged code.
-  unlinkSync(path.join(root, ".git", "hooks", "pre-commit"));
-  const next = await f.post("/v1/repo/checkpoint", { path: root });
-  expect(next.statusCode, next.body).toBe(200);
-  expect(next.json()).toMatchObject({ created: true, coordination: { state: "released", generation: 2 } });
+  expect(git(root, "diff", "--cached", "--name-only")).toBe("file.txt");
 }, 20_000);
 
 it("retains the rejected commit evidence when the transport disconnects mid-operation", async () => {
@@ -146,13 +134,13 @@ it("retains the rejected commit evidence when the transport disconnects mid-oper
   const record = f.coordinator.current(base)!;
   const token = coordinationToken(record);
   const failure = f.coordinator.hookFailure(token);
-  expect(failure?.failure).toMatchObject({ hook: { boundary: "pre_commit", exitCodeSource: "hook" }, classification: "pre_effect" });
+  expect(failure?.failure).toMatchObject({ hook: { boundary: "unavailable", exitCodeSource: "command" }, classification: "unverified" });
   const current = await resolveCoordinationResource({ kind: "repo", path: root });
   const reconciled = await f.post("/v1/coordination", {
     action: "reconcile", resource: { kind: "repo", path: root }, token, expectedCurrentBaseVersion: current.baseVersion,
   });
-  expect(reconciled.statusCode, reconciled.body).toBe(200);
-  expect(reconciled.json().record.state).toBe("released");
+  expect(reconciled.statusCode, reconciled.body).toBe(409);
+  expect(f.coordinator.inspect(current).record?.state).toBe("uncertain");
 }, 20_000);
 
 it.each([
@@ -176,31 +164,57 @@ it.each([
   expect(() => f.coordinator.acquire(current)).toThrow("active_or_uncertain_writer");
 }, 20_000);
 
-it("keeps the evidence and the fence when the disposition publication fails", async () => {
+it("keeps the fence when the evidence cannot be published", async () => {
   const root = repo(guard), f = harness();
   writeFileSync(path.join(root, "file.txt"), "changed\n");
   git(root, "add", "file.txt");
-  const failed = await f.post("/v1/repo/checkpoint", { path: root });
-  expect(failed.statusCode).toBe(500);
-  const token = failed.json().coordination.token;
-  const current = await resolveCoordinationResource({ kind: "repo", path: root });
   const atomic = state.atomicWriteJson;
   const write = vi.spyOn(state, "atomicWriteJson").mockImplementation((file, value, mode) => {
+    if (file.includes(path.sep + "hook-failures" + path.sep)) throw new Error("synthetic evidence publication failure");
     atomic(file, value, mode);
-    if (file.includes(path.sep + "reconciliations" + path.sep)) throw new Error("synthetic disposition publication failure");
   });
-  const blocked = await f.post("/v1/coordination", {
-    action: "reconcile", resource: { kind: "repo", path: root }, token, expectedCurrentBaseVersion: current.baseVersion,
-  });
-  expect(blocked.statusCode).toBe(500);
-  expect(f.coordinator.inspect(current).record?.state).toBe("uncertain");
+  const failed = await f.post("/v1/repo/checkpoint", { path: root });
   write.mockRestore();
-  // The retained evidence still supports the same exact reconciliation.
-  const reconciled = await f.post("/v1/coordination", {
+  expect(failed.statusCode, failed.body).toBe(500);
+  expect(failed.json()).toMatchObject({ noReplay: true, evidencePublication: "unavailable" });
+  const token = failed.json().coordination.token;
+  const current = await resolveCoordinationResource({ kind: "repo", path: root });
+  expect(f.coordinator.hookFailure(token)).toBeNull();
+  const result = await f.post("/v1/coordination", {
     action: "reconcile", resource: { kind: "repo", path: root }, token, expectedCurrentBaseVersion: current.baseVersion,
   });
-  expect(reconciled.statusCode, reconciled.body).toBe(200);
-  expect(reconciled.json().recovery.resolution).toMatchObject({ kind: "hook_failure", effectVerification: "no_effect_proved" });
+  expect(result.statusCode).toBe(409);
+  expect(f.coordinator.inspect(current).record?.state).toBe("uncertain");
+}, 20_000);
+
+it("keeps matching status snapshots from implying unchanged file content", async () => {
+  const root = repo("#!/bin/sh\nprintf 'updated fixture\\n' > draft.txt\nexit 1\n"), f = harness();
+  writeFileSync(path.join(root, "file.txt"), "changed\n");
+  writeFileSync(path.join(root, "draft.txt"), "initial fixture\n");
+  git(root, "add", "file.txt");
+  const status = git(root, "status", "--porcelain=v2");
+  const rejected = await f.post("/v1/repo/checkpoint", { path: root });
+  expect(rejected.statusCode, rejected.body).toBe(500);
+  expect(git(root, "status", "--porcelain=v2")).toBe(status);
+  expect(readFileSync(path.join(root, "draft.txt"), "utf8")).toBe("updated fixture\n");
+  const failure = rejected.json().hookFailure;
+  expect(failure.classification, JSON.stringify(failure)).toBe("unverified");
+  expect(failure.worktree.before).toMatch(/^[0-9a-f]{64}$/);
+  expect(failure.worktree).toMatchObject({ after: failure.worktree.before, changed: null });
+}, 20_000);
+
+it("marks observations beyond the output budget unavailable", async () => {
+  const root = repo(guard), f = harness();
+  writeFileSync(path.join(root, "file.txt"), "changed\n");
+  git(root, "add", "file.txt");
+  for (let file = 0; file < 1300; file++) {
+    writeFileSync(path.join(root, `fixture-${file}-${"x".repeat(210)}.txt`), "");
+  }
+  const rejected = await f.post("/v1/repo/checkpoint", { path: root });
+  expect(rejected.statusCode, rejected.body).toBe(500);
+  expect(rejected.json().hookFailure).toMatchObject({
+    classification: "unverified", worktree: { before: null, after: null, changed: null },
+  });
 }, 20_000);
 
 it("refuses a stale or foreign token for the rejected commit", async () => {

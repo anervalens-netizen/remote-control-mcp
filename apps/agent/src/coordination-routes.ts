@@ -18,8 +18,8 @@ export function operationResource(route: string, input: Record<string, unknown>)
   if (route === "/v1/deploy/run" && target === undefined) return null;
   return coordinationResourceSchema.parse({ kind: "repo", path: target });
 }
-function recoveryReply<T extends { record: CoordinationRecordView }>(result: T, hookFailure?: CoordinationHookFailure | null) {
-  return { ...result, record: coordinationPublicRecord(result.record), recovery: coordinationRecoveryView(result.record, hookFailure) };
+function recoveryReply<T extends { record: CoordinationRecordView }>(result: T) {
+  return { ...result, record: coordinationPublicRecord(result.record), recovery: coordinationRecoveryView(result.record) };
 }
 
 /** Installed before the high-level routes. Raw exec, jobs and reads do not use this lane. */
@@ -83,17 +83,12 @@ export function registerCoordinationRoutes(app: FastifyInstance) {
           const current = await probe(input.resource);
           return recoveryReply(coordinator.reconcileRecovery(input.token, current, input.expectedCurrentBaseVersion, input.recoveryIntentId, evidence));
         }
-        const current = await probe(input.resource);
-        if (record.execution) {
-          const evidence = await coordinatedRepoEvidence(record);
-          return recoveryReply(coordinator.reconcileJob(input.token, current, input.expectedCurrentBaseVersion, evidence));
+        if (!record.execution && coordinator.hookFailure(input.token)) {
+          throw new CoordinationError("hook_failure_effect_unverified", record);
         }
-        // A rejected Git command boundary has no durable job binding. It is
-        // reconciled with the retained hook evidence and the freshly observed
-        // base, never by repeating the rejected command.
-        const failure = coordinator.hookFailure(input.token);
-        if (!failure) throw new CoordinationError("execution_receipt_unavailable", record);
-        return recoveryReply(coordinator.reconcileHookFailure(input.token, current, input.expectedCurrentBaseVersion), failure.failure);
+        const evidence = await coordinatedRepoEvidence(record);
+        const current = await probe(input.resource);
+        return recoveryReply(coordinator.reconcileJob(input.token, current, input.expectedCurrentBaseVersion, evidence));
       }
       const record = coordinator.acquire(resource, input.leaseMs, input.ownerOverride);
       return { record, token: coordinationToken(record) };
@@ -207,7 +202,7 @@ export function registerCoordinationRoutes(app: FastifyInstance) {
         if (hookFailure) {
           // No published success: the rejected commit is reported as a failure
           // with its retained evidence and the exact reconciliation token.
-          return reply.code(500).send({ error: "repository_hook_rejected",
+          return reply.code(500).send({ error: "repository_commit_failed",
             message: error instanceof Error ? error.message : "The Git command boundary failed.",
             noReplay: true, effectVerification: "unverified",
             hookFailure: hookFailureEvidence?.failure ?? hookFailure,

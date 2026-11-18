@@ -59,19 +59,15 @@ export async function repoCheckpoint(input: RepoCheckpointInput) {
       if (!changes.length && !input.allowEmpty) return { ...result, created: false, reason: "no_changes" };
       const args = ["commit", "-m", input.message ?? `checkpoint ${new Date().toISOString()}`, ...selection];
       if (input.allowEmpty) args.push("--allow-empty");
-      // One observed command boundary: a rejected hook keeps its exit status,
-      // its before/after repository state and its containment evidence. The
-      // original index and worktree stay untouched by a failed commit.
+      // Observe the same Git command boundary without replacing repository hooks.
       const flags = [...selection.filter(option => option.startsWith("--")), ...(input.allowEmpty ? ["--allow-empty"] : [])];
       const committed = await runObservedCommit({
         repoPath: input.path, args, flags, env, stdin: pathInput,
         message: input.message ? "provided" : "generated",
       });
       if (committed.failure) {
-        const detail = committed.failure.hook.output ?? "";
         throw new RepoHookFailureError(
-          `Git commit was rejected at the ${committed.failure.command.boundary} boundary with exit code ${committed.failure.hook.exitCode ?? "unknown"}`
-          + `${detail ? `: ${detail}` : ""}`, committed.failure);
+          `Git commit failed with exit code ${committed.failure.hook.exitCode ?? "unknown"}`, committed.failure);
       }
       const head = (await run(["rev-parse", "HEAD"])).stdout.trim();
       // Native --only retains unrelated staged entries in the temporary index.

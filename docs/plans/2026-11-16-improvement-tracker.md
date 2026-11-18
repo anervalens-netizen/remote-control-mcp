@@ -39,22 +39,12 @@ or relabeling existing items:
 and [issue #59 — DSH provider-capacity and deferred-review continuity](https://github.com/anervalens-netizen/remote-control-mcp/issues/59).
 The REC-07 follow-up is tracked in
 [issue #62 — evidence-bound reconciliation after a failed Git pre-commit hook](https://github.com/anervalens-netizen/remote-control-mcp/issues/62).
-Its source candidate retains an invocation-bound outcome for a rejected Git
-command boundary: the command boundary, the hook's own exit code, before/after
-refs, index/worktree digests and the containment state of the command's process
-group. A rejected commit leaves its generation `uncertain`; a failed hook, an
-unchanged HEAD, an elapsed lease or a missing job never release it. The
-supported recovery path is the existing coordinator with the exact token,
-generation and the freshly observed base, which must still equal the base the
-rejected invocation was admitted with; only a proved no-effect classification
-with verified containment produces a disposition, and the original journal,
-evidence and disposition stay immutable. The synthetic regression covers a
-privacy guard rejection, the absent published success, the blocked second
-commit, an unrelated fresh worktree that still publishes, preserved staged
-files, a transport disconnect, hooks that touch the worktree or spawn
-descendants, and a failed disposition publication. The source change is not
-merged, deployed or runtime-qualified, and the REC-05 incident and its
-evidence are unchanged.
+The draft source candidate retains an invocation-bound failed commit observation:
+the Git command exit code, bounded before/after metadata and its containment
+limitation. The original generation remains uncertain and read-only inspection
+can recover the observation. A matching Git status and empty process group
+cannot establish independent effect and quiescence evidence. A supported
+recovery path and runtime qualification remain open for REC-07.
 The REC-06 follow-up was merged in [PR #60](https://github.com/anervalens-netizen/remote-control-mcp/pull/60)
 as `4331c00` with current-head Codex and Linux/Windows/public-source CI green.
 Selected Linux owner/root/controller activation and an additional Linux owner
@@ -199,6 +189,19 @@ The first candidate `9bb0b56e410962238278992ab8e71002dc5f1f6d` received the [ini
 The reviewer also reported local default-budget timeouts, with the relevant isolated files passing. The follow-up broad run omitted the console build and reported an unrelated filesystem timestamp-granularity assertion; its scoped 132 cases passed. The frozen-source integrated gate builds the console before testing and retains its own complete result. The third review's local gate reported a parallel console timeout that passed in isolation and a pre-existing umask-dependent assertion outside this change; its scoped files passed. The candidate's bounded Linux gate and hosted CI are separate evidence; unavailable native platforms remain unqualified. The canonical review marker and checked Git refs determine the base SHA, not a transcription typo in a command appendix.
 
 The original DSHv4 report misstated the `7504ac4` comparison. Its record correction, published on 2026-11-16 at 18:00:06 UTC, confirms that the retained-binding regression passed on both `7504ac4` and `71956e8`; only the two directory-boundary regressions failed against `7504ac4`. Findings, severities and verdict are unchanged. The post-binding case pins unchanged behavior and documentation, not a new runtime fix. See the [recovery regression](../../tests/coordination-recovery.test.ts) and [directory regressions](../../tests/coordination-sharing.test.ts). Review/test evidence remains separate from runtime promotion and incident acceptance.
+
+## Next acceptance batches
+
+1. RC26-REC-07 retains read-only commit diagnostics and keeps uncertain writers
+   fenced. Require independent effect and quiescence proof before adding a
+   reconciliation disposition.
+2. Qualify traffic attribution and latency together with bounded history
+   (OBS-04/05 and HIS-01/02/04). Compare independent ingress totals with attributed
+   and unattributed calls under the same volume and retention conditions. Record
+   missing stages and incomplete windows explicitly.
+3. Qualify compatibility on the available clients (MCP-01–05 and TMO-01/02).
+   Keep synthetic transport tests and runtime client evidence distinct, and
+   retain explicit availability limits.
 
 ## Lot gates
 
