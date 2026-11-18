@@ -4,7 +4,11 @@ This page describes the **in-development** Batch A source. It is not a claim of 
 
 ## 1. Read-only device doctor (UX-01, TMO-02)
 
-`diagnostic_doctor` selects a canonical device, probes configured root/owner/interactive identities in parallel, and optionally reads graphical-session status. It does not capture a screenshot, send native input, execute a command, restart a service, or infer the power state of an unreachable machine. Each stage publishes its source, observation time, elapsed duration, status and a stable cause code. Controller readiness and optional graphical prerequisites remain separate.
+`diagnostic_doctor` selects a canonical device, probes configured root/owner/interactive identities in parallel, and optionally reads graphical-session status. A Linux owner endpoint with the advertised desktop
+capability can supply graphical-session status even without a separate interactive
+URL. Its capability and session requests share the owner probe budget. If a
+requested configured graphical route lacks readiness evidence, the summary
+stays partial even when shell agents are ready. It does not capture a screenshot, send native input, execute a command, restart a service, or infer the power state of an unreachable machine. Each stage publishes its source, observation time, elapsed duration, status and a stable cause code. Controller readiness and optional graphical prerequisites remain separate.
 
 The graphical session and agent information probes start together, so a stalled UI collection does not serially consume a second probe interval. Native engine identity is not manufactured from a generic accessible desktop; when a semantic-desktop capability is advertised, that is labeled a reported capability rather than a verified engine binary.
 

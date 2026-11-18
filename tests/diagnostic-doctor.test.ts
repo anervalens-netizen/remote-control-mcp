@@ -134,9 +134,57 @@ it("probes graphical session and agent info concurrently instead of stacking tim
     release.resolve();
     await pending;
   }
+  expect((await pending).status).toBe("partial");
   expect((await pending).stages.find(s => s.name === "graphical_session")).toMatchObject({
-    state: "unavailable", cause: "no_interactive_session_confirmed",
+    state: "unavailable", cause: "no_interactive_session_reported",
   });
+});
+
+it("uses the advertised Linux owner desktop through its existing endpoint and probes owner once", async () => {
+  const agent = client({ owner: true });
+  const requests: string[] = [];
+  vi.spyOn(globalThis, "fetch").mockImplementation(async input => {
+    const url = new URL(String(input));
+    requests.push(url.port + url.pathname);
+    if (url.pathname === "/v1/desktop/session")
+      return Response.json({ interactiveSession: true, inputDesktop: { accessible: true } });
+    return Response.json({ runtime: {
+      ready: true,
+      platform: "linux",
+      capabilities: url.port === "2" ? ["linux-desktop-v1", "desktop-semantic-v1"] : [],
+    } });
+  });
+
+  const result = await diagnosticDoctor(agent, "fixture", { probeTimeoutMs: 500 });
+  expect(requests.sort()).toEqual(["1/v1/info", "2/v1/desktop/session", "2/v1/info"]);
+  expect(result.status).toBe("ready");
+  expect(result.stages.find(s => s.name === "graphical_session")).toMatchObject({ state: "ready" });
+  expect(result.stages.find(s => s.name === "managed_desktop_engine")).toMatchObject({ state: "responded" });
+});
+
+it("keeps graphical readiness unknown when older agent replies omit session fields", async () => {
+  const agent = client({ desktop: true });
+  vi.spyOn(agent, "info").mockResolvedValue({ runtime: { ready: true } });
+  vi.spyOn(agent, "desktopSessionStatus").mockResolvedValue({});
+  const result = await diagnosticDoctor(agent, "fixture");
+  expect(result.status).toBe("partial");
+  expect(result.stages.find(s => s.name === "graphical_session")).toMatchObject({
+    state: "unknown", cause: "desktop_readiness_not_reported",
+  });
+});
+
+it("keeps the full doctor partial when the explicit interactive agent readiness is unavailable", async () => {
+  const agent = client({ desktop: true });
+  vi.spyOn(agent, "info").mockImplementation(async (_device, context) => {
+    if (context === "desktop") throw new Error("connection unavailable");
+    return { runtime: { ready: true } };
+  });
+  vi.spyOn(agent, "desktopSessionStatus").mockResolvedValue({
+    interactiveSession: true, inputDesktop: { accessible: true },
+  });
+  const result = await diagnosticDoctor(agent, "fixture");
+  expect(result.status).toBe("partial");
+  expect(result.nextCheck).toContain("interactive agent");
 });
 
 it("honors caller cancellation without translating it into an offline host", async () => {

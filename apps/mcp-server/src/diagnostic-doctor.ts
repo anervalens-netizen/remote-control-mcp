@@ -25,7 +25,7 @@ async function boundedInfo(client: AgentClient, device: string, context: AgentEn
   const deadline = createDeadline(timeoutMs, signal);
   try {
     const value = await client.info(device, context, { timeoutMs, signal: deadline.signal });
-    signal?.throwIfAborted();
+    deadline.signal?.throwIfAborted();
     const info = value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
     const runtime = info.runtime && typeof info.runtime === "object" ? info.runtime as Record<string, unknown> : {};
     const ready = runtime.ready;
@@ -39,19 +39,22 @@ async function boundedInfo(client: AgentClient, device: string, context: AgentEn
       "agent:/v1/info", finiteElapsed(started)) };
   } finally { deadline.dispose(); }
 }
-async function boundedDesktop(client: AgentClient, device: string, timeoutMs: number, signal?: AbortSignal) {
+async function boundedDesktop(client: AgentClient, device: string, timeoutMs: number, signal?: AbortSignal, ownerInfo?: Record<string, unknown>) {
   signal?.throwIfAborted();
   const started = performance.now(), deadline = createDeadline(timeoutMs, signal);
   try {
-    const raw = await client.desktopSessionStatus(device, deadline.signal);
-    signal?.throwIfAborted();
+    const raw = ownerInfo ? await client.desktopSessionStatus(device, deadline.signal, ownerInfo)
+      : await client.desktopSessionStatus(device, deadline.signal);
+    deadline.signal?.throwIfAborted();
     const data = raw && typeof raw === "object" ? raw as Record<string, unknown> : {};
     const interactive = data.interactiveSession === true;
     const inputDesktop = data.inputDesktop && typeof data.inputDesktop === "object" ? data.inputDesktop as Record<string, unknown> : {};
     const accessible = inputDesktop.accessible === true;
-    const state: State = interactive && accessible ? "ready" : interactive ? "not_ready" : "unavailable";
+    const state: State = data.interactiveSession === false ? "unavailable" : interactive && accessible ? "ready"
+      : interactive && inputDesktop.accessible === false ? "not_ready" : "unknown";
     return { stage: stage("graphical_session", "interactive", state,
-      !interactive ? "no_interactive_session_confirmed" : accessible ? "input_desktop_reported_accessible" : "input_desktop_inaccessible",
+      state === "unavailable" ? "no_interactive_session_reported" : accessible && interactive ? "input_desktop_reported_accessible"
+        : state === "not_ready" ? "input_desktop_inaccessible" : "desktop_readiness_not_reported",
       "agent:/v1/desktop/session", finiteElapsed(started)), accessible, interactive,
       captureMayMissSecureDesktop: data.captureMayMissSecureDesktop === true };
   } catch {
@@ -75,20 +78,31 @@ export async function diagnosticDoctor(client: AgentClient, requestedDevice: str
   const allContexts: Array<[AgentEndpointContext, boolean]> = [
     ["system", configured.system], ["user", configured.user], ["desktop", configured.desktop],
   ];
-  // Start independent desktop and agent observations together. A missing
-  // endpoint is not probed; a slow graphical service must not delay root info.
-  // Each stage has its own bounded deadline, so no sequential budget stacking.
-  const [probes, session] = await Promise.all([
-    Promise.all(allContexts.map(async ([context, enabled]): Promise<Probe> =>
-      enabled ? boundedInfo(client, device, context, budgetMs, signal) : {
-        stage: stage("agent", identityFor(context), "not_configured", "endpoint_not_configured_no_request", "configuration"),
-      })),
-    !includeDesktop || !configured.desktop
-      ? Promise.resolve({ stage: stage("graphical_session", "interactive", "not_configured",
-        includeDesktop ? "interactive_endpoint_not_configured" : "desktop_probe_not_requested", "configuration"),
-        accessible: false, interactive: false, captureMayMissSecureDesktop: null as boolean | null })
-      : boundedDesktop(client, device, budgetMs, signal),
-  ]);
+  // Explicit interactive routes run independently. A Linux owner route shares
+  // the owner probe's budget and uses its capability response to select the
+  // session route without a duplicate request.
+  const ownerStarted = performance.now();
+  const pendingProbes = allContexts.map(async ([context, enabled]): Promise<Probe> =>
+    enabled ? boundedInfo(client, device, context, budgetMs, signal) : {
+      stage: stage("agent", identityFor(context), "not_configured", "endpoint_not_configured_no_request", "configuration"),
+    });
+  const noSession = (state: State, cause: string, source: string) => ({
+    stage: stage("graphical_session", "interactive", state, cause, source),
+    accessible: false, interactive: false, captureMayMissSecureDesktop: null as boolean | null,
+  });
+  const pendingSession = async () => {
+    if (!includeDesktop) return noSession("not_configured", "desktop_probe_not_requested", "configuration");
+    if (configured.desktop) return boundedDesktop(client, device, budgetMs, signal);
+    if (!configured.user) return noSession("not_configured", "interactive_endpoint_not_configured", "configuration");
+    const owner = await pendingProbes[1]!;
+    if (!owner.info) return noSession("unknown", "owner_desktop_capability_unavailable", "agent:/v1/info");
+    if (!client.supportsLinuxOwnerDesktop(owner.info))
+      return noSession("not_configured", "interactive_endpoint_not_configured", "configuration");
+    const remainingMs = Math.floor(budgetMs - (performance.now() - ownerStarted));
+    return remainingMs > 0 ? boundedDesktop(client, device, remainingMs, signal, owner.info)
+      : noSession("unknown", "desktop_probe_expired", "agent:/v1/desktop/session");
+  };
+  const [probes, session] = await Promise.all([Promise.all(pendingProbes), pendingSession()]);
   signal?.throwIfAborted();
 
   const primary = probes[0]!.stage;
@@ -102,7 +116,7 @@ export async function diagnosticDoctor(client: AgentClient, requestedDevice: str
       session.captureMayMissSecureDesktop ? "capture_secure_desktop_boundary_reported" : "capture_not_exercised",
       "agent:/v1/desktop/session")
     : stage("capture_capability", "interactive", "unknown", "capture_not_qualified_no_image_taken", "configuration");
-  const desktopRuntime = probes[2]?.info?.runtime;
+  const desktopRuntime = includeDesktop ? probes[configured.desktop ? 2 : 1]?.info?.runtime : undefined;
   const runtime = desktopRuntime && typeof desktopRuntime === "object" ? desktopRuntime as Record<string, unknown> : {};
   const advertisedCapabilities = Array.isArray(runtime.capabilities) ? runtime.capabilities : [];
   const engine = advertisedCapabilities.includes("desktop-semantic-v1")
@@ -112,14 +126,16 @@ export async function diagnosticDoctor(client: AgentClient, requestedDevice: str
       "no_verified_engine_identity_in_this_diagnostic", "separate_engine_status");
   const stages = [stage("controller", null, "ready", "tool_handler_active", "controller"),
     ...probes.map(p => p.stage), session.stage, engine, captureCapability, desktopCapability];
-  const state: "ready" | "partial" | "unknown" =
-    primary.state === "ready" && (owner.state === "ready" || owner.state === "not_configured") ?
-      owner.state === "ready" ? "ready" : "partial" : primary.state === "unknown" ? "unknown" : "partial";
+  const desktopReady = !includeDesktop ||
+    (configured.desktop ? probes[2]!.stage.state === "ready" && session.stage.state === "ready"
+      : session.stage.state === "not_configured" || session.stage.state === "ready");
+  const state: "ready" | "partial" | "unknown" = primary.state === "unknown" ? "unknown"
+    : primary.state === "ready" && owner.state === "ready" && desktopReady ? "ready" : "partial";
   const nextCheck = primary.state === "unknown" ? "Check system agent reachability; physical power state is unverified."
     : owner.state === "not_configured" ? "Configure an owner endpoint only if owner operations are required."
     : owner.state === "unknown" ? "Inspect the owner agent independently; do not infer a system outage."
-    : includeDesktop && !configured.desktop ? "Desktop was not configured; shell and file operations may still work."
-    : includeDesktop && session.stage.state !== "ready" ? "Inspect interactive session prerequisites; no desktop action was attempted."
+    : includeDesktop && session.stage.state === "not_configured" ? "Desktop was not configured; shell and file operations may still work."
+    : includeDesktop && !desktopReady ? "Inspect interactive agent and session prerequisites; no desktop action was attempted."
     : "Readiness is observed; use a separately authorized synthetic action to verify effects.";
   return {
     version: 1 as const, device, requestedDevice, observedAt: new Date().toISOString(),
