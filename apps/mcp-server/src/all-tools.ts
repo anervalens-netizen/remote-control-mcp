@@ -14,6 +14,7 @@ import { registerSemanticDesktopTools } from "./semantic-desktop-tools.ts";
 import { registerHostTools } from "./host-tools.ts";
 import { registerSecretTools } from "./secret-tools.ts";
 import { registerCapabilityTools } from "./capability-tools.ts";
+import { registerDiagnosticDoctor } from "./diagnostic-doctor.ts";
 import { registerRepoTools } from "./repo-tools.ts";
 import { installDefaultToolOutputContracts } from "./tool-contract-defaults.ts";
 import { registerAndroidTools } from "./android-tools.ts";
@@ -36,6 +37,7 @@ export function registerTools(server: McpServer, client: AgentClient): void {
   registerHostTools(server, client);
   registerSecretTools(server, client);
   registerCapabilityTools(server, client);
+  registerDiagnosticDoctor(server, client);
   registerRepoTools(server, client);
   registerAndroidTools(server, client);
   registerConsoleTools(server, client);

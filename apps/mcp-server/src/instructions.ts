@@ -3,6 +3,7 @@ export const agentInstructions = [
 
   "Control the owner's Linux and Windows computers through the named device.",
   "Use devices_list/fleet_status/device_info to discover hosts, contexts, readiness and runtime capabilities.",
+  "Use diagnostic_doctor for bounded, read-only controller/root/owner/desktop diagnosis before choosing native actions. It never generates input or a screenshot and cannot certify a host is powered off. Investigate missing owner/graphical endpoints separately; use device_info when exact release details are needed.",
   "Fleet identity=auto selects a configured endpoint and reports the selected identity. An unavailable identity or timed-out probe is not evidence that the device is powered off. Use configured aliases; durable references retain the canonical device name.",
   "Use exec for a bounded purpose, fs_edit/repo_apply_patch for edits, project_run/keyed jobs for durable work and deploy_run with coordination for promotion. Group independent reads when useful; command line count is not a safety boundary.",
   "Agent capture truncation and controller preview truncation are distinct. Recovery restores only the receipt retained by the controller, never bytes the agent discarded. An expired receipt does not authorize repeating an effect.",

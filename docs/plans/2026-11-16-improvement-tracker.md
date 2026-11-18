@@ -2,6 +2,15 @@
 
 Scope version: 2026-11-16. [Full plan, acceptance criteria and sources](2026-11-16-improvement-plan.md).
 
+**Consolidated execution cadence (2026-11-18):** Use the
+[batch delivery crosswalk](2026-11-18-consolidated-delivery.md) to implement
+related items together. The 61 ID rows remain independent acceptance checks,
+**not** instructions to create 61 pull requests or request reviews after
+every small change. Request grouped Codex/DSH reviews and full CI only after
+the stable application batch is ready. Keep historical incident recovery and
+the DSH worker isolation boundary independently qualified.
+
+
 This is the single implementation checklist for the improvement plan. It covers **61 work items** (the original 60 plus the implementation follow-up INV-05), all **F01–F08 findings**, all **E01–E10 ecosystem comparisons**, and **M01–M10 methodology/preservation requirements**. Original planning baseline: **55 planned, 5 conditional, 0 implemented or verified by that planning change**. INV-05 was subsequently added as planned. The state of an existing capability must be refreshed before implementing its proposed extension or verification.
 
 The public tracker records engineering status and sanitized evidence only. Operational measurements, real device details, private task/execution IDs and deployment/rollback receipts stay in private project memory under the same stable work-item ID. Do not copy the operational audit into this repository.
