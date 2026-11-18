@@ -147,3 +147,20 @@ their uncertain writer fence. A native fixture with isolated state verified
 the original index and retained diagnosis. The controller follow-up reports
 a concise failure notice and points to the original recovery inspection.
 The historical incidents remain evidence-gated.
+
+
+## PR #71 controller and inventory qualification
+
+[PR #71](https://github.com/anervalens-netizen/remote-control-mcp/pull/71)
+merged as `85124e0fc94eed0b926a8aab4b524b214c47ca0e`. The selected controller
+reported that pinned runtime after activation. The versioned private
+inventory changed one retained retired entry to manual and preserved the
+original configuration for rollback. Current fleet, capability and console
+reads reported the skip. Controller dispatch counters recorded no request to
+that endpoint during the check. Explicit alias routing was verified against
+a synthetic endpoint.
+
+The authenticated ChatGPT console displayed the manual policy and returned a
+fresh doctor result for the selected Linux device. The compact checkpoint
+guidance was verified with a rejected commit against isolated state. Both
+live agent identities kept their previous runtime and historical evidence.

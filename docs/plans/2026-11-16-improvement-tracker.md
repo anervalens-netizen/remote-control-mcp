@@ -35,24 +35,24 @@ REC-05 and DEL-02 remain open.
 
 2026-11-17: lot2 candidate `d0e5756` was integrated as `13d7563216b629f582bbb9e7815cf797fb5d6a4d`, with the same source tree and passing merge CI. The selected controller and three Linux agent identities are activated from that source. All three finite 9-agent/5-controller windows and all three subsequent persistence-progress probes qualified. The original task-linked job's diagnostic association was verified from preserved metadata captured before sample eviction, followed by separate terminal and bound ContextKeep verification readbacks. A subsequent live selected Linux task also matched the original execution receipt, runtime readback and bound ContextKeep verification. Both live collector reports remain inconclusive and are not relabeled as passes.
 
-The later current tally, including the selected native client acceptance below, is **21 verified, 19 active, 2 blocked, 5 implemented, 9 planned and 5 conditional** across the 61 tracker items. These selected-route results do not close the complete lot2 acceptance contract. See the [current merge and runtime evidence](2026-11-16-lot2-evidence.md#merge-and-selected-runtime-qualification).
+These selected-route results do not close the complete lot2 acceptance contract. See the [current merge and runtime evidence](2026-11-16-lot2-evidence.md#merge-and-selected-runtime-qualification).
 
 The earlier lot1 checkpoint remains historical evidence for source `9682af5`: PR54 application reviews and all 21 dispositions completed for `71956e8`, and its merge had the identical tree and four passing checks. That rollout qualified actual MCP recovery/effect behavior, synthetic desktop actions, controlled owner relaunch and a separate owner promotion with desktop disabled. Those earlier observations are not relabeled as fresh desktop qualification of the lot2 release. The historical recovery intent, original journal and uncertain fence remain preserved; the effect remains unknown and quiescence is unverified. REC-05 remains unresolved and DEL-01 remains blocked by it.
 
 [Earlier evidence index, metric definitions and finite scenarios](2026-11-16-implementation-evidence.md).
 
-The original 61 work-item IDs and state counts are unchanged. Two additional
+The tracker retains its original 61 work-item IDs. Two additional
 live-discovered follow-ups remain tracked in GitHub without silently deleting
 or relabeling existing items:
 [issue #58 — coordination-capacity diagnostics](https://github.com/anervalens-netizen/remote-control-mcp/issues/58)
 and [issue #59 — DSH provider-capacity and deferred-review continuity](https://github.com/anervalens-netizen/remote-control-mcp/issues/59).
 The REC-07 follow-up is tracked in
 [issue #62 — evidence-bound reconciliation after a failed Git pre-commit hook](https://github.com/anervalens-netizen/remote-control-mcp/issues/62).
-The draft source candidate retains an invocation-bound failed commit observation:
+[PR #63](https://github.com/anervalens-netizen/remote-control-mcp/pull/63) retains an invocation-bound failed commit observation:
 the Git command exit code, bounded before/after metadata and its containment
 limitation. The original generation remains uncertain and read-only inspection
-can recover the observation. A matching Git status and empty process group
-cannot establish independent effect and quiescence evidence. A supported
+can recover the observation. Matching Git status leaves the effect unverified. Process containment remains
+unavailable for this synchronous boundary. A supported
 reconciliation path remains open for REC-07. Both selected Linux agents now
 run the pinned release containing PR #63. An isolated exact-release agent
 qualified retained diagnosis, original index preservation and refusal to
@@ -84,8 +84,17 @@ merged as `e469c6229a3f232d7bbde308348af0598bfbb503`. The selected controller
 reported the matching pinned runtime and passed authenticated read-only doctor,
 version, latency and existing-job checks. [Batch A/B qualification](2026-11-18-consolidated-delivery.md#pr-70-merge-and-controller-qualification)
 records the verification scope and remaining limits. DSH exact-head review
-remains deferred due to quota. Current inventory: **61 items — 20 verified, 16 active, 2 blocked, 6 implemented, 12 planned, 5 conditional**.
+remains deferred due to quota. Current inventory: **61 items — 21 verified, 19 active, 2 blocked, 5 implemented, 9 planned, 5 conditional**.
 The older counts and release evidence above describe their respective checkpoints.
+
+[PR #71](https://github.com/anervalens-netizen/remote-control-mcp/pull/71)
+merged as `85124e0fc94eed0b926a8aab4b524b214c47ca0e` and was verified on the
+selected controller. A versioned private inventory classified the retained
+retired entry as manual. Live fleet, capability and console observations
+recorded the skip without a request to that endpoint. A synthetic HTTP
+endpoint verified explicit alias routing. The authenticated ChatGPT console
+displayed the manual check policy and completed a fresh selected Linux doctor
+request. The selected Linux agents retained the pinned `e469c62` runtime.
 
 ## How to execute and update
 
@@ -144,7 +153,7 @@ Lots: 0 baseline; 1 recovery/desktop/effect semantics; 2 observation/history/inv
 | [RC26-HIS-02](2026-11-16-improvement-plan.md#rc26-his-02) | Publish coverage-aware reports and denominators | 2 | P2 | active | HIS-01, OBS-04 | Implementation agent | usage_report keeps its bounded snapshot default. Public usage_window source adds UTC boundaries, same-instance denominator, missing/evicted/late evidence, conflicts, saturation and exact arithmetic residual, with finite memory/TTL/detail bounds. Historical gaps remain separate from current hooks. PR57 source/CI and a selected native SDK window workflow passed, while independent DSH final-head review, broader deployed reporting and richer console integration remain open; the console is not accepted. See [window source evidence](2026-11-17-window-evidence.md). |
 | [RC26-HIS-03](2026-11-16-improvement-plan.md#rc26-his-03) | Reconcile old job references with bounded read-only inspections | 2 | P2 | verified | EFF-03 | Implementation agent | The bounded retained-reference assessment is complete for its permitted cohort, with lost, missing and excluded evidence explicit. Its original evidence/hash and scope are retained in the synchronized private checkpoint. Missing terminal references are not counted as running jobs; no job restart, mass finalization or reservation deletion occurred. Reconciled finishedAt can be observation time; historical quiescence and independent effects remain unproved. |
 | [RC26-HIS-04](2026-11-16-improvement-plan.md#rc26-his-04) | Bound aggregate and recovery pressure independently | 2 | P2 | active | HIS-01, HIS-03 | Implementation agent | Aggregate storage/cardinality are bounded independently of recovery metadata; corrupt and over-budget evidence stays preserved. Failure fixtures include startup containment and malformed temporal state. Full operating-pressure measurements and existing recovery-journal deferrals remain open. [Fourth DSH item 6](2026-11-16-lot2-review.md#fourth-candidate-review-dispositions) retains a finite isolated asynchronous onClose stall regression for the drain-deadline/failure signal with DEL-02. This coverage is pending; the five-second grace and full three-second drain are unchanged. |
-| [RC26-INV-01](2026-11-16-improvement-plan.md#rc26-inv-01) | Reconcile the canonical fleet inventory | 2 | P2 | active | BASE-01 | Implementation agent | The retained inventory can express manual-only availability while preserving explicit routing, aliases and existing references. Synthetic fleet, console and capability checks qualified skipped automatic probes and explicit alias reads. A retired entry was identified privately for a controller-scoped rollout. Broader fleet role reconciliation remains open. |
+| [RC26-INV-01](2026-11-16-improvement-plan.md#rc26-inv-01) | Reconcile the canonical fleet inventory | 2 | P2 | active | BASE-01 | Implementation agent | The retained inventory can express manual-only availability while preserving explicit routing, aliases and existing references. Synthetic fleet, console and capability checks qualified skipped automatic probes and explicit alias reads. The controller-scoped rollout applied the policy to the one selected retired entry while preserving its previous inventory for rollback. Broader fleet role reconciliation remains open. |
 | [RC26-INV-02](2026-11-16-improvement-plan.md#rc26-inv-02) | Expose desired, installed, startup and running versions | 2 | P2 | active | DEP-01, INV-01 | Implementation agent | Private current-process, installed manifest and loaded startup-target evidence has been separated. A generic four-layer evidence contract is documented; an automatically sourced desired/installed/startup/running matrix and drift presentation remain open. Added provenance-separated version evidence to capability_report (running vs operator-declared desired/installed/startup with unknowns, validation and comparison); installed/startup auto-attestation remains open.  |
 | [RC26-INV-03](2026-11-16-improvement-plan.md#rc26-inv-03) | Use bounded probes and backoff for intermittent devices | 2 | P2 | implemented | INV-01 | Implementation agent | capability_report now uses finite per-endpoint probe budgets, propagates cancellation and stops queued probes. A stalled HTTP fixture with generic deadlines disabled and existing fleet/alias regressions pass. This does not claim a new backoff policy or measured fleet-wide reduction. |
 | [RC26-INV-04](2026-11-16-improvement-plan.md#rc26-inv-04) | Separate canonical source workspaces from immutable releases | 2 | P2 | verified | BASE-01 | Implementation agent | The [workspace/release guide](../WORKSPACE-AND-RELEASES.md), published source/disposition and guarded selected releases are linked to a saved private source/release/startup/process map and ContextKeep checkpoint. This documentation update records that mapping and preserves older worktrees and immutable evidence; repository HEAD is not deployment identity. Review fixtures require isolated state, captured identities and finite child lifetimes. Automatic fleet drift presentation and enforced worker isolation remain separate INV-02/INV-05 work. |
