@@ -137,9 +137,11 @@ required fewer client calls in that scenario. Manual availability keeps
 inventory entries visible while skipping automatic probes. Synthetic
 checks qualified explicit selection through the existing alias.
 
-The independent DSH review was deferred due to reviewer quota and remains
-outstanding. Broader paired traffic windows, history under pressure, ChatGPT-host
-rendering and wider protocol conformance retain their own acceptance gates.
+The selected ChatGPT host displayed the live console and completed the endpoint
+doctor after Refresh tools. Automatic cache handling and broader host coverage
+remain open. The independent DSH review was deferred due to reviewer quota.
+Broader paired traffic windows, history under pressure and wider protocol
+conformance retain their own acceptance gates.
 PR #63 adds diagnostic evidence for rejected Git checkpoints while preserving
 their uncertain writer fence. A native fixture with isolated state verified
 the original index and retained diagnosis. The controller follow-up reports

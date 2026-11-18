@@ -67,6 +67,10 @@ verified effect and client acceptance appear as separate facts. Output pages
 still require an explicit read. Clients without Apps use `diagnostic_doctor`
 and the existing job status, wait, output and lineage tools.
 
+In the selected ChatGPT host, **Refresh tools** restored access to the app
+doctor after the controller upgrade. Reopen the console from the refreshed
+catalogue if an existing panel cannot reach the doctor.
+
 ## Remaining acceptance
 
 Native paired Linux evidence, installed/startup sourcing, history under
