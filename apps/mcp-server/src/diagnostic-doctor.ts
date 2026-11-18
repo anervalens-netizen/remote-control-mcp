@@ -147,6 +147,21 @@ export async function diagnosticDoctor(client: AgentClient, requestedDevice: str
   };
 }
 
+export const diagnosticDoctorOutputSchema = z.object({
+  version: z.literal(1), device: z.string(), requestedDevice: z.string(),
+  observedAt: z.string(), elapsedMs: z.number().nonnegative(),
+  probeBudgetMs: z.number().int().positive(), budgetScope: z.literal("per_endpoint"),
+  status: z.enum(["ready", "partial", "unknown"]),
+  configured: z.object({ system: z.boolean(), user: z.boolean(), desktop: z.boolean() }),
+  stages: z.array(z.object({
+    name: z.string(), identity: z.enum(["root", "owner", "interactive"]).nullable(),
+    state: z.enum(["ready", "responded", "not_ready", "unavailable", "unknown", "not_configured"]),
+    cause: z.string(), source: z.string(), observedAt: z.string(), elapsedMs: z.number().nonnegative().nullable(),
+  })), nextCheck: z.string(),
+  coverage: z.object({ readonly: z.literal(true), inputGenerated: z.literal(false), captureTaken: z.literal(false),
+    physicalPowerVerified: z.literal(false), processEffectsVerified: z.literal(false), caveat: z.string() }),
+});
+
 export function registerDiagnosticDoctor(server: McpServer, client: AgentClient) {
   server.registerTool("diagnostic_doctor", {
     description: "Read-only bounded diagnostic for one device: controller, root/owner/interactive agents, graphical session and reported capture/input limits. Never clicks, captures or remediates. Separates unavailable owner from system connectivity and does not infer host power state.",
@@ -155,20 +170,7 @@ export function registerDiagnosticDoctor(server: McpServer, client: AgentClient)
       probeTimeoutMs: z.number().int().min(100).max(5000).optional(),
       includeDesktop: z.boolean().optional(),
     }).strict(),
-    outputSchema: z.object({
-      version: z.literal(1), device: z.string(), requestedDevice: z.string(),
-      observedAt: z.string(), elapsedMs: z.number().nonnegative(),
-      probeBudgetMs: z.number().int().positive(), budgetScope: z.literal("per_endpoint"),
-      status: z.enum(["ready", "partial", "unknown"]),
-      configured: z.object({ system: z.boolean(), user: z.boolean(), desktop: z.boolean() }),
-      stages: z.array(z.object({
-        name: z.string(), identity: z.enum(["root", "owner", "interactive"]).nullable(),
-        state: z.enum(["ready", "responded", "not_ready", "unavailable", "unknown", "not_configured"]),
-        cause: z.string(), source: z.string(), observedAt: z.string(), elapsedMs: z.number().nonnegative().nullable(),
-      })), nextCheck: z.string(),
-      coverage: z.object({ readonly: z.literal(true), inputGenerated: z.literal(false), captureTaken: z.literal(false),
-        physicalPowerVerified: z.literal(false), processEffectsVerified: z.literal(false), caveat: z.string() }),
-    }),
+    outputSchema: diagnosticDoctorOutputSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async ({ device, probeTimeoutMs, includeDesktop }, extra) => {
     const result = await diagnosticDoctor(client, device, { probeTimeoutMs, includeDesktop }, extra.signal);

@@ -1,6 +1,6 @@
 # RC26 consolidated operator diagnostics — source contract
 
-This page describes the **in-development** Batch A source. It is not a claim of a deployed controller, an already refreshed ChatGPT catalog, or an independently verified installed-host startup target.
+This page describes the source for consolidated Batches A and B. Deployment, ChatGPT catalog refresh, and native startup-target verification require separate evidence.
 
 ## 1. Read-only device doctor (UX-01, TMO-02)
 
@@ -53,6 +53,22 @@ The existing `ToolDiagnostics.snapshot()` now adds `stageMeasurements`, aggregat
 
 The existing `batch_read` tool remains the supported facility. A synthetic SDK contract test checks that four per-item root/owner reads and a missing-file error are preserved with bounded concurrency 2. In that **specific fixture**, the client sends four sequential MCP calls versus one `batch_read` call; this is not a claim of a measured production latency reduction. Dependent operations, writes and incident recovery stay sequential.
 
+## 6. Existing MCP Apps console (UX-02/07)
+
+Select a Fleet device, then use **Check endpoints** to run the same bounded
+read-only doctor. Each row gives the route or prerequisite, cause, source and
+time. Failed refreshes label earlier observations as cached. Use the selected
+identity for new reads, and retain the original device, identity and ID for job
+inspection.
+
+The job details show the exit record, termination evidence, last output,
+observed byte counts and the next read. Request-handler state, execution,
+verified effect and client acceptance appear as separate facts. Output pages
+still require an explicit read. Clients without Apps use `diagnostic_doctor`
+and the existing job status, wait, output and lineage tools.
+
 ## Remaining acceptance
 
-Batch A still needs native paired Linux-host evidence, full version/boot-target sourcing, broader MCP protocol/conformance and timeout matrix, retained-history pressure, and long-running/desktop/UI coverage. Batch B console integration uses the above shared contracts after Batch A reaches stable acceptance. No application review, merge, deploy or experiment adoption has been claimed by these source changes.
+Native paired Linux evidence, installed/startup sourcing, history under
+pressure, B01–B07 benchmarks and real-host protocol and UI acceptance remain
+open. Review, CI, merge and deployment each require their own evidence.

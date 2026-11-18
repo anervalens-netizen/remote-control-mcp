@@ -52,7 +52,7 @@ export function assessHistoricalReadFailure(value: unknown) {
 }
 type CurrentOperation = { observer: OperationObserver; traceId: string };
 export const operationContext = new AsyncLocalStorage<CurrentOperation>();
-export const consoleReadTools = new Set(["open_remote_control_console", "dashboard_snapshot", "operation_inspect"]);
+export const consoleReadTools = new Set(["open_remote_control_console", "dashboard_snapshot", "dashboard_doctor", "operation_inspect"]);
 const historySchema = z.object({
   since: z.string().datetime(), legacyGap: z.boolean(), lastCapacityEvictionAt: z.string().datetime().nullable(),
   expired: z.number().int().nonnegative().safe(),

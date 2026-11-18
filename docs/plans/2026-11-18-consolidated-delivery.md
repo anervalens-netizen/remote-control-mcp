@@ -7,7 +7,7 @@
 | Batch | Items | Delivery |
 |---|---:|---|
 | A — Runtime and diagnostics | 23 | One integration PR: fleet/version diagnostics, read-only doctor, telemetry/history completeness, effect recovery and MCP/timeout qualification. One Codex + DSH review cycle at stable head, then CI and scoped native acceptance. |
-| B — Experience and governance | 6 | One console/workflow PR: UI, tool guidance, benchmarks, review and documentation. Fold documentation-only work into A where sensible. |
+| B — Experience and governance | 6 | Console and workflow changes share the integration PR with Batch A. Retain separate acceptance evidence for UI, guidance, benchmarks, review and documentation. |
 | C — DSH isolation | 1 | One separate upstream-compatible security change in DSH with enforced process isolation and native proof. Do not overwrite existing dirty DSH checkout. |
 | D — Experiments and performance | 9 | One finite comparison and adoption/defer report. Implement conditional experiments only when measured benefit/client capability is proven. |
 | Historical incident evidence | 2 | REC-05 and DEL-01 remain evidence-gated; do not force-release, replay or reboot the existing uncertain slots. |

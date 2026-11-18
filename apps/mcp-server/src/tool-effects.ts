@@ -20,7 +20,7 @@ export const readOnlyTools: ReadonlySet<string> = new Set([
   "process_find", "process_list", "pty_list", "pty_output",
   "repo_compare", "repo_git_path", "repo_snapshot", "search", "search_results", "search_sessions", "search_status",
   "secret_list", "secret_status", "service_inspect", "service_logs",
-  "open_remote_control_console", "dashboard_snapshot", "operation_inspect", "result_recover",
+  "open_remote_control_console", "dashboard_snapshot", "dashboard_doctor", "operation_inspect", "result_recover",
 ]);
 
 type Input = Record<string, unknown>;

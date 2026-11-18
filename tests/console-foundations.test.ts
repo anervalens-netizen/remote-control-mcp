@@ -62,6 +62,52 @@ describe("console foundation contracts", () => {
     expect(JSON.stringify(result.structuredContent)).not.toContain("budget");
   });
 
+  it("uses the shared bounded doctor contract for the selected console device", async () => {
+    const agent = new AgentClient(inventory);
+    const info = vi.spyOn(agent, "info").mockResolvedValue({ runtime: { ready: true } });
+    const desktop = vi.spyOn(agent, "desktopSessionStatus");
+    const client = await harness(agent);
+    const listed = (await client.listTools()).tools.find(tool => tool.name === "dashboard_doctor");
+    expect(listed).toMatchObject({ _meta: { ui: { visibility: ["app"] } }, annotations: { readOnlyHint: true } });
+    const value = await client.callTool({ name: "dashboard_doctor", arguments: { device: "LAB" } });
+    expect(value.isError).not.toBe(true);
+    expect(value.structuredContent).toMatchObject({
+      device: "lab-primary", status: "partial", coverage: { readonly: true, processEffectsVerified: false },
+      stages: expect.arrayContaining([
+        expect.objectContaining({ name: "agent", identity: "root", state: "ready" }),
+        expect.objectContaining({ name: "agent", identity: "owner", state: "not_configured" }),
+      ]),
+    });
+    expect(info).toHaveBeenCalledTimes(1);
+    expect(info).toHaveBeenCalledWith("lab-primary", "system", expect.objectContaining({ timeoutMs: expect.any(Number) }));
+    expect(desktop).not.toHaveBeenCalled();
+  });
+
+  it("returns actionable progress for the exact inspected console job without reading output", async () => {
+    const agent = new AgentClient(inventory);
+    const status = vi.spyOn(agent, "jobStatus").mockResolvedValue({
+      id: "fixture-job", state: "running", retryAfterMs: 1200, waitExpired: true,
+      stdoutBytes: 4, lastOutputAt: "2026-01-01T00:00:00Z",
+    });
+    const output = vi.spyOn(agent, "requestRoute");
+    const client = await harness(agent);
+    const result = await client.callTool({ name: "operation_inspect", arguments: {
+      reference: { job: { device: "LAB", identity: "root", jobId: "fixture-job" } },
+    } });
+    expect(result.isError).not.toBe(true);
+    expect(result.structuredContent).toMatchObject({
+      reference: { job: { device: "lab-primary", identity: "root", jobId: "fixture-job" } },
+      output: null,
+      observation: { progressGuidance: {
+        state: "running", completionPercent: null, waitExpiredWithoutTermination: true,
+        useOriginalJobId: true, retryAfterMs: 1200, nextCheck: "job_wait",
+        outputBytes: { stdout: 4, stderr: null },
+      } },
+    });
+    expect(status).toHaveBeenCalledWith("lab-primary", "fixture-job", "system", expect.any(Object));
+    expect(output).not.toHaveBeenCalled();
+  });
+
   it("rejects contradictory fleet selectors and retains the actual auto selection", async () => {
     const agent = new AgentClient(inventory);
     vi.spyOn(agent, "info").mockResolvedValue({ runtime: { ready: true } });
