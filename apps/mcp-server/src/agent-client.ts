@@ -164,7 +164,7 @@ export class AgentClient {
     const names = new Set<string>();
     for (const device of [...devices, ...configured] as DeviceConfig[]) {
       if (device.aliases !== undefined && !Array.isArray(device.aliases)) throw new Error("Device aliases must be an array");
-      if (device.expectedAvailability !== undefined && !["continuous", "intermittent"].includes(device.expectedAvailability)) throw new Error("Invalid expectedAvailability");
+      if (device.expectedAvailability !== undefined && !["continuous", "intermittent", "manual"].includes(device.expectedAvailability)) throw new Error("Invalid expectedAvailability");
       for (const name of [device.name, ...(device.aliases ?? [])]) {
         if (typeof name !== "string" || !name.trim() || name !== name.trim()) throw new Error("Invalid device name or alias");
         const key = name.toLowerCase();

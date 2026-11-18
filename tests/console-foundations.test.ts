@@ -30,6 +30,18 @@ describe("console foundation contracts", () => {
     expect(new AgentClient(inventory).getDevice("LAB").name).toBe("lab-primary");
   });
 
+  it("renders a manual endpoint on the default SDK console page without a live probe", async () => {
+    const agent = new AgentClient([{ ...inventory[0]!, expectedAvailability: "manual" }]);
+    const info = vi.spyOn(agent, "info");
+    const client = await harness(agent);
+    const result = await client.callTool({ name: "dashboard_snapshot", arguments: { includeFleet: true } });
+    expect(result.isError).not.toBe(true);
+    expect(result.structuredContent).toMatchObject({ fleet: { totalConfigured: 1, devices: [{
+      device: "lab-primary", expectedAvailability: "manual", probeSkipped: "manual_selection_required",
+    }] } });
+    expect(info).not.toHaveBeenCalled();
+  });
+
   it("normalizes route fields and batches without editing arbitrary payload data", () => {
     const env = { device: "lab", devices: "lab" };
     const result = canonicalDeviceArguments({ sourceDevice: "LAB", destinationDevice: "lab-primary", devices: ["LAB"], items: [{ device: "lab", env }], env, request: { device: "lab" } }, inventory);
