@@ -68,9 +68,9 @@
 | RC26-DEL-03 | B — Experience and governance | P2 | planned | Close usability and compatibility with real workflows |
 | RC26-DEL-04 | D — Experiments and performance | P3 | planned | Record a decision for every experiment and the remaining backlog |
 
-## Current worktree
+## Historical development checkpoint
 
-Working branch: `feat/rc26-consolidated-delivery-20261118`, based on main `2b747cdc256c8a14467ac91d2957fb8017304d9b`. This is an **unreviewed development worktree**, not merged or deployed.
+Working branch: `feat/rc26-consolidated-delivery-20261118`, based on main `2b747cdc256c8a14467ac91d2957fb8017304d9b`. At this checkpoint the worktree was unreviewed and had yet to merge or deploy.
 
 
 ## Batch A first integrated source checkpoint (2026-11-18)
@@ -93,9 +93,27 @@ Six planned IDs moved to active in the canonical tracker after code/test work
 began: OBS-05, UX-01, UX-04, UX-05, UX-06 and DOC-01. The 61 IDs remain
 unchanged; none was marked verified solely from this local test result.
 
-This checkpoint is local only: **no GitHub PR, independent Codex/DSH review,
-CI on the final candidate, merge or runtime deployment**. The main production
-runtime remains separately versioned. Remaining acceptance includes native
+The evidence in this checkpoint covered local source and tests. See the later
+merge and controller qualification below. Remaining acceptance includes native
 version/install/startup evidence, paired live traffic windows, full protocol
 conformance, longer-term history/pressure, full B01-B07 measurements and
 Console Batch B. Historical uncertain coordination slots stay fenced.
+
+## PR #70 merge and controller qualification
+
+[PR #70](https://github.com/anervalens-netizen/remote-control-mcp/pull/70)
+merged as `e469c6229a3f232d7bbde308348af0598bfbb503`. The pinned controller
+runtime was read back at this source revision. Authenticated read-only checks
+verified App and text doctor parity, configured root and owner observations,
+version provenance, retained latency stage measurements, the console asset
+hash and inspection of an existing durable job on selected Linux routes.
+The selected agent runtimes may run different revisions. App parity on this
+controller does not establish discovery on all MCP hosts or certify installed
+and startup versions. Detailed receipts remain private.
+
+The independent DSH review was deferred due to reviewer quota and remains
+outstanding. Windows and Android host qualification, broader paired traffic
+windows, history under pressure and protocol conformance retain their own
+acceptance gates. PR #63 adds diagnostic evidence for rejected Git checkpoints
+while preserving their uncertain writer fence. The historical incidents are
+separate and still require their own recovery evidence.
