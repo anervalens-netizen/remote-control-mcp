@@ -11,11 +11,16 @@ afterEach(async () => { for (const close of closers.splice(0).reverse()) await c
 async function fixture() {
   const agent = Fastify();
   const effects: Array<{ key: string; command: string }> = [];
+  // Count every inbound start attempt before keyed deduplication. A hidden
+  // controller replay must not look like one effect simply because the agent
+  // coalesced multiple requests.
+  const startRequests: Array<{ key: string; command: string }> = [];
   const jobs = new Map<string, { id: string; state: "completed"; exitCode: 0; command: string }>();
   const id = "00000000-0000-4000-8000-000000000401";
   agent.post("/v1/jobs/start", async request => {
     const { idempotencyKey, command } = request.body as { idempotencyKey: string; command: string };
     if (!idempotencyKey) throw new Error("durable effect identity required");
+    startRequests.push({ key: idempotencyKey, command });
     const previous = jobs.get(idempotencyKey);
     if (previous) {
       if (previous.command !== command) throw new Error("key-conflict");
@@ -47,7 +52,7 @@ async function fixture() {
     http.closeAllConnections();
     await new Promise<void>(resolve => http.close(() => resolve()));
   });
-  return { effects, jobs, id, url: new URL("http://127.0.0.1:" + (http.address() as { port: number }).port + "/mcp") };
+  return { effects, startRequests, jobs, id, url: new URL("http://127.0.0.1:" + (http.address() as { port: number }).port + "/mcp") };
 }
 
 const auth = "Bearer rc26-fixture-only";
@@ -99,6 +104,7 @@ describe("RC26-MCP-04 lost-response no-replay transport evidence", () => {
     expect(persisted.isError).not.toBe(true);
     expect(persisted.structuredContent).toMatchObject({ id: f.id, state: "completed", exitCode: 0 });
     expect(f.effects).toHaveLength(1);
+    expect(f.startRequests).toEqual([{ key, command: "synthetic-once" }]);
   }, 20_000);
 
   for (const legacy of [false, true] as const) {
@@ -138,6 +144,7 @@ describe("RC26-MCP-04 lost-response no-replay transport evidence", () => {
       expect(recovered.result.isError).not.toBe(true);
       expect(recovered.result.structuredContent).toMatchObject({ state: "resolved", jobId: f.id });
       expect(f.effects).toEqual([{ key, command: "synthetic-once" }]);
+      expect(f.startRequests).toEqual([{ key, command: "synthetic-once" }]);
     }, 20_000);
   }
 });
