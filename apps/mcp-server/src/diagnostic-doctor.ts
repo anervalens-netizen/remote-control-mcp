@@ -75,15 +75,20 @@ export async function diagnosticDoctor(client: AgentClient, requestedDevice: str
   const allContexts: Array<[AgentEndpointContext, boolean]> = [
     ["system", configured.system], ["user", configured.user], ["desktop", configured.desktop],
   ];
-  const probes = await Promise.all(allContexts.map(async ([context, enabled]): Promise<Probe> =>
-    enabled ? boundedInfo(client, device, context, budgetMs, signal) : {
-      stage: stage("agent", identityFor(context), "not_configured", "endpoint_not_configured_no_request", "configuration"),
-    }));
-  const session = !includeDesktop || !configured.desktop
-    ? { stage: stage("graphical_session", "interactive", "not_configured",
-      includeDesktop ? "interactive_endpoint_not_configured" : "desktop_probe_not_requested", "configuration"),
-      accessible: false, interactive: false, captureMayMissSecureDesktop: null as boolean | null }
-    : await boundedDesktop(client, device, budgetMs, signal);
+  // Start independent desktop and agent observations together. A missing
+  // endpoint is not probed; a slow graphical service must not delay root info.
+  // Each stage has its own bounded deadline, so no sequential budget stacking.
+  const [probes, session] = await Promise.all([
+    Promise.all(allContexts.map(async ([context, enabled]): Promise<Probe> =>
+      enabled ? boundedInfo(client, device, context, budgetMs, signal) : {
+        stage: stage("agent", identityFor(context), "not_configured", "endpoint_not_configured_no_request", "configuration"),
+      })),
+    !includeDesktop || !configured.desktop
+      ? Promise.resolve({ stage: stage("graphical_session", "interactive", "not_configured",
+        includeDesktop ? "interactive_endpoint_not_configured" : "desktop_probe_not_requested", "configuration"),
+        accessible: false, interactive: false, captureMayMissSecureDesktop: null as boolean | null })
+      : boundedDesktop(client, device, budgetMs, signal),
+  ]);
   signal?.throwIfAborted();
 
   const primary = probes[0]!.stage;

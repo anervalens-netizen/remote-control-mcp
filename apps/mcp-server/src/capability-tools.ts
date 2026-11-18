@@ -4,6 +4,7 @@ import type { AgentClient, AgentEndpointContext } from "./agent-client.ts";
 import { createDeadline } from "../../../packages/protocol/src/deadline.ts";
 import { mapLimit } from "./concurrency.ts";
 import { fleetProbeBudget } from "./fleet-probe.ts";
+import { readVersionInventory, endpointVersionEvidence } from "./version-evidence.ts";
 
 const text = (value: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(value) }] });
 
@@ -45,6 +46,7 @@ export async function capabilityReport(
     ? requestedDevices.map(device => client.getDevice(device).name)
     : client.devices.map(device => device.name))];
   const probeBudgetMs = fleetProbeBudget(options.probeTimeoutMs);
+  const versionInventory = readVersionInventory();
   return mapLimit(devices, concurrency === undefined ? undefined : Math.min(32, concurrency), async (device) => {
     const started = performance.now();
     const configured = client.configuredContexts(device);
@@ -55,7 +57,12 @@ export async function capabilityReport(
     const entries = await mapLimit(contexts, Math.min(contexts.length, 3),
       async (context) => [context, await endpointInfo(client, device, context, probeBudgetMs, options.signal)] as const,
       options.signal);
-    return { device, configured, endpoints: Object.fromEntries(entries),
+    const endpoints = Object.fromEntries(entries);
+    const versions = Object.fromEntries(entries.map(([context, result]) => {
+      const selected = context === "system" ? "root" : context === "user" ? "owner" : "interactive";
+      return [selected, endpointVersionEvidence(result, versionInventory, device, selected)] as const;
+    }));
+    return { device, configured, endpoints, versions,
       probeBudgetMs, probeBudgetScope: "per_endpoint_timeout" as const, reportDeviceLimit: maxCapabilityDevices,
       probeDurationMs: performance.now() - started, observedAt: new Date().toISOString() };
   }, options.signal);
@@ -63,7 +70,7 @@ export async function capabilityReport(
 
 export function registerCapabilityTools(server: McpServer, client: AgentClient): void {
   server.registerTool("capability_report", {
-    description: "Probe up to 64 configured device entries, resolving aliases and probing each canonical device once. Each endpoint has a finite read-only timeout; concurrent calls have independent limits, not a shared rate quota. Reports runtime SHA/version/context, privileges, readiness and capabilities with per-endpoint partial failures. A probe timeout does not establish physical power state.",
+    description: "Probe up to 64 configured device entries, resolving aliases and probing each canonical device once. Each endpoint has a finite read-only timeout; concurrent calls have independent limits, not a shared rate quota. Reports runtime SHA/version/context plus separately sourced desired, installed and startup targets, with explicit unknowns and operator-declaration provenance. Endpoint probe failures retain independent runtime uncertainty. A probe timeout does not establish physical power state.",
     inputSchema: {
       devices: z.array(z.string().min(1)).max(maxCapabilityDevices).optional().describe("At most 64 entries; aliases and repeated canonical devices are deduplicated before probing. Omitted or empty selects the configured inventory, which must also fit the limit."),
       concurrency: z.number().int().min(1).max(32).optional(),

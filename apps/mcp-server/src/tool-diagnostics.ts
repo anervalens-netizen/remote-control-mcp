@@ -11,6 +11,34 @@ export type ResultDiagnostic = { trace?: Trace; finalValidationFailed?: boolean;
 type Series = { finalValidationFailures: number; resultPreparationFailures: number; execution: Record<ExecutionOutcome, number>; requestErrors: number; tool: string; device: string; count: number; errors: number; partial: number; cancelled: number; totalMs: number; maxMs: number; samples: number[]; next: number };
 const round = (n: number) => Math.round(n * 100) / 100;
 
+const diagnosticStages = ["handler", "agentRequest", "executionWait", "persistence",
+  "reconciliation", "resultPreparation", "finalValidation"] as const;
+
+/** Aggregate only retained controller-side trace measurements. Missing stages
+ * mean not observed (possibly not applicable), not a measured zero duration.
+ * Stage windows can overlap, so never sum them into the request wall time. */
+export function aggregateDiagnosticStages(traces: ReadonlyArray<{ tool: string; trace: Trace }>) {
+  const items = diagnosticStages.map(name => {
+    const observations = traces.flatMap(({ trace }) => {
+      const stage = trace.stages[name];
+      return stage && Number.isFinite(stage.ms) && stage.ms >= 0 ? [stage] : [];
+    });
+    const sampleDurations = observations.map(row => row.ms).sort((a, b) => a - b);
+    const percentile = (fraction: number) => sampleDurations[Math.max(0, Math.ceil(sampleDurations.length * fraction) - 1)] ?? null;
+    return {
+      name, observedTraces: observations.length, notObservedTraces: traces.length - observations.length,
+      stageCalls: observations.reduce((sum, row) => sum + row.count, 0),
+      totalMeasuredMs: round(observations.reduce((sum, row) => sum + row.ms, 0)),
+      p50MeasuredMs: percentile(.5) === null ? null : round(percentile(.5)!),
+      p95MeasuredMs: percentile(.95) === null ? null : round(percentile(.95)!),
+    };
+  });
+  return {
+    traceCount: traces.length, items, queueDurationMs: null as null,
+    scope: "Last retained completed controller calls. Durations can overlap; missing stage observations are not zero. agentRequest includes remote execution/wait; pre-handler queue, remote serialization and client acceptance are not measured.",
+  };
+}
+
 /** Bounded, process-local observations; never stores arguments, output or error messages. */
 export class ToolDiagnostics {
   readonly maxSeries: number;
@@ -60,7 +88,8 @@ export class ToolDiagnostics {
     else { value.samples[value.next] = duration; value.next = (value.next + 1) % this.sampleLimit; }
   }
   snapshot() {
-    return { observedAt: new Date().toISOString(), traces: structuredClone(this.traces), waitExpiryReports: this.waitExpiryReports,
+    return { observedAt: new Date().toISOString(), traces: structuredClone(this.traces),
+      stageMeasurements: aggregateDiagnosticStages(this.traces), waitExpiryReports: this.waitExpiryReports,
       waitReports: [...this.waitReports], waitExpiryScope: "Explicit caller reports only; caller disconnect is not proof of expiry. RC agent request timeout is separate. UI/platform cause and acceptance are unknown.",
       stageScope: "Durations may overlap; agentRequest includes remote execution/wait. queueMs=null means pre-handler queue is not observable.", scope: "controller handler and final validation; client acceptance unknown; effect verification not inferred", sampleWindow: "last completed calls per series", maxSeries: this.maxSeries, sampleLimit: this.sampleLimit, overflowCalls: this.overflow,
       series: [...this.series.values()].map(v => {

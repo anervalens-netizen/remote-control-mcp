@@ -111,6 +111,34 @@ it("bounds an unresponsive owner probe without making the root result a false fa
   expect(result.nextCheck).toContain("owner");
 });
 
+it("probes graphical session and agent info concurrently instead of stacking timeout budgets", async () => {
+  const agent = client({ desktop: true });
+  const release = Promise.withResolvers<void>();
+  const started = new Set<string>();
+  vi.spyOn(agent, "info").mockImplementation(async (_device, context) => {
+    started.add("agent:" + context);
+    await release.promise;
+    return { hostname: "synthetic", platform: "linux", runtime: { ready: true } };
+  });
+  vi.spyOn(agent, "desktopSessionStatus").mockImplementation(async () => {
+    started.add("desktop:session");
+    await release.promise;
+    return { interactiveSession: false, inputDesktop: { accessible: false } };
+  });
+  const pending = diagnosticDoctor(agent, "fixture", { probeTimeoutMs: 500 });
+  try {
+    await vi.waitFor(() => {
+      expect(started).toEqual(new Set(["agent:system", "agent:user", "agent:desktop", "desktop:session"]));
+    }, { timeout: 350, interval: 10 });
+  } finally {
+    release.resolve();
+    await pending;
+  }
+  expect((await pending).stages.find(s => s.name === "graphical_session")).toMatchObject({
+    state: "unavailable", cause: "no_interactive_session_confirmed",
+  });
+});
+
 it("honors caller cancellation without translating it into an offline host", async () => {
   const agent = client({ owner: true });
   const info = vi.spyOn(agent, "info");

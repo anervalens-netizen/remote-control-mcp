@@ -64,7 +64,7 @@ it("keeps repeated cold/warm registration and tools/list free of AJV compilation
         // independent, eager client-side output validator cache.
         const catalog = await client.request({ method: "tools/list" }, ListToolsResultSchema);
         durations.push(performance.now() - started);
-        expect(catalog.tools).toHaveLength(107);
+        expect(catalog.tools).toHaveLength(108);
         expect(catalog.tools.some(tool => tool.name === "usage_report")).toBe(true);
         expect(catalog.tools.some(tool => tool.name === "usage_window")).toBe(true);
     expect(catalog.tools.some(tool => tool.name === "coordination_capacity")).toBe(true);
