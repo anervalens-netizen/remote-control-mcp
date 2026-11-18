@@ -131,6 +131,12 @@ A bound ContextKeep integration run also read the existing executor receipt,
 matched the observed runtime and verified the exact run revision. Bulk
 history and fleet-wide accounting remain open.
 
+A paired native Linux check matched the bytes, per-item execution identity
+and missing-file error for separate reads and one bounded batch. The batch
+required fewer client calls in that scenario. Manual availability keeps
+inventory entries visible while skipping automatic probes. Synthetic
+checks qualified explicit selection through the existing alias.
+
 The independent DSH review was deferred due to reviewer quota and remains
 outstanding. Broader paired traffic windows, history under pressure, ChatGPT-host
 rendering and wider protocol conformance retain their own acceptance gates.
