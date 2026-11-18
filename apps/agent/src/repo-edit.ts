@@ -3,6 +3,7 @@ import { copyFile, open, rename, rm } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import type { RepoCheckpointInput, RepoPatchInput } from "../../../packages/protocol/src/editing.ts";
 import { gitRaw } from "./repo.ts";
+import { RepoHookFailureError, runObservedCommit } from "./repo-hook-failure.ts";
 import { syncContainingDirectory } from "./filesystem-atomic.ts";
 
 type Change = { status: string; path: string; originalPath?: string };
@@ -58,7 +59,16 @@ export async function repoCheckpoint(input: RepoCheckpointInput) {
       if (!changes.length && !input.allowEmpty) return { ...result, created: false, reason: "no_changes" };
       const args = ["commit", "-m", input.message ?? `checkpoint ${new Date().toISOString()}`, ...selection];
       if (input.allowEmpty) args.push("--allow-empty");
-      await git(args, pathInput);
+      // Observe the same Git command boundary without replacing repository hooks.
+      const flags = [...selection.filter(option => option.startsWith("--")), ...(input.allowEmpty ? ["--allow-empty"] : [])];
+      const committed = await runObservedCommit({
+        repoPath: input.path, args, flags, env, stdin: pathInput,
+        message: input.message ? "provided" : "generated",
+      });
+      if (committed.failure) {
+        throw new RepoHookFailureError(
+          `Git commit failed with exit code ${committed.failure.hook.exitCode ?? "unknown"}`, committed.failure);
+      }
       const head = (await run(["rev-parse", "HEAD"])).stdout.trim();
       // Native --only retains unrelated staged entries in the temporary index.
       // Install that index only after a successful commit.

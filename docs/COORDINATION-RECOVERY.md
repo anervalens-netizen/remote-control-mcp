@@ -19,7 +19,7 @@ dispatching these new actions:
 | --- | --- | --- |
 | `inspect_recovery` | None | The current v1 record, observed base, and separate execution/resolution metadata. |
 | `prepare_recovery` | Original token and `expectedCurrentBaseVersion` | A durable recovery intent with the original journal hash, execution identity, base and boot identity. |
-| `reconcile` | Original token and `expectedCurrentBaseVersion`; optional `recoveryIntentId` | An evidence-bound disposition for that generation, or an explicit conflict. |
+| `reconcile` | Original token and `expectedCurrentBaseVersion`; optional `recoveryIntentId` | An evidence-bound disposition for that generation, or an explicit conflict. Failed Git commit observations are available through inspection and do not permit reconciliation. |
 
 `expectedCurrentBaseVersion` acknowledges the freshly inspected resource. It is
 not evidence that a process stopped. The original token's `baseVersion` remains
@@ -75,8 +75,8 @@ A v1 agent can refresh only `updatedAt` on an already released journal before
 reserving the next generation. Recovery tolerates that interrupted rollback state
 without rewriting its journal; every other field must still match the disposition.
 Back up the main journals and slots, `executions/`, `recovery-intents/`,
-`reconciliations/`, `repo-operations/` and the corresponding existing job/key
-stores together. A checkout or release-directory rollback is not a state migration.
+`reconciliations/`, `hook-failures/`, `repo-operations/` and the corresponding
+existing job/key stores together. A checkout or release-directory rollback is not a state migration.
 
 ### Sharing between trusted Unix identities
 
@@ -109,8 +109,8 @@ hardening and fault coverage remain deferred under HIS-04/REC-04/MCP-04. This
 limitation concerns recreated directories; it does not change the configured
 mode of the receipt file being written.
 
-This policy covers execution sidecars, recovery intents, reconciliations and nested
-`repo-operations/` directories. Repository request and result receipts use the same
+This policy covers execution sidecars, recovery intents, reconciliations, retained
+hook-failure outcomes and nested `repo-operations/` directories. Repository request and result receipts use the same
 configured file mode on both successful and failed worker paths. The existing job
 state remains separate and keeps its own permissions and execution identity.
 
@@ -167,6 +167,25 @@ empty observed PID list or terminal status from an uncontained backend is not a
 whole-tree proof. Removing a job before reconciliation may leave only an older
 terminal tombstone without containment evidence; that is insufficient for this
 new recovery path.
+
+### Failed Git commit observations
+
+A failed checkpoint retains the Git command exit status and bounded before/after
+observations. The agent invokes the repository's configured hooks through Git
+and reports the hook boundary and exit code as unavailable. It does not record
+raw command output or reflog text. Missing, failed and truncated observations
+have null digests.
+
+The index digest describes listed index entries. The worktree digest describes
+porcelain status, which can stay the same across a change to file contents. Process
+containment is unavailable for this synchronous commit. Observed changes yield
+`partially_applied`. Otherwise the effect is `unverified`. Neither state
+qualifies for fence release from this evidence.
+
+Use `inspect_recovery` to read the observation tied to the original generation.
+It is stored in a bounded, immutable `hook-failures/` sidecar. The uncertain
+writer remains fenced. A recovery attempt needs independent quiescence/effect
+evidence through a supported recovery path.
 
 ## Outcomes and publication
 
