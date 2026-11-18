@@ -80,7 +80,7 @@ function ObservationFacts({ observation, reference }: { observation: Json; refer
   const output = progress?.outputBytes;
   const noOutputBytes = output?.stdout == null && output?.stderr == null;
   const exitCode = observation.exitCode ?? observation.code;
-  return <>{reference.job && exitCode != null && <p>Exit code: {pretty(exitCode)}</p>}<dl className="observation-facts">
+  return <>{exitCode != null && <p>Exit code: {pretty(exitCode)}</p>}<dl className="observation-facts">
     {reference.job ? <>
       <dt>Route</dt><dd>{reference.job.device} · {identityLabel[reference.job.identity] ?? reference.job.identity}</dd>
       <dt>Job record</dt><dd><Badge value={observation.state ?? "unknown"}/></dd>

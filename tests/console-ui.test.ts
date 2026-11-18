@@ -35,7 +35,7 @@ it.skipIf(!executablePath)("isolates panels, pages text output and recovers stal
             {name:'agent',identity:'owner',state:'not_configured',cause:'endpoint_not_configured_no_request',source:'configuration',observedAt:new Date().toISOString()},
           ],nextCheck:'Configure an owner endpoint only if owner operations are required.',coverage:{caveat:'Physical power and job effects are unverified.'}};
         }
-        else if(params.arguments.reference.traceId)value={observedAt:new Date().toISOString(),reference:params.arguments.reference,observation:{state:'returned',events:[],jobs:[{device:'lab-fixture',identity:'root',jobId:'fixture-job'}]},output:null,coverage:'Observed metadata only'};
+        else if(params.arguments.reference.traceId)value={observedAt:new Date().toISOString(),reference:params.arguments.reference,observation:{state:'returned',executionOutcome:'exit_nonzero',exitCode:23,events:[],jobs:[{device:'lab-fixture',identity:'root',jobId:'fixture-job'}]},output:null,coverage:'Observed metadata only'};
         else value={observedAt:new Date().toISOString(),reference:params.arguments.reference,observation:{id:'fixture-job',state:'completed',code:7,progressGuidance:{terminationEvidence:'verified',effectVerification:'unknown',lastOutputAt:'2026-01-01T00:00:00Z',outputBytes:{stdout:45,stderr:0},nextCheck:'job_output_since'}},output:params.arguments.output?{stream:'stdout',data:params.arguments.output.offset===0?'<img src=x onerror="window.__injected=true">':'second page: end',nextOffset:params.arguments.output.offset===0?45:61,eof:params.arguments.output.offset!==0}:null,coverage:'Fresh agent observation'};
         return {content:[],structuredContent:value};
       };
@@ -66,6 +66,7 @@ it.skipIf(!executablePath)("isolates panels, pages text output and recovers stal
   await first.getByText("This scope", { exact: true }).waitFor();
   expect(await first.getByText("Unassociated", { exact: true }).count()).toBe(0);
   await first.getByRole("button", { name: "fixture-operation", exact: true }).click();
+  await first.getByRole("complementary").getByText("Exit code: 23", { exact: true }).waitFor();
   await first.getByRole("button", { name: /fixture-job/ }).click();
   await first.getByRole("button", { name: "Read stdout", exact: true }).click();
   await first.locator("pre").waitFor();
