@@ -107,6 +107,64 @@ describe("RC26-MCP-04 lost-response no-replay transport evidence", () => {
     expect(f.startRequests).toEqual([{ key, command: "synthetic-once" }]);
   }, 20_000);
 
+  it("keeps a keyed effect across a lost reply and a replaced legacy initialized HTTP session", async () => {
+    const f = await fixture(), key = "legacy-initialized-session-loss";
+    let dropped = 0, startSessionHeader: string | null = null;
+    const faultyFetch: typeof fetch = async (resource, init) => {
+      const response = await fetch(resource, init);
+      const body = typeof init?.body === "string" ? init.body : "";
+      if (!dropped && body.includes('"name":"job_start"')) {
+        startSessionHeader = new Headers(init?.headers).get("mcp-session-id");
+        expect(response.status).toBe(200);
+        await response.arrayBuffer();
+        dropped++;
+        throw new Error("synthetic_stateful_job_start_reply_lost");
+      }
+      return response;
+    };
+    const firstTransport = new StreamableHTTPClientTransport(f.url, {
+      requestInit: { headers: { Authorization: auth } }, fetch: faultyFetch,
+    });
+    const first = new Client({ name: "rc26-stateful-before", version: "1" });
+    await first.connect(firstTransport);
+    closers.push(async () => { await first.close().catch(() => {}); });
+    const firstSession = firstTransport.sessionId;
+    expect(firstSession).toBeTruthy();
+
+    await expect(first.callTool({ name: "job_start", arguments: input(key) })).rejects.toThrow();
+    expect(dropped).toBe(1);
+    expect(startSessionHeader).toBe(firstSession);
+    expect(f.startRequests).toEqual([{ key, command: "synthetic-once" }]);
+    expect(f.effects).toHaveLength(1);
+
+    // Ending the legacy MCP transport does not end the separate durable job.
+    await firstTransport.terminateSession();
+    await first.close();
+
+    const secondTransport = new StreamableHTTPClientTransport(f.url, {
+      requestInit: { headers: { Authorization: auth } },
+    });
+    const second = new Client({ name: "rc26-stateful-after", version: "1" });
+    await second.connect(secondTransport);
+    closers.push(async () => { await second.close().catch(() => {}); });
+    expect(secondTransport.sessionId).toBeTruthy();
+    expect(secondTransport.sessionId).not.toBe(firstSession);
+
+    const obsolete = await fetch(f.url, {
+      method: "POST",
+      headers: { ...jsonHeaders, "mcp-session-id": firstSession! },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 89, method: "tools/list" }),
+    });
+    expect(obsolete.status).toBe(404);
+
+    const recovered = await second.callTool({ name: "job_status", arguments: {
+      device: "synthetic", identity: "owner", idempotencyKey: key,
+    } });
+    expect(recovered.isError).not.toBe(true);
+    expect(recovered.structuredContent).toMatchObject({ state: "resolved", jobId: f.id });
+    expect(f.startRequests).toHaveLength(1);
+    expect(f.effects).toHaveLength(1);
+  }, 20_000);
   for (const legacy of [false, true] as const) {
     it((legacy ? "legacy stateless SSE" : "modern stateless JSON") + " recovers after lost response and changed JSON-RPC ID", async () => {
       const f = await fixture(), key = legacy ? "legacy-response-loss" : "modern-response-loss";

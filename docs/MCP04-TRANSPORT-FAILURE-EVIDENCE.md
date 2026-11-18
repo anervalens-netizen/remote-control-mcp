@@ -5,6 +5,7 @@ The [MCP-04 test](../tests/mcp04-lost-response-protocol.test.ts) starts the real
 | Transport | Fault | Recovery | Synthetic starts |
 |---|---|---|---:|
 | Initialized SDK Streamable HTTP | Custom fetch drops the already-completed job_start HTTP response before returning it to the client | New SDK client queries the original idempotency key, then the recovered job ID | 1 |
+| Legacy initialized stateful SDK session | Lost completed job_start reply, then explicit DELETE of the original MCP session | Fresh initialized session gets a new session ID, old one returns HTTP 404, original durable key still resolves | 1 |
 | Modern stateless JSON (2026-07-28) | Completed initial response discarded | Separate JSON-RPC call ID queries original key | 1 |
 | Legacy stateless SSE | Completed initial response discarded | Separate JSON-RPC call ID queries original key | 1 |
 
@@ -15,8 +16,20 @@ Selected earlier native HP tests independently confirmed that cancelling job_wai
 ## Still unverified
 
 - Deliberately losing the first job_start response on the actual installed host and recovering its durable identity without reading private service credentials.
-- Legacy **stateful initialized** session and SSE reconnection/stream-closure matrix; the new legacy test covers only stateless SSE.
+- A legacy initialized SDK session replacement is now covered synthetically (lost first result, session terminated, old session HTTP 404, new session retrieves the same keyed job). The complete SSE stream-closure/interruption and multi-client interleaving matrix remains unverified.
 - Cross-version and cross-host process/effect counting, restart durability, and concurrency under real client reconnects.
 - Actual ChatGPT-host catalog refresh and client compatibility for all newly implemented tools.
+
+## CI dependency provenance
+
+One Windows hosted CI attempt failed before tests because Chocolatey timed out
+reading the community V2 package feed for ripgrep. A second rerun failed at
+the same external installation step. The Windows CI workflow now installs the
+official ripgrep 15.2.0 Windows x64 GitHub release archive with a pinned
+SHA-256 (71b2fef860abe467217a538ff31de02f5258807c0129f771846f87bd029aafc5),
+checks the archive before extraction, and exposes only the verified rg.exe
+directory to subsequent steps. The archive hash and ZIP path were verified
+independently against upstream GitHub release metadata and a downloaded copy.
+This is CI dependency hardening, not a change to installed agent behavior.
 
 Therefore **MCP-04 remains active**, not verified. These test-only changes add no workload retry or production behavior and do not authorize clearing historical uncertain coordinator operations.
