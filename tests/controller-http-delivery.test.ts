@@ -81,6 +81,24 @@ it("deduplicates finish then close and never stores unknown URLs, headers or cal
   expect(JSON.stringify(snapshot)).not.toMatch(/private-path|fixture-secret|fixture-token|private-caller-id/);
 });
 
+it("rejects an unbound job observation before delivery or terminal reconciliation", async () => {
+  const agent = Fastify();
+  for (const route of ["status", "follow", "output"]) {
+    agent.post("/v1/jobs/" + route, async () => ({ id: "other-fixture-job", state: "completed" }));
+  }
+  const agentUrl = await agent.listen({ host: "127.0.0.1", port: 0 });
+  close.push(() => agent.close());
+  const client = new AgentClient([{ name: "fixture", url: agentUrl }]);
+  const id = "requested-fixture-job";
+  for (const read of [
+    () => client.jobStatus("fixture", id),
+    () => client.jobFollow("fixture", { id, waitMs: 0 }),
+    () => client.jobOutput("fixture", { id }),
+  ]) {
+    await expect(read()).rejects.toMatchObject({ kind: "protocol", message: "Agent job response did not match the requested job ID" });
+  }
+});
+
 it("records one response_finished for a complete response from the actual MCP HTTP server", async () => {
   const client = new AgentClient([{ name: "fixture", url: "http://fixture.invalid" }]);
   const base = await listen(createMcpHttpServer(client, {

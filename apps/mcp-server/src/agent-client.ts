@@ -3,7 +3,7 @@ import { isCoordinatedWrite, isCoordinationRoute } from "../../../packages/proto
 import { agentCapabilities, requireAgentCapability } from "./agent-compatibility.ts";
 import { recordStage, diagnosticContext } from "../../../packages/protocol/src/diagnostic-context.ts";
 import { jobRecoveryPayload, type JobRecoveryPayload } from "../../../packages/protocol/src/job-recovery.ts";
-import type { DeployInput, JobFollowInput, ProjectRunInput } from "../../../packages/protocol/src/project.ts";
+import { jobWaitPolicy, type DeployInput, type JobFollowInput, type ProjectRunInput } from "../../../packages/protocol/src/project.ts";
 import type { DesktopUiaInput, DesktopWindowsInput, DesktopBatchInput } from "../../../packages/protocol/src/desktop.ts";
 import { filterProcesses, summarizeDockerSnapshot, type DockerSnapshot } from "../../../packages/protocol/src/filtering.ts";
 import fs from "node:fs";
@@ -229,7 +229,8 @@ export class AgentClient {
     const deadline = createDeadline(timeoutMs, options.signal);
     const signal = deadline.signal;
     try {
-      const knownJobId = ["/v1/jobs/status", "/v1/jobs/follow", "/v1/jobs/output", "/v1/jobs/cancel"].includes(route)
+      const readsJob = ["/v1/jobs/status", "/v1/jobs/follow", "/v1/jobs/output"].includes(route);
+      const knownJobId = (readsJob || route === "/v1/jobs/cancel")
         && body && typeof body === "object" && "id" in body && typeof body.id === "string" ? body.id : undefined;
       if (options.observeOperation !== false) await observeAgent("agent_dispatch", this.getDevice(name).name, context, undefined, knownJobId);
       const response = await fetch(`${endpoint.base}${route}`, {
@@ -253,6 +254,9 @@ export class AgentClient {
         throw new AgentRequestError(`${name} ${context} ${route} invalid JSON response: ${error.message}`, name, context, route, "protocol");
       }
       const value = result as any;
+      if (readsJob && knownJobId !== undefined && value?.id !== knownJobId) {
+        throw new AgentRequestError("Agent job response did not match the requested job ID", name, context, route, "protocol");
+      }
       const candidate = route === "/v1/jobs/start" || route === "/v1/jobs/status" || route === "/v1/jobs/follow"
         ? value?.id ?? value?.job?.id
         : route === "/v1/project/run" ? value?.result?.id : route === "/v1/deploy/run" ? value?.job?.id : repoRecoveryReceipt(route, value)?.jobId;
@@ -531,7 +535,7 @@ export class AgentClient {
 
   jobStart(name: string, input: unknown, context: AgentEndpointContext = "system", options?: AgentRequestOptions): Promise<unknown> { return this.request(name, "/v1/jobs/start", input, context, options); }
   jobFollow(name: string, input: JobFollowInput, context: AgentEndpointContext = "system", signal?: AbortSignal): Promise<unknown> {
-    return this.request(name, "/v1/jobs/follow", input, context, { timeoutMs: withTimeoutGrace(input.waitMs ?? 30000), signal });
+    return this.request(name, "/v1/jobs/follow", input, context, { timeoutMs: withTimeoutGrace(jobWaitPolicy(input.waitMs).effectiveWaitMs), signal });
   }
   async deployRun(name: string, input: DeployInput, context: AgentEndpointContext = "system", options: AgentRequestOptions = {}): Promise<unknown> {
     if (input.idempotencyKey && !input.dryRun) await this.requireHighLevelIdempotency(name, context, options);

@@ -291,14 +291,16 @@ describe("RC25-03 cancellable filesystem copy", () => {
 
 });
 
-it("cancels an SDK job_wait without stopping or replaying its durable job", async () => {
+it("resumes delayed streams after expiry and cancellation without stopping or replaying the durable job", async () => {
   const root = await tempRoot("rc25-cancel-wait-"), ready = path.join(root, "ready"), release = path.join(root, "release"), effect = path.join(root, "effect");
   const script = path.join(root, "wait.cjs");
-  await writeFile(script, `const fs=require('node:fs'); fs.writeFileSync(${JSON.stringify(ready)},'ready'); const timer=setInterval(()=>{if(fs.existsSync(${JSON.stringify(release)})){fs.appendFileSync(${JSON.stringify(effect)},'once');clearInterval(timer)}},20);`);
+  await writeFile(script, `const fs=require('node:fs'); process.stdout.write('early\\n'); fs.writeFileSync(${JSON.stringify(ready)},'ready'); const timer=setInterval(()=>{if(fs.existsSync(${JSON.stringify(release)})){fs.appendFileSync(${JSON.stringify(effect)},'once');process.stdout.write('late\\n');process.stderr.write('diagnostic\\n');clearInterval(timer)}},20);`);
   const agent = Fastify(); registerExtraRoutes(agent);
   let followStarted!: () => void;
   const entered = new Promise<void>(resolve => { followStarted = resolve; });
-  agent.addHook("preHandler", async (request) => { if (request.url === "/v1/jobs/follow") followStarted(); });
+  agent.addHook("preHandler", async (request) => {
+    if (request.url === "/v1/jobs/follow" && (request.body as { waitMs?: number }).waitMs === 20_000) followStarted();
+  });
   const url = await agent.listen({ host: "127.0.0.1", port: 0 }); closers.push(() => agent.close());
   const mcp = new (await import("@modelcontextprotocol/sdk/server/mcp.js")).McpServer({ name: "wait", version: "1" });
   const agentClient = new AgentClient([{ name: "fixture", url }]); registerJobTools(mcp, agentClient);
@@ -310,14 +312,29 @@ it("cancels an SDK job_wait without stopping or replaying its durable job", asyn
   const controller = new AbortController();
   try {
     await waitForFile(ready);
-    const wait = sdk.callTool({ name: "job_wait", arguments: { device: "fixture", id: job.id, waitMs: 30_000 } }, undefined, { signal: controller.signal });
+    const args = { device: "fixture", id: job.id };
+    const first = await sdk.callTool({ name: "job_wait", arguments: { ...args, waitMs: 100 } });
+    expect(first.isError).not.toBe(true);
+    expect(first.structuredContent).toMatchObject({
+      id: job.id, state: "running", terminal: false, waitExpired: true, outputComplete: false,
+      stdout: { data: "early\n" }, stderr: { data: "" }, cursor: { stdout: 6, stderr: 0 },
+      progressGuidance: { terminalRecordObserved: false, waitExpiredWithoutTermination: true },
+    });
+    const { cursor } = first.structuredContent as { cursor: { stdout: number; stderr: number } };
+    const wait = sdk.callTool({ name: "job_wait", arguments: { ...args, cursor, waitMs: 30_000 } }, undefined, { signal: controller.signal });
     void wait.catch(() => undefined);
     await entered; controller.abort();
     await expect(wait).rejects.toThrow();
     expect(await jobs.jobStatusAsync(job.id)).toMatchObject({ state: "running" });
     expect(existsSync(effect)).toBe(false);
     await writeFile(release, "go");
-    await vi.waitFor(async () => expect(await jobs.jobStatusAsync(job.id)).toMatchObject({ state: "completed", exitCode: 0 }), { timeout: 5000 });
+    const resumed = await sdk.callTool({ name: "job_wait", arguments: { ...args, cursor, waitMs: 5000 } });
+    expect(resumed.isError).not.toBe(true);
+    expect(resumed.structuredContent).toMatchObject({
+      id: job.id, terminal: true, outputComplete: true, state: "completed", exitCode: 0,
+      stdout: { data: "late\n" }, stderr: { data: "diagnostic\n" }, cursor: { stdout: 11, stderr: 11 },
+      progressGuidance: { effectVerification: "unknown" },
+    });
     expect(await readFile(effect, "utf8")).toBe("once");
   } finally { controller.abort(); await writeFile(release, "cleanup"); await jobs.jobRemove(job.id, true); }
 }, 40_000);

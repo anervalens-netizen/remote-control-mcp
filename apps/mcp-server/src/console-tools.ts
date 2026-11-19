@@ -141,8 +141,7 @@ export function registerConsoleTools(server: McpServer, client: AgentClient) {
     const job = input.reference.job!;
     const device = client.getDevice(job.device).name;
     const selected = { device, identity: job.identity, jobId: job.jobId };
-    const status = withJobDiagnostics(await client.jobStatus(device, job.jobId, context(job.identity), { timeoutMs: 3000, signal: extra.signal }));
-    await operationsFor(client).reconcileJob(selected, (status as Record<string, unknown>).state);
+    const status = await client.jobStatus(device, job.jobId, context(job.identity), { timeoutMs: 3000, signal: extra.signal });
     const output = input.output ? await client.requestRoute<Record<string, unknown>>(device, "/v1/jobs/output", { id: job.jobId, ...input.output, length: input.output.length ?? 4096, encoding: "utf8" }, context(job.identity), { timeoutMs: 3000, signal: extra.signal }) : null;
     return json({ observedAt: new Date().toISOString(), reference: { job: selected }, observation: jobSummary(status), output,
       coverage: "Fresh agent observation. Job exit is separate from effect verification and client acceptance." });

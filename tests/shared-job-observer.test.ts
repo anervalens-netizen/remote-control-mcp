@@ -5,12 +5,13 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { afterEach, expect, it, vi } from "vitest";
 import { SharedJobObserver } from "../apps/agent/src/shared-job-observer.ts";
 import { jobStart, jobRemove } from "../apps/agent/src/jobs.ts";
-import { JOB_WAIT_DEFAULT_MS, JOB_WAIT_MAX_MS, jobFollow, jobObservers, jobWaitPolicy } from "../apps/agent/src/job-follow.ts";
+import { jobFollow, jobObservers } from "../apps/agent/src/job-follow.ts";
+import { JOB_WAIT_MAX_MS, jobWaitPolicy } from "../packages/protocol/src/project.ts";
 import { registerJobTools } from "../apps/mcp-server/src/job-tools.ts";
 import type { AgentClient } from "../apps/mcp-server/src/agent-client.ts";
 afterEach(() => vi.useRealTimers());
 it("defaults and clamps one MCP wait below gateway deadlines", () => {
-  expect(jobWaitPolicy()).toEqual({ requestedWaitMs: JOB_WAIT_DEFAULT_MS, effectiveWaitMs: 20_000, waitClamped: false });
+  expect(jobWaitPolicy()).toEqual({ requestedWaitMs: JOB_WAIT_MAX_MS, effectiveWaitMs: 20_000, waitClamped: false });
   expect(JOB_WAIT_MAX_MS).toBe(20_000);
   expect(jobWaitPolicy(50_000)).toEqual({ requestedWaitMs: 50_000, effectiveWaitMs: 20_000, waitClamped: true });
 });

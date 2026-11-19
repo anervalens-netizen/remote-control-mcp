@@ -160,9 +160,17 @@ function Console() {
   const [device, setDevice] = useState("");
   const [identity, setIdentity] = useState("root");
   const [selection, setSelection] = useState<Json | undefined>(launch?.selected);
-  const [detail, setDetail] = useState<Json>();
+  const [detailResult, setDetailResult] = useState<{ reference: Json; value: Json }>();
+  const detail = detailResult?.reference === selection ? detailResult?.value : undefined;
+  const outputPage = detail?.output;
+  const outputHasNext = outputPage && (!outputPage.eof
+    || outputPage.nextOffset < (detail?.observation?.progressGuidance?.outputBytes?.[outputPage.stream] ?? 0));
+  const [detailRevision, refreshDetail] = useState(0);
+  const detailReads = useRef(new Set<Json>());
+  const lastDetailState = useRef<string | undefined>(undefined);
   const [error, setError] = useState(bridgeError);
   const [detailError, setDetailError] = useState("");
+  const [outputError, setOutputError] = useState("");
   const [lastSuccess, setLastSuccess] = useState<string | undefined>(isSnapshot(launch) ? launch?.observedAt : undefined);
   const [busy, setBusy] = useState(false);
   const [revision, refresh] = useState(0);
@@ -235,17 +243,64 @@ function Console() {
     return () => { stopped = true; clearTimeout(timer); document.removeEventListener("visibilitychange", visible); };
   }, [ready, scope, all, device, identity, cursor, fleetCursor, jobCursor, revision]);
   useEffect(() => {
-    let stale = false;
-    setDetail(undefined); setDetailError(""); setCopied(false); setCopyFallback("");
-    if (selection && ready) void call("operation_inspect", { reference: selection }).then(value => { if (!stale) setDetail(value); }).catch(() => { if (!stale) setDetailError("Detail unavailable. The operation has not been retried."); });
-    return () => { stale = true; };
-  }, [selection, ready]);
+    lastDetailState.current = undefined;
+    setDetailResult(undefined); setDetailError(""); setOutputError(""); setCopied(false); setCopyFallback("");
+  }, [selection]);
+  useEffect(() => {
+    if (!selection || !ready) return;
+    const selected = selection;
+    let stopped = false, failures = 0;
+    let timer: ReturnType<typeof setTimeout>;
+    const followsJob = () => Boolean(selected.job && (lastDetailState.current === "running" || lastDetailState.current === "cancelling"));
+    const tick = async () => {
+      if (stopped || document.hidden) return;
+      if (detailReads.current.has(selected)) { timer = setTimeout(tick, 250); return; }
+      detailReads.current.add(selected);
+      try {
+        const value = await call("operation_inspect", { reference: selected });
+        if (stopped) return;
+        lastDetailState.current = value.observation?.state;
+        setDetailResult(previous => ({
+          reference: selected,
+          value: previous?.reference === selected && previous.value.output ? { ...value, output: previous.value.output } : value,
+        }));
+        setDetailError("");
+        failures = 0;
+      } catch {
+        if (stopped) return;
+        setDetailError(lastDetailState.current
+          ? "Latest observation unavailable. Showing the previous observation."
+          : "Detail unavailable. Refresh detail to read the original record.");
+        failures++;
+      } finally {
+        detailReads.current.delete(selected);
+        const retryInitialRead = selected.job && !lastDetailState.current && failures > 0 && failures < 3;
+        if (!stopped && (followsJob() || retryInitialRead)) timer = setTimeout(tick, Math.min(30_000, 5000 * 2 ** failures));
+      }
+    };
+    const visible = () => {
+      if (document.hidden || detailReads.current.has(selected) || (lastDetailState.current && !followsJob())) return;
+      clearTimeout(timer);
+      void tick();
+    };
+    void tick();
+    document.addEventListener("visibilitychange", visible);
+    return () => { stopped = true; clearTimeout(timer); document.removeEventListener("visibilitychange", visible); };
+  }, [selection, ready, detailRevision]);
   async function output(stream: string, offset = 0) {
     if (!selection?.job || busy) return;
     const reference = selection;
     setBusy(true);
-    try { const result = await call("operation_inspect", { reference, output: { stream, offset, length: 4096 } }); if (selectedRef.current === reference) { setDetail(result); setDetailError(""); } }
-    catch { if (selectedRef.current === reference) setDetailError("Output unavailable. The job has not been restarted."); }
+    try {
+      const result = await call("operation_inspect", { reference, output: { stream, offset, length: 4096 } });
+      if (selectedRef.current === reference) {
+        setDetailResult(previous => ({
+          reference,
+          value: previous?.reference === reference ? { ...previous.value, output: result.output } : result,
+        }));
+        setOutputError("");
+      }
+    } catch { if (selectedRef.current === reference) setOutputError("Output unavailable. Retry the read to continue at this page."); }
     finally { setBusy(false); }
   }
   async function associate() {
@@ -293,8 +348,9 @@ function Console() {
       {(jobs?.items ?? []).map((job: Json) => <button className="job-row" key={job.id} onClick={() => setSelection({ job: { device, identity, jobId: job.id } })}><code>{job.id}</code><Badge value={job.state ?? "unknown"}/>{job.lifecycleDiagnostics?.reviewRecommended && <span>Long running · review activity</span>}<span>{when(job.startedAt)}</span></button>)}
       <div className="pagination"><button disabled={!jobCursor} onClick={() => setJobCursor(undefined)}>Newest jobs</button><button disabled={!jobs?.nextCursor} onClick={() => setJobCursor(jobs?.nextCursor)}>Older jobs</button></div>
     </section>}
-    {selection && <aside aria-label="Operation details"><div className="section-title"><h2>Details</h2><button onClick={() => setSelection({ ...selection })}>Refresh detail</button><button onClick={() => setSelection(undefined)}>Close</button></div>
-      {detailError && <div className="notice">{detailError}</div>}
+    {selection && <aside aria-label="Operation details"><div className="section-title"><h2>Details</h2><button onClick={() => refreshDetail(n => n + 1)}>Refresh detail</button><button onClick={() => setSelection(undefined)}>Close</button></div>
+      {detailError && <div className="notice" role="status">{detailError}</div>}
+      {outputError && <div className="notice" role="status">{outputError}</div>}
       {!detail && !detailError && <p>Reading observation…</p>}
       {detail && <><p className="muted">{detail.coverage}</p>{detail.observation ? <>
         <ObservationFacts observation={detail.observation} reference={detail.reference ?? selection}/>
@@ -304,14 +360,14 @@ function Console() {
         {detail.observation.eventsPartial && <p className="notice">Additional stages were omitted by the observation limit.</p>}
         {detail.observation.nextDetailOffset != null && <button disabled={busy} onClick={async () => {
           const reference = selection; setBusy(true);
-          try { const next = await call("operation_inspect", { reference, detailOffset: detail.observation.nextDetailOffset }); if (selectedRef.current === reference) setDetail(next); }
+          try { const next = await call("operation_inspect", { reference, detailOffset: detail.observation.nextDetailOffset }); if (selectedRef.current === reference) setDetailResult({ reference, value: next }); }
           catch { if (selectedRef.current === reference) setDetailError("Detail page unavailable. The operation has not been retried."); }
           finally { setBusy(false); }
         }}>Next detail page</button>}
         {detail.observation.jobs?.map((job: Json) => <button className="job-row" key={JSON.stringify(job)} onClick={() => setSelection({ job })}>{job.device} · {job.identity}<code>{job.jobId}</code></button>)}
       </> : <p>Observation not retained. Inspect a known durable job reference; do not repeat the operation.</p>}
       {selection.job && <div className="pagination"><button disabled={busy} onClick={() => output("stdout")}>Read stdout</button><button disabled={busy} onClick={() => output("stderr")}>Read stderr</button></div>}
-      {detail.output && <><pre>{String(detail.output.data ?? "")}</pre><button disabled={busy || detail.output.eof} onClick={() => output(detail.output.stream, detail.output.nextOffset)}>Next output page</button></>}
+      {outputPage && <><pre>{String(outputPage.data ?? "")}</pre><button disabled={busy || !outputHasNext} onClick={() => output(outputPage.stream, outputPage.nextOffset)}>Next output page</button></>}
       <button onClick={async () => {
         const reference = selection;
         const summary = JSON.stringify({ reference: detail.reference, observedAt: detail.observedAt, observation: detail.observation, coverage: detail.coverage }, null, 2);

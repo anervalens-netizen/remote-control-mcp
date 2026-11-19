@@ -40,6 +40,15 @@ export const jobFollowFields = {
 };
 export type JobFollowInput = z.infer<z.ZodObject<typeof jobFollowFields>>;
 
+export const JOB_WAIT_MAX_MS = 20_000;
+export const JOB_WAIT_RETRY_AFTER_MS = 750;
+export const JOB_WAIT_RETRY_GUIDANCE = "On waitExpired, wait at least retryAfterMs, then call job_wait again with the returned cursor; do not alternate rapid job_status polls.";
+
+export function jobWaitPolicy(requestedWaitMs = JOB_WAIT_MAX_MS) {
+  const effectiveWaitMs = Math.min(requestedWaitMs, JOB_WAIT_MAX_MS);
+  return { requestedWaitMs, effectiveWaitMs, waitClamped: effectiveWaitMs !== requestedWaitMs };
+}
+
 export const jobLineageFields = {
   id: z.string().min(1), offset: z.number().int().nonnegative().optional(),
   limit: z.number().int().positive().max(256).optional(),

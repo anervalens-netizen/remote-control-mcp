@@ -1,6 +1,6 @@
 import { SharedJobObserver } from "./shared-job-observer.ts";
 import { setTimeout as delay } from "node:timers/promises";
-import type { JobFollowInput } from "../../../packages/protocol/src/project.ts";
+import { JOB_WAIT_RETRY_AFTER_MS, JOB_WAIT_RETRY_GUIDANCE, jobWaitPolicy, type JobFollowInput } from "../../../packages/protocol/src/project.ts";
 import { jobOutput, jobStatusAsync, jobStatusSnapshot } from "./jobs.ts";
 import { utf8SafeLength, utf8LeadingCodePointLength } from "./state.ts";
 
@@ -34,14 +34,6 @@ function page(id: string, stream: "stdout" | "stderr", offset: number, length: n
     eof: raw.offset + count >= raw.totalBytes, data: data.toString(encoding), bytes: count, encoding };
 }
 export const jobObservers = new SharedJobObserver(jobStatusAsync);
-export const JOB_WAIT_DEFAULT_MS = 20_000;
-export const JOB_WAIT_MAX_MS = 20_000;
-export const JOB_WAIT_RETRY_AFTER_MS = 750;
-export function jobWaitPolicy(requested?: number) {
-  const requestedWaitMs = requested ?? JOB_WAIT_DEFAULT_MS;
-  const effectiveWaitMs = Math.min(requestedWaitMs, JOB_WAIT_MAX_MS);
-  return { requestedWaitMs, effectiveWaitMs, waitClamped: effectiveWaitMs !== requestedWaitMs };
-}
 export async function jobFollow(input: JobFollowInput, signal?: AbortSignal) {
   const start = performance.now(), wait = jobWaitPolicy(input.waitMs), waitMs = wait.effectiveWaitMs;
   const cursor = input.cursor ?? { stdout: 0, stderr: 0 };
@@ -78,7 +70,7 @@ export async function jobFollow(input: JobFollowInput, signal?: AbortSignal) {
     outputComplete: terminal && stdout.eof && stderr.eof, waitedMs: Math.round(performance.now() - start),
     ...(wait.waitClamped ? wait : {}),
     retryAfterMs: JOB_WAIT_RETRY_AFTER_MS,
-    retryGuidance: "On waitExpired, wait at least retryAfterMs, then call job_wait again with the returned cursor; do not alternate rapid job_status polls.",
+    retryGuidance: JOB_WAIT_RETRY_GUIDANCE,
   };
   } finally { observer.release(); }
 }

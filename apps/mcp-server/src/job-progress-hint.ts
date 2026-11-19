@@ -1,3 +1,5 @@
+import { JOB_WAIT_RETRY_AFTER_MS } from "../../../packages/protocol/src/project.ts";
+
 /** A small diagnostic hint layered on existing durable job results.
  * Does not derive success, user input or percent from silence/elapsed time.
  */
@@ -18,7 +20,7 @@ export function withActionableJobProgress<T>(value: T, now = Date.now()): T {
   const active = current === "running" || current === "cancelling";
   const waitExpired = row.waitExpired === true;
   const retryAfterMs = Number.isSafeInteger(row.retryAfterMs) && (row.retryAfterMs as number) >= 0
-    ? row.retryAfterMs as number : 750;
+    ? row.retryAfterMs as number : JOB_WAIT_RETRY_AFTER_MS;
   const observedTermination = row.terminationVerified === true ? "verified" :
     row.terminationVerified === false ? "unverified" : "unknown";
   const nextCheck = active
