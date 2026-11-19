@@ -17,7 +17,7 @@ The public tracker records engineering status and sanitized evidence only. Opera
 
 ## Current inventory — 2026-11-19
 
-**61 items — 45 verified, 1 implemented, 2 blocked, 7 planned,
+**61 items — 47 verified, 1 implemented, 2 blocked, 5 planned,
 5 conditional, 1 deferred, 0 active.** The [work-item table](#work-items)
 is the source for this count. REC-05 and DEL-01 remain blocked. HIS-01
 retains its elapsed-retention and orphan-claim acceptance requirements.
@@ -143,6 +143,29 @@ and fallback, historical review dispositions and mandatory worker isolation
 remain tracked under [#59](https://github.com/anervalens-netizen/remote-control-mcp/issues/59)
 and [#64](https://github.com/anervalens-netizen/remote-control-mcp/issues/64).
 
+### Observer performance checkpoint
+
+Profile the actual persisted `OperationObserver` with 5,000 and 20,000
+synthetic v1 journal records, one scope for every fifth entry, and one durable
+reference. Warm the terminal observation once, then repeat 30 iterations of
+global/scoped 25-row pages, coverage, inspect, active status reconciliation,
+repeat terminal reconciliation, metadata writes and page serialization. Use
+fresh isolated directories for each cardinality. Exclude fixture creation and
+workload execution from the timings. Measure cold load through `health()`
+and event-loop delay alongside the warm operations.
+
+At 5,000 and 20,000 records the warm global page p95 was 2.40 and 4.83 ms,
+respectively. The 20,000-record profile gave 2.69 ms scoped page p95, 1.26 ms
+metadata-event p95 and 13.04 ms event-loop delay p95 at 5 ms sample resolution.
+The single end-of-profile heap reading was 41 MiB. Cold load grew from
+1.25 to 8.36 seconds. The isolated [ingress pressure fixture](../../scripts/measure-ingress-pressure.mjs)
+also preserved all 90 simulated day cohorts and the unrelated uncertain receipt.
+The [history index benchmark](../../scripts/benchmark-history.ts) showed a
+193 ms warm two-read path at 100,000 synthetic receipts, with zero receipt
+stats or reads in that warm pair. These measurements support keeping the warm
+paths as implemented. Cold load and cross-host regression budgets remain
+distinct measurements.
+
 ## How to execute and update
 
 1. Read the linked acceptance contract, current source and corresponding private evidence/task. Confirm that the item is still applicable.
@@ -213,7 +236,7 @@ Lots: 0 baseline; 1 recovery/desktop/effect semantics; 2 observation/history/inv
 | [RC26-UX-06](2026-11-16-improvement-plan.md#rc26-ux-06) | Expose actionable job progress without invented certainty | 3 | P2 | verified | OBS-03, UX-05 | Implementation agent | PR #74 console and SDK checks separate running, wait expiry, failed reads and terminal state. The deployed connector resumed the same job and cursor, returning exact late output. Input waiting and effect verification remain unknown without independent evidence. |
 | [RC26-UX-07](2026-11-16-improvement-plan.md#rc26-ux-07) | Extend the existing MCP Apps console with the same contracts | 3 | P2 | verified | UX-01, UX-06, HIS-02 | Implementation agent | PR #74 retained the timestamped observation and output page when the Apps bridge lost a read, resumed the selected job and stopped polling on terminal status in Chromium. The deployed opener returned the original job and route. Console source and mapped error receiver were verified for this release. |
 | [RC26-GOV-01](2026-11-16-improvement-plan.md#rc26-gov-01) | Reconcile review evidence against the exact repository head | 3 | P2 | planned | BASE-01 | — | — |
-| [RC26-GOV-02](2026-11-16-improvement-plan.md#rc26-gov-02) | Preserve complementary Codex and DSH review workflow | 3 | P2 | planned | BASE-01 | — | — |
+| [RC26-GOV-02](2026-11-16-improvement-plan.md#rc26-gov-02) | Preserve complementary Codex and DSH review workflow | 3 | P2 | verified | BASE-01 | Implementation agent | Both PR #74 reviews bound to the reviewed head and base. The shared helper reused review evidence, published the development disposition and the grouped task read back as done. A quota failure used the original DSH trigger and verified scoped provider fallback. The automatic provider-capacity gap and historical review work remain open. |
 | [RC26-GOV-03](2026-11-16-improvement-plan.md#rc26-gov-03) | Keep tracker state and private handoffs synchronized | 0 | P1 | verified | — | Implementation agent | The canonical IDs, public release/checkpoint and task-scoped proposed ContextKeep readback were synchronized. Prior run verification remains separately bound to the original execution. Deferred DSH and incomplete platform/operational evidence have explicit reopening conditions; historical uncertainty remains in REC-05 and DEL-01. |
 | [RC26-MCP-01](2026-11-16-improvement-plan.md#rc26-mcp-01) | Build the actual client and protocol compatibility matrix | 3 | P2 | verified | BASE-01 | Implementation agent | Recorded and source-checked the [actual client/protocol matrix](../RELIABILITY.md#mcp-sdk-compatibility-matrix-r11). Live modern and initialized/reconnected legacy SDK coverage, selected ChatGPT and Codex host readbacks, isolated stdio/JSON/SSE checks and unknown host protocol fields are identified separately. Wider host and physical platform evidence is tracked by MCP-05. |
 | [RC26-MCP-02](2026-11-16-improvement-plan.md#rc26-mcp-02) | Run relevant official protocol conformance cases | 3 | P2 | verified | MCP-01 | — | [PR #72](https://github.com/anervalens-netizen/remote-control-mcp/pull/72) qualifies the advertised HTTP tool/resource contracts against the [pinned official sample](../RELIABILITY.md#official-http-conformance-sample) and exact regressions. Both HTTP versions advertise static catalogues, while modern discovery/error/caching and legacy initialization and stream scenarios retain separate evidence. The complete suite includes unadvertised prompts and fixture-only hooks; full host qualification remains in MCP-05. |
@@ -227,7 +250,7 @@ Lots: 0 baseline; 1 recovery/desktop/effect semantics; 2 observation/history/inv
 | [RC26-EXP-03](2026-11-16-improvement-plan.md#rc26-exp-03) | Compare Android observation geometry on a finite test matrix | 4 | P3 | conditional | BASE-03 | — | — |
 | [RC26-EXP-04](2026-11-16-improvement-plan.md#rc26-exp-04) | Compare Windows desktop diagnostics on the same machine | 4 | P3 | conditional | BASE-03, TMO-02 | — | — |
 | [RC26-EXP-05](2026-11-16-improvement-plan.md#rc26-exp-05) | Compare Playwright CLI plus skills with the existing browser route | 4 | P3 | conditional | BASE-03 | — | — |
-| [RC26-PERF-01](2026-11-16-improvement-plan.md#rc26-perf-01) | Profile observer and reconciliation cost before optimization | 4 | P3 | planned | OBS-05, HIS-04 | — | — |
+| [RC26-PERF-01](2026-11-16-improvement-plan.md#rc26-perf-01) | Profile observer and reconciliation cost before optimization | 4 | P3 | verified | OBS-05, HIS-04 | Implementation agent | A native synthetic profile measured 30 warm reads per path at 5,000 and 20,000 durable observations. At 20,000, global page p95 was 4.83 ms, active reconciliation 2.26 ms, repeat terminal reconciliation 3.46 ms, and page serialization 0.08 ms. Cold journal load was 8.36 seconds. Separate bounded ingress pressure and history index benchmarks passed. Retain the existing implementation for these observed workloads. |
 | [RC26-PERF-02](2026-11-16-improvement-plan.md#rc26-perf-02) | Optimize only the measured limiting path | 4 | P3 | conditional | PERF-01 | — |— Source inspection and an actual-client synthetic regression show one capability-info request before each UTF-8 file page. Measure end-to-end cost before considering a cache bound to endpoint/runtime instance; invalidate it on instance or capability uncertainty. No cache or production speedup is claimed. |
 | [RC26-PERF-03](2026-11-16-improvement-plan.md#rc26-perf-03) | Set measured regression budgets | 4 | P3 | planned | PERF-01, BASE-03 | — | — |
 | [RC26-DOC-01](2026-11-16-improvement-plan.md#rc26-doc-01) | Reconcile version claims and operational documentation | 3 | P2 | verified | BASE-01, MCP-01, INV-02 | Batch A implementation | Cross-checked the [SDK/host compatibility matrix](../RELIABILITY.md#mcp-sdk-compatibility-matrix-r11) against pinned package/transport versions and selected live results. Corrected the stale legacy SDK claim and linked archive identity, managed desktop and recovery contracts. Loaded and running target evidence remains explicitly independent from source documentation and automatic inventory work in INV-02. |
