@@ -564,6 +564,20 @@ Catalog definitions are immutable for a running controller. Reconnect and call
 revision identifies the contract family. The authenticated runtime SHA
 identifies the running release.
 
+### Physical host qualification
+
+| Host path | Observed behavior | Remaining scope |
+| --- | --- | --- |
+| Selected Linux controller and agents | Native authenticated discovery and endpoint diagnosis. A synthetic keyed job executed once after withheld delivery and its original receipt, output and effect were recovered. | Other endpoint builds require their own capability and observation checks. |
+| Selected physical Windows desktop | Root, owner and interactive diagnostics reported readiness. The managed UI Automation engine applied a targeted background fixture value change. An independent fixture read confirmed one change, and a same-command retry recovered the original result after the fixture closed. | The other configured Windows host was unavailable. Global input and personal windows were outside this canary. |
+| Two physical Android companions | Authenticated reverse polling reported the companion version and readiness. Each published a synthetic file in supported companion storage. Independent readback of each original command returned the same byte count, hash and published status. On the available tablet a coordinate-input calculator fixture produced the expected result in the accessibility tree and the fixture state was restored. | Phone coordinate input was unavailable while locked. Broader geometry and rotation coverage remains unverified. |
+| Selected ChatGPT and Codex hosts | ChatGPT rendered the production app console and used a selected diagnostic path. Codex completed read-only diagnostics and exercised the qualified physical canaries. | Wire versions and behavior of other connector hosts remain unverified. |
+
+Installed/runtime version evidence and host behavior are independent. A reported
+application version identifies an observed runtime claim. Check configured
+startup and installed contents with their own evidence. An SDK fixture or
+network reachability result does not qualify native interaction.
+
 ### Official HTTP conformance sample
 
 The [MCP conformance suite at revision 96a6f947](https://github.com/modelcontextprotocol/conformance/tree/96a6f9478b7f2e125cf0360a213383cf57533893)
