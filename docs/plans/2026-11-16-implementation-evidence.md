@@ -113,6 +113,31 @@ Each run must retain: scenario/version, baseline or candidate full commit, actua
 
 B01–B07 are a finite test contract. The tracker stays active until equivalent measurements are recorded. Source tests and individual native qualification can close their explicitly scoped REC/EFF/DEP items without claiming the complete ergonomics benchmark has run.
 
+### Paired qualification
+
+The immutable controller releases `e469c62` and `85124e0` used equal fixture
+inputs, caller identity, response budgets and correctness assertions. B01–B03,
+B06 and B07 each ran five paired trials. B04 and B05 used matched native
+synthetic qualifications. Private evidence retains precise client calls,
+serialized SDK response bytes, elapsed times, fixture versions and raw
+reproduction scripts. The sample establishes behavior for these paths.
+It does not estimate production overhead or model token usage.
+
+| Case | Observed acceptance |
+| --- | --- |
+| B01 | Versioned byte pages reconstructed a known file. A missing path stayed a failed read. A larger result exposed a compact preview and recovered the exact original payload without another producer read. |
+| B02 | An agent-disk receipt survived a deliberately withheld foreground response and controller recreation. Its bounded cursor pages retained the output. The independent marker had one write. |
+| B03 | An expired wait left the original keyed job active. A fresh client resolved that job and reconstructed all three output lines. One execution was observed. |
+| B04 | In an isolated owner cgroup, one pull advanced the remote ref before the index lock prevented merge. The original job exited nonzero. Active and stale-base recovery were refused, and terminal reconciliation used the retained receipt. |
+| B05 | A managed Linux engine observed and changed a disposable graphical fixture. One click was observed. A new agent process recovered the original action receipt from the same fixture state. A changed session and stale observation were rejected. |
+| B06 | An unavailable owner route and independent graphical prerequisite were distinguishable. A restoration returned ready and the unrelated listener received zero connections. |
+| B07 | The managed browser observed and edited a disposable form. Independent readback matched, and only the owned context closed. A stale session reference was rejected. |
+
+The short-effect and long-job fixtures used the appropriate original receipt
+and durable key on each eligible trial. Fleet-wide adoption requires knowing
+which live operations were eligible. Native installed session re-entry,
+physical Windows and interactive Android are tracked separately.
+
 ## Review follow-up boundaries
 
 The [DSHv4 report](https://github.com/anervalens-netizen/remote-control-mcp/pull/54#issuecomment-6924341173) reviewed `71956e868c96fca01506b46f3dbf06911d2b6383`. Its [published disposition](https://github.com/anervalens-netizen/remote-control-mcp/pull/54#issuecomment-6926185868) records the following residuals under existing work items. A deferred hardening scenario is not a passing result or owner risk acceptance.

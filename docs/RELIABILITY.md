@@ -577,9 +577,12 @@ status/headers and transport framing passed their applicable checks.
 Modern stateless and caching scenarios did not pass in full. Some checks
 require the suite's dedicated elicitation, logging and tool mutation hooks,
 which this server does not ship. The caching suite also calls the unadvertised
-prompt catalogue. Tool and resource cache hints passed. Exact supported
-capability coverage, including the SDK's default list-change advertisement
-against our immutable catalogue, is tracked as MCP-02.
+prompt catalogue. Tool and resource cache hints and the missing-resource
+classification passed. [PR #72](https://github.com/anervalens-netizen/remote-control-mcp/pull/72)
+sets list-change capabilities to false for the immutable HTTP and stdio
+catalogues. The corrected staged source passed the selected legacy
+initialization, ping, catalogues and multiple-stream checks. The selected
+modern checks passed wherever the server advertises the exercised feature.
 
 | Agent combination | Gate / fallback |
 | --- | --- |

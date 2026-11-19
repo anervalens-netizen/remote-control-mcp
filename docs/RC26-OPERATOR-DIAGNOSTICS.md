@@ -111,6 +111,9 @@ To open, collect or close a measurement, use `usage_window` itself.
 
 Selected native Linux pairs and the selected authenticated ChatGPT console
 have qualified. The [client matrix](RELIABILITY.md#mcp-sdk-compatibility-matrix-r11)
-records the remaining transport and host gaps. Automatic installed/startup
-evidence, history under pressure and equivalent B01–B07 comparisons remain
-open. Review, CI, merge and deployment each require their own evidence.
+records the remaining transport and host gaps. The
+[paired B01–B07 fixture evidence](plans/2026-11-16-implementation-evidence.md#paired-qualification)
+and the [isolated ingress pressure check](INGRESS-OBSERVABILITY.md) cover
+the scoped behavior. Automatic installed/startup evidence and extended
+deployed history remain open. Review, CI, merge and deployment each
+require their own evidence.
