@@ -38,7 +38,7 @@ accounting. A mixed-version older agent retained `usage_report` compatibility
 and correctly reported `usage_window` as unsupported. These scoped observations
 do not qualify every fleet platform, ChatGPT-host catalog refresh or console
 integration. See [bounded-window source contracts and synthetic fixtures](2026-11-17-window-evidence.md).
-REC-05 and DEL-02 remain open.
+At that rollout checkpoint, REC-05 and DEL-02 were open.
 
 2026-11-17: lot2 candidate `d0e5756` was integrated as `13d7563216b629f582bbb9e7815cf797fb5d6a4d`, with the same source tree and passing merge CI. The selected controller and three Linux agent identities are activated from that source. All three finite 9-agent/5-controller windows and all three subsequent persistence-progress probes qualified. The original task-linked job's diagnostic association was verified from preserved metadata captured before sample eviction, followed by separate terminal and bound ContextKeep verification readbacks. A subsequent live selected Linux task also matched the original execution receipt, runtime readback and bound ContextKeep verification. Both live collector reports remain inconclusive and are not relabeled as passes.
 
@@ -264,7 +264,7 @@ The original DSHv4 report misstated the `7504ac4` comparison. Its record correct
 
 ## Lot gates
 
-- [ ] **Lot 0:** BASE-01–03 have a current baseline and comparable scenarios; GOV-03 establishes the ongoing evidence/checkpoint practice.
+- [x] **Lot 0:** BASE-01–03 have a current baseline and comparable scenarios; GOV-03 establishes the ongoing evidence/checkpoint practice.
 - [ ] **Lot 1 / DEL-01:** supported recovery without replay, protected active writers, verified managed desktop integration after relaunch, and correct read/effect classification.
 - [x] **Lot 2 / DEL-02:** ingress accounting, independent history with coverage, bounded recovery reconciliation, and current inventory/startup identities.
 - [ ] **Lot 3 / DEL-03:** measured workflow benefit, actual-client protocol/recovery checks, clear console/doctor behavior, and exact-head review/task reconciliation.

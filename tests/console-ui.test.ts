@@ -25,7 +25,7 @@ it.skipIf(!executablePath)("isolates panels, pages text output and recovers stal
   }));
   const host = await build({ stdin: { contents: `
     import {AppBridge, PostMessageTransport} from '@modelcontextprotocol/ext-apps/app-bridge';
-    window.calls=[]; window.fail=false; window.failDoctor=false; window.partialWindow=false; window.wrongProducer=false; window.usageError='';
+    window.calls=[]; window.fail=false; window.failDoctor=false; window.activeJob=false; window.failJob=false; window.partialWindow=false; window.wrongProducer=false; window.usageError='';
     const fixtures=${JSON.stringify(data)};
     (async()=>{for(let i=0;i<2;i++){
       const frame=document.createElement('iframe');frame.id='panel-'+i;document.body.append(frame);
@@ -60,7 +60,10 @@ it.skipIf(!executablePath)("isolates panels, pages text output and recovers stal
           }};
         }
         else if(params.arguments.reference.traceId)value={observedAt:new Date().toISOString(),reference:params.arguments.reference,observation:{state:'returned',executionOutcome:'exit_nonzero',exitCode:23,events:[],jobs:[{device:'lab-fixture',identity:'root',jobId:'fixture-job'}]},output:null,coverage:'Observed metadata only'};
-        else value={observedAt:new Date().toISOString(),reference:params.arguments.reference,observation:{id:'fixture-job',state:'completed',code:7,progressGuidance:{terminationEvidence:'verified',effectVerification:'unknown',lastOutputAt:'2026-01-01T00:00:00Z',outputBytes:{stdout:45,stderr:0},nextCheck:'job_output_since'}},output:params.arguments.output?{stream:'stdout',data:params.arguments.output.offset===0?'<img src=x onerror="window.__injected=true">':'second page: end',nextOffset:params.arguments.output.offset===0?45:61,eof:params.arguments.output.offset!==0}:null,coverage:'Fresh agent observation'};
+        else {
+          if(window.failJob)throw new Error('synthetic job read unavailable');
+          value={observedAt:new Date().toISOString(),reference:params.arguments.reference,observation:{id:'fixture-job',state:window.activeJob?'running':'completed',...(window.activeJob?{}:{code:7}),progressGuidance:{terminationEvidence:window.activeJob?'unknown':'verified',effectVerification:'unknown',lastOutputAt:'2026-01-01T00:00:00Z',outputBytes:{stdout:window.activeJob?70:45,stderr:0},nextCheck:window.activeJob?'job_wait':'job_output_since'}},output:params.arguments.output?{stream:'stdout',data:params.arguments.output.offset===0?'<img src=x onerror="window.__injected=true">':'second page: end',nextOffset:params.arguments.output.offset===0?45:61,eof:params.arguments.output.offset!==0}:null,coverage:'Fresh agent observation'};
+        }
         return {content:[],structuredContent:value};
       };
       bridge.oninitialized=async()=>{await bridge.sendToolInput({arguments:{diagnosticScopeId:fixtures[i].diagnosticScopeId}});await bridge.sendToolResult({content:[],structuredContent:fixtures[i]});};
@@ -119,6 +122,25 @@ it.skipIf(!executablePath)("isolates panels, pages text output and recovers stal
   const outputCalls = await page.evaluate(() => (window as any).calls.filter((call: any) => call.arguments.output));
   expect(outputCalls.map((call: any) => call.arguments.output.offset)).toEqual([0, 45]);
   expect(outputCalls.every((call: any) => call.panel === 0 && call.arguments.reference.job.jobId === "fixture-job")).toBe(true);
+  await page.clock.install();
+  await page.evaluate(() => { (window as any).activeJob = true; });
+  await details.getByRole("button", { name: "Refresh detail" }).click();
+  await details.getByText("running", { exact: true }).waitFor();
+  expect(await first.getByRole("button", { name: "Next output page", exact: true }).isEnabled()).toBe(true);
+  await page.evaluate(() => { (window as any).failJob = true; });
+  await page.clock.fastForward(5000);
+  await details.getByRole("status").filter({ hasText: "Showing the previous observation" }).waitFor();
+  expect(await details.getByText("running", { exact: true }).count()).toBe(1);
+  expect(await first.locator("pre").innerText()).toBe("second page: end");
+  await page.evaluate(() => { (window as any).failJob = false; (window as any).activeJob = false; });
+  await page.clock.fastForward(10_000);
+  await details.getByText("Exit code: 7", { exact: true }).waitFor();
+  expect(await details.getByRole("status").count()).toBe(0);
+  expect(await first.locator("pre").innerText()).toBe("second page: end");
+  const inspectCount = () => page.evaluate(() => (window as any).calls.filter((call: any) => call.name === "operation_inspect").length);
+  const terminalReads = await inspectCount();
+  await page.clock.fastForward(15_000);
+  expect(await inspectCount()).toBe(terminalReads);
   expect(await second.getByRole("complementary").count()).toBe(0);
   await first.getByRole("button", { name: "Close", exact: true }).click();
   expect(await summary.count()).toBe(0);
