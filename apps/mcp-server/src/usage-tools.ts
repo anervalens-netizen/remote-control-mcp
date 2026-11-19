@@ -12,6 +12,7 @@ const windowStores = new WeakMap<AgentClient, UsageWindows>();
 const agentReadTimeoutMs = 5000;
 const agentSnapshotSchema = z.object({
   version: z.literal(1), instanceId: z.string().uuid(),
+  identity: z.enum(["root", "owner", "interactive", "unknown"]),
   totals: z.object({ received: z.number().int().nonnegative().safe() }).passthrough(),
   history: z.record(z.string(), z.unknown()),
 }).passthrough();
@@ -23,6 +24,7 @@ const agentStatusSchema = z.object({
   timeoutMs: z.literal(agentReadTimeoutMs),
 });
 type AgentStatus = z.infer<typeof agentStatusSchema>;
+const lastWindowAgentStatuses = new WeakMap<ReturnType<UsageWindows["open"]>, AgentStatus>();
 
 function failedAgentStatus(error: unknown): AgentStatus {
   const failure = error as { kind?: unknown; name?: unknown; status?: unknown } | null;
@@ -44,7 +46,7 @@ export function registerUsageTools(server: McpServer, client: AgentClient) {
   if (!windows) { windows = new UsageWindows(dispatchesFor(client)); windowStores.set(client, windows); }
   const store = windows;
   server.registerTool("usage_window", {
-    description: "Read-only bounded same-agent-instance ingress measurement for ONE explicit canonical device and identity. Open, periodically collect, close, then read retained evidence. Process memory only: 8 windows, 15-minute TTL, 256 events/dispatches each. Preserves original dispatch envelopes before global ring eviction. Missing/late detail, overflow and restarts remain explicit. Shared bearer/correlation are not source attestation, authorization or effect proof. No workload execution/replay; console integration unsupported.",
+    description: "Read-only bounded same-agent-instance ingress measurement for ONE explicit canonical device and identity. Open, periodically collect, close, then read retained evidence. Process memory only: 8 windows, 15-minute TTL, 256 events/dispatches each. Preserves original dispatch envelopes before global ring eviction. Missing/late detail, overflow and restarts remain explicit. Shared bearer/correlation are not source attestation, authorization or effect proof. No workload execution/replay.",
     inputSchema: z.object({ device: z.string().min(1), identity: z.enum(["owner", "root", "interactive"]),
       action: z.enum(["open", "collect", "close", "read"]), windowId: z.string().uuid().optional(),
       detailOffset: z.number().int().min(0).max(256).default(0), detailLimit: z.number().int().min(0).max(16).default(0),
@@ -89,7 +91,11 @@ export function registerUsageTools(server: McpServer, client: AgentClient) {
       } finally { w.busy = false; }
     }
     store.get(w.id, device, identity); // A read deadline must not extend retention.
-    const value = { report: store.report(w, detailOffset, detailLimit), agentStatus };
+    if (agentStatus) lastWindowAgentStatuses.set(w, agentStatus);
+    const value = {
+      report: { ...store.report(w, detailOffset, detailLimit), lastAgentStatus: lastWindowAgentStatuses.get(w) ?? null },
+      agentStatus,
+    };
     return { content: [{ type: "text" as const, text: JSON.stringify(value) }], structuredContent: value };
   });
   server.registerTool("usage_report", {
@@ -114,11 +120,13 @@ export function registerUsageTools(server: McpServer, client: AgentClient) {
       const response = await client.requestRoute<Record<string, unknown>>(canonical, "/v1/observations/ingress", query, target,
         { timeoutMs: agentReadTimeoutMs, signal: extra.signal, observeOperation: false });
       const parsed = agentSnapshotSchema.safeParse(response);
-      if (parsed.success) {
+      if (!parsed.success) {
+        agentStatus = { state: "unsupported", reason: "unsupported_contract", timeoutMs: agentReadTimeoutMs };
+      } else if (parsed.data.identity !== selected) {
+        agentStatus = { state: "error", reason: "identity_mismatch", timeoutMs: agentReadTimeoutMs };
+      } else {
         agent = parsed.data;
         agentStatus = { state: "available", timeoutMs: agentReadTimeoutMs };
-      } else {
-        agentStatus = { state: "unsupported", reason: "unsupported_contract", timeoutMs: agentReadTimeoutMs };
       }
     } catch (error) {
       // Caller cancellation still ends the tool. A failed producer read leaves

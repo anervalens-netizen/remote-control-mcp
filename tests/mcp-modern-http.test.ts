@@ -35,6 +35,8 @@ describe("modern MCP alongside legacy sessions", () => {
     expect(discovery.id).toBe("same-request-id");
     expect(discovery.result.supportedVersions).toContain("2026-07-28");
     expect(discovery.result.resultType).toBe("complete");
+    expect(discovery.result.capabilities.tools.listChanged).toBe(false);
+    expect(discovery.result.capabilities.resources.listChanged).toBe(false);
     const call = await modern("tools/call", { name: "devices_list", arguments: {} });
     expect(call.status).toBe(200);
     const result = await call.json();
@@ -44,6 +46,13 @@ describe("modern MCP alongside legacy sessions", () => {
   });
   it("preserves the advertised legacy tool contracts", async () => {
     const { url, modern } = await harness();
+    const initialized = await fetch(url, { method: "POST", headers: {
+      Authorization: "Bearer synthetic-token", "Content-Type": "application/json", Accept: "application/json, text/event-stream",
+    }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: {
+      protocolVersion: "2025-11-25", capabilities: {}, clientInfo: { name: "fixture", version: "1" },
+    } }) });
+    const initialize = JSON.parse((await initialized.text()).split("\n").find(line => line.startsWith("data:"))!.slice(5));
+    expect(initialize.result.capabilities).toMatchObject({ tools: { listChanged: false }, resources: { listChanged: false } });
     const current = await (await modern("tools/list")).json();
     const old = await fetch(url, { method: "POST", headers: {
       Authorization: "Bearer synthetic-token", "Content-Type": "application/json", Accept: "application/json, text/event-stream",

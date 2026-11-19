@@ -91,6 +91,14 @@ it("keeps the healthy path to one agent request and preserves agent coverage", a
   expect(String(fetch.mock.calls[0]?.[0])).toContain("/v1/observations/ingress");
 });
 
+it.each(["owner", "unknown"])("does not assign %s producer coverage to the selected root route", async identity => {
+  vi.stubGlobal("fetch", vi.fn(async () => Response.json({ ...snapshot(), identity })));
+  const { read } = await fixture();
+  expect(report(await read())).toMatchObject({ device: "fixture", identity: "root", agent: null,
+    agentStatus: { state: "error", reason: "identity_mismatch" },
+    controller: { total: { started: 1, responses: 1 } } });
+});
+
 it("retains the legacy usage_report schema and succeeds against old strict query fields", async () => {
   const source = snapshot();
   const allowed = new Set(["sampleOffset", "sampleLimit", "seriesOffset", "seriesLimit", "historyOffset", "historyLimit"]);

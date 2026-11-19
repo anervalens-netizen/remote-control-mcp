@@ -97,6 +97,16 @@ In the selected ChatGPT host, **Refresh tools** restored access to the app
 doctor after the controller upgrade. Reopen the console from the refreshed
 catalogue if an existing panel cannot reach the doctor.
 
+Open **Usage coverage** for the selected device and execution identity.
+**Read daily history** shows the retained UTC cohorts, configured retention and
+gaps from `usage_report`. Read older cohorts with **Read older days** while the
+agent returns a continuation offset. The producer's identity must match the
+selected route. **Read usage window** displays the original bounded window for
+a supplied `usage_window` ID, including the denominator, unmatched observations,
+residual, missing details and last recorded collector status. The panel reads
+only on request.
+To open, collect or close a measurement, use `usage_window` itself.
+
 ## Remaining acceptance
 
 Selected native Linux pairs and the selected authenticated ChatGPT console

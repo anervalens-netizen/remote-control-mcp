@@ -187,6 +187,10 @@ it("distinguishes a valid but wrong agent identity from an unsupported contract"
   const r = await call("open");
   expect(r.agentStatus).toMatchObject({ state: "error", reason: "identity_mismatch" });
   expect(r.report).toMatchObject({ state: "opening", start: null, agentDenominator: null, failedReads: 1 });
+  const retained = await call("read", r.report.windowId);
+  expect(retained.agentStatus).toBeNull();
+  expect(retained.report.lastAgentStatus).toMatchObject({ state: "error", reason: "identity_mismatch" });
+  expect(fetch).toHaveBeenCalledTimes(1);
 });
 
 it("bounds window slots, detail retention and TTL; tracks saturation independently of historical gaps", () => {

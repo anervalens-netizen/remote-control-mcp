@@ -122,6 +122,8 @@ export function createMcpHttpServer(client: AgentClient, options: {
       server.registerResource(consoleResource.name, consoleResource.uri, consoleResource.metadata, consoleResource.read);
   for (const resource of legacyConsoleResources) server.registerResource(resource.name, resource.uri, resource.metadata, resource.read);
     }
+    // The legacy SDK enables change notifications during registration.
+    server.server.registerCapabilities({ tools: { listChanged: false }, resources: { listChanged: false } });
     return server;
   }
 

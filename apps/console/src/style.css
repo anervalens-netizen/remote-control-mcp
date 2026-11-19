@@ -5,6 +5,9 @@
 
 .device-doctor{margin:0 0 18px;padding:12px 0;border-top:1px solid var(--color-border-primary,#dce3e0);border-bottom:1px solid var(--color-border-primary,#dce3e0)}
 .device-doctor h3{margin:0;font-size:15px}
+.usage-coverage{margin:0 0 18px;padding:12px 0;border-bottom:1px solid var(--color-border-primary,#dce3e0)}
+.usage-coverage summary{cursor:pointer;font-size:15px;font-weight:600}
+.usage-coverage form{margin-top:12px;justify-content:flex-start}
 .device-doctor th small,.observation-facts small{display:block;margin-top:4px}
 .observation-facts{display:grid;grid-template-columns:minmax(100px,auto) 1fr;gap:9px 12px;align-items:start}
 .observation-facts dt{font-weight:600}

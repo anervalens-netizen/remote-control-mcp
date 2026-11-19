@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { App, applyDocumentTheme, applyHostStyleVariables } from "@modelcontextprotocol/ext-apps";
 import { OpenAIExtensions } from "@openai/mcp-extensions/app";
+import { UsageCoverage } from "./usage-coverage.js";
 import "./style.css";
 
 type Json = Record<string, any>;
@@ -49,6 +50,12 @@ function theme() {
 app.onhostcontextchanged = () => theme();
 async function call(name: string, args: Json) {
   const result = await app.callServerTool({ name, arguments: args });
+  if (result.isError && (name === "usage_report" || name === "usage_window")) {
+    const detail = result.content.find(item => item.type === "text")?.text;
+    const route = args.identity === "root" ? "system/root" : args.identity;
+    if (detail === `${args.device} ${route} identity is not configured`) throw new Error("unconfigured_usage_identity");
+    if (detail === "usage_window_unavailable") throw new Error(detail);
+  }
   if (result.isError || !result.structuredContent) throw new Error(String(result.structuredContent?.error ?? "Observation unavailable"));
   return result.structuredContent as Json;
 }
@@ -280,6 +287,7 @@ function Console() {
     </section>
     {device && <section><div className="section-title"><h2>Jobs · {device}</h2><select aria-label="Job execution identity" value={identity} onChange={e => { setIdentity(e.target.value); setJobCursor(undefined); }}><option value="root">Root / system</option><option value="owner">Owner</option><option value="interactive">Interactive</option></select></div>
       <DeviceDoctor key={device} device={device} identity={identity} ready={ready} disconnected={disconnected}/>
+      <UsageCoverage key={JSON.stringify([device, identity])} device={device} identity={identity} ready={ready} call={call}/>
       <form className="scope" onSubmit={e => { e.preventDefault(); if (manualJob.trim()) setSelection({ job: { device, identity, jobId: manualJob.trim() } }); }}><input aria-label="Known job ID" placeholder="Known job ID" value={manualJob} maxLength={256} onChange={e => setManualJob(e.target.value)}/><button disabled={!manualJob.trim()}>Inspect job</button></form>
       {jobs?.partial && <div className="notice">Job history is incomplete or unavailable.</div>}
       {(jobs?.items ?? []).map((job: Json) => <button className="job-row" key={job.id} onClick={() => setSelection({ job: { device, identity, jobId: job.id } })}><code>{job.id}</code><Badge value={job.state ?? "unknown"}/>{job.lifecycleDiagnostics?.reviewRecommended && <span>Long running · review activity</span>}<span>{when(job.startedAt)}</span></button>)}

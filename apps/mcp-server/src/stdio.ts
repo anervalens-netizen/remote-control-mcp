@@ -15,6 +15,7 @@ const server = new McpServer(
   { instructions: agentInstructions },
 );
 registerTools(server, new AgentClient());
+server.server.registerCapabilities({ tools: { listChanged: false }, resources: { listChanged: false } });
 
 const transport = new StdioServerTransport();
 const compatibility = new SdkCompatibilityDiagnostics();
