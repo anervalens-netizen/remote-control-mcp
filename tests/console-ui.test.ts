@@ -25,7 +25,7 @@ it.skipIf(!executablePath)("isolates panels, pages text output and recovers stal
   }));
   const host = await build({ stdin: { contents: `
     import {AppBridge, PostMessageTransport} from '@modelcontextprotocol/ext-apps/app-bridge';
-    window.calls=[]; window.fail=false; window.failDoctor=false; window.partialWindow=false;
+    window.calls=[]; window.fail=false; window.failDoctor=false; window.partialWindow=false; window.wrongProducer=false;
     const fixtures=${JSON.stringify(data)};
     (async()=>{for(let i=0;i<2;i++){
       const frame=document.createElement('iframe');frame.id='panel-'+i;document.body.append(frame);
@@ -44,7 +44,7 @@ it.skipIf(!executablePath)("isolates panels, pages text output and recovers stal
         }
         else if(params.name==='usage_report'){
           const {device,identity}=params.arguments;
-          value={device,identity,agentStatus:{state:'available'},agent:{totals:{received:42},sampleCoverage:{retained:32},history:{
+          value={device,identity,agentStatus:{state:'available'},agent:{identity:window.wrongProducer?'owner':identity,totals:{received:42},sampleCoverage:{retained:32},history:{
             collectionStartedAt:'2026-01-02T00:00:00Z',retentionDays:90,partial:true,legacyCoverageUnknown:true,
             page:{total:1},days:[{date:'2026-01-02',received:42,completed:39}],
           }}};
@@ -145,6 +145,10 @@ it.skipIf(!executablePath)("isolates panels, pages text output and recovers stal
     [0, "usage_report", { device: "lab-fixture", identity: "root", sampleLimit: 0, seriesLimit: 0, historyLimit: 7 }],
     ...[1, 2].map(() => [0, "usage_window", { device: "lab-fixture", identity: "root", action: "read", windowId, detailLimit: 0 }]),
   ]);
+  await page.evaluate(() => { (window as any).wrongProducer = true; });
+  await coverage.getByRole("button", { name: "Read daily history" }).click();
+  await coverage.getByText(/producer identity could not be verified/).waitFor();
+  expect(await coverage.getByText("90 UTC days").count()).toBe(0);
   expect(await second.locator(".usage-coverage").count()).toBe(0);
   await first.getByRole("combobox", { name: "Job execution identity" }).selectOption("owner");
   expect(await coverage.getByText("Window coverage is incomplete", { exact: true }).count()).toBe(0);

@@ -11,6 +11,9 @@ const uuid = "[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-
 function UsageHistory({ value }: { value: Json }) {
   const agent = value.agent;
   const history = agent?.history;
+  if (value.agentStatus?.reason === "identity_mismatch" || (agent && agent.identity !== value.identity)) {
+    return <p className="notice" role="status">Agent coverage unavailable. The producer identity could not be verified for this route.</p>;
+  }
   if (!history) return <p role="status">Agent coverage unavailable ({value.agentStatus?.state ?? "unknown"}).</p>;
   const rows: Json[] = history.days ?? [];
   return <>

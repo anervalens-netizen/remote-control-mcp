@@ -12,6 +12,7 @@ const windowStores = new WeakMap<AgentClient, UsageWindows>();
 const agentReadTimeoutMs = 5000;
 const agentSnapshotSchema = z.object({
   version: z.literal(1), instanceId: z.string().uuid(),
+  identity: z.enum(["root", "owner", "interactive", "unknown"]),
   totals: z.object({ received: z.number().int().nonnegative().safe() }).passthrough(),
   history: z.record(z.string(), z.unknown()),
 }).passthrough();
@@ -114,11 +115,13 @@ export function registerUsageTools(server: McpServer, client: AgentClient) {
       const response = await client.requestRoute<Record<string, unknown>>(canonical, "/v1/observations/ingress", query, target,
         { timeoutMs: agentReadTimeoutMs, signal: extra.signal, observeOperation: false });
       const parsed = agentSnapshotSchema.safeParse(response);
-      if (parsed.success) {
+      if (!parsed.success) {
+        agentStatus = { state: "unsupported", reason: "unsupported_contract", timeoutMs: agentReadTimeoutMs };
+      } else if (parsed.data.identity !== selected) {
+        agentStatus = { state: "error", reason: "identity_mismatch", timeoutMs: agentReadTimeoutMs };
+      } else {
         agent = parsed.data;
         agentStatus = { state: "available", timeoutMs: agentReadTimeoutMs };
-      } else {
-        agentStatus = { state: "unsupported", reason: "unsupported_contract", timeoutMs: agentReadTimeoutMs };
       }
     } catch (error) {
       // Caller cancellation still ends the tool. A failed producer read leaves
