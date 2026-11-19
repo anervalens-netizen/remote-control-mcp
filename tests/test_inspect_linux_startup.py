@@ -39,6 +39,21 @@ class StartupEvidenceTests(unittest.TestCase):
             self.assertEqual(observed['startupClaim']['manifestCommit'], 'a' * 40)
             self.assertEqual(observed['runningEntryManifestClaim']['manifestCommit'], 'b' * 40)
 
+    def test_loaded_shell_cannot_claim_a_node_argv(self):
+        def dbus(args):
+            values = {
+                'example.service': ['/org/freedesktop/systemd1/unit/example_2eservice'],
+                'ExecStart': [['/bin/sh', ['node', '/fixture/apps/agent/src/index.ts']]],
+                'MainPID': 0,
+                'ExecMainStartTimestampMonotonic': 0,
+            }
+            return json.dumps({'data': values[args[-1]]}).encode()
+
+        with patch.object(module, 'run', dbus):
+            observed = module.observe('example.service', False)
+        self.assertIsNone(observed['startupEntry'])
+        self.assertEqual(observed['startupClaim'], {'state': 'unknown_entry'})
+
     def test_missing_manifest_never_derives_identity_from_release_directory(self):
         with tempfile.TemporaryDirectory() as directory:
             target = Path(directory) / ('a' * 40) / 'apps/agent/src/index.ts'

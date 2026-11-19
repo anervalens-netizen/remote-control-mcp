@@ -73,7 +73,12 @@ def observe(unit, user):
         unit_props = ["busctl", *manager, "--json=short", "get-property", "org.freedesktop.systemd1", path,
                       "org.freedesktop.systemd1.Service"]
         config = json.loads(run([*unit_props, "ExecStart"]))["data"]
-        target = entry(config[0][1]) if len(config) == 1 else None
+        target = None
+        if len(config) == 1:
+            executable, argv, *_ = config[0]
+            # Systemd's @ prefix can set argv[0] independently of the executable.
+            if argv and executable == argv[0]:
+                target = entry(argv)
         pid = json.loads(run([*unit_props, "MainPID"]))["data"]
         started = json.loads(run([*unit_props, "ExecMainStartTimestampMonotonic"]))["data"]
         target_proof = manifest(target)

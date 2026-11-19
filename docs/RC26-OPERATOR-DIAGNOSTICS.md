@@ -59,8 +59,9 @@ against their checksum in the local manifest. A loaded and a running entry point
 can differ even while the agent reports ready. Compare this snapshot with the
 authenticated running identity and the approved release separately. The command
 reads no unit environment or credentials, runs no service actions, and supports
-direct Node and simple `/usr/bin/env` entry points. A wrapper, missing manifest
-or unreadable process yields unknown evidence for the affected layer. The entry
+direct Node and simple `/usr/bin/env` entry points. A wrapper, overridden
+argument-zero, missing manifest or unreadable process yields unknown evidence
+for the affected layer. The entry
 checksum covers one file. For source and full listed-file verification, use the
 [release workflow](WORKSPACE-AND-RELEASES.md#verify-and-activate-a-release).
 
