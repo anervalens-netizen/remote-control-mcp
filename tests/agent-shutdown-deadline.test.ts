@@ -295,3 +295,23 @@ IngressObserver.prototype.close = function() {
     expect((await agent.aggregate()).claimPresent).toBe(false);
   } finally { await agent.cleanup(); }
 }, 10000);
+
+it.skipIf(process.platform !== "linux")("reports a stalled async close hook after the full shutdown drain", async () => {
+  const browser = pathToFileURL(path.resolve("apps/agent/src/browser.ts")).href;
+  const preload = `import { BrowserManager } from ${JSON.stringify(browser)};
+import { writeFileSync } from 'node:fs';
+BrowserManager.prototype.close = async function() {
+  writeFileSync(process.env.RCMCP_STATE_DIR + '/close-hook-started', 'started');
+  await new Promise(() => {});
+};
+`;
+  const agent = await fixture({ preload });
+  try {
+    const started = performance.now();
+    agent.child.kill("SIGTERM");
+    expect(await within(agent.closed, 12000)).toEqual([null, "SIGKILL"]);
+    expect(performance.now() - started).toBeGreaterThanOrEqual(7900);
+    expect(await readFile(path.join(agent.root, "state", "close-hook-started"), "utf8")).toBe("started");
+    expect((await agent.aggregate()).claimPresent).toBe(false);
+  } finally { await agent.cleanup(); }
+}, 24000);

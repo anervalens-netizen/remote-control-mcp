@@ -535,30 +535,34 @@ the job settles; they are not individually transactional commits.
 
 ## MCP/SDK compatibility matrix (R11)
 
-The pinned SDK remains **1.31.0**. Authenticated HTTP health includes a bounded
-`compatibility` snapshot (last 32 observations): installed SDK version, catalog
-revision, session mode, response mode and the protocol version actually emitted
-by the SDK's initialize response. Legacy calls without initialize report
-`protocolVersion:null`/`not_negotiated`. A request header or documentation URL
-is not evidence of negotiated protocol. The observation adapter uses the SDK's
-public transport `send`; private registry reuse remains isolated in
-`sdk-tool-registry.ts`.
+The lockfile pins the legacy SDK at **1.32.2** and the modern HTTP server at
+**2.4.0**, with client **2.3.1** for qualification. Authenticated HTTP health
+reports the protocol revision served by the modern adapter and a bounded
+legacy `compatibility` snapshot of the last 32 observations. The latter records
+session mode, response mode, catalog revision and the version emitted by the
+initialize response. Legacy calls without initialize report
+`protocolVersion:null`/`not_negotiated`. See
+[archive release identity](#archive-release-identity),
+[managed desktop engine selection](SEMANTIC-DESKTOP.md) and
+[coordination recovery](COORDINATION-RECOVERY.md) for independent installation,
+desktop and recovery contracts.
 
 | Client / server path | Supported behavior and qualification |
 | --- | --- |
-| Installed SDK client → production HTTP, stateful SSE (default) | Initialize, listTools, independent sessions, schema validation, result recovery, catalog rediscovery and cancellation |
-| Installed SDK client → production HTTP, stateful JSON | Same matrix; `RCMCP_MCP_JSON_RESPONSE=1` selects JSON responses |
-| Installed SDK client → production HTTP, stateless JSON/SSE | Initialize/discovery/results/recovery; `RCMCP_MCP_SESSION_MODE=stateless`; cross-request cancellation notifications have no persistent session to target |
+| Modern SDK client → HTTP, MCP 2026-07-28 | Live authenticated discovery, console asset read and original terminal job read on the selected release; cancellation and lost-delivery paths exercised in isolated tests. |
+| Legacy SDK client → HTTP, initialized stateful SSE (default) | Live authenticated discovery, console asset read and original terminal job read after reconnect. Isolated qualification negotiated 2025-11-25 and covers independent sessions, validation, rediscovery, cancellation and receipt recovery. |
+| Legacy SDK client → HTTP, stateful JSON | Isolated transport qualification with `RCMCP_MCP_JSON_RESPONSE=1`. |
+| Legacy SDK client → HTTP, stateless JSON/SSE | Isolated discovery, results and recovery with `RCMCP_MCP_SESSION_MODE=stateless`. Cross-request cancellation requires a session. |
 | Legacy HTTP without initialize | Existing stateless discovery/calls remain supported; negotiation is explicitly unknown |
 | Installed SDK in-memory client | Existing contract, output validation, recovery and durable batch regressions |
-| Stdio server | Negotiation observation uses the same adapter; transport/hardware qualification remains separate from the HTTP matrix |
-| ChatGPT connector/catalog cache | A new live ChatGPT session must rediscover changed schemas; automated SDK discovery does not certify that external cache |
+| Stdio server | Isolated subprocess test covers discovery and native request routing. Live host acceptance is unverified. |
+| Codex connector | Authenticated production inventory, endpoint doctor and a complete single-identity usage window were observed. Wire protocol, cancellation and native UI are unverified on this host. |
+| ChatGPT MCP App | A selected authenticated host rendered the production console and completed the endpoint doctor after **Refresh tools**. External cache invalidation, wire version and other hosts remain unverified. |
 
 Catalog definitions are immutable for a running controller. Reconnect and call
 `listTools` after changing the controller release. The diagnostic catalog
-revision identifies this contract family; actual runtime SHA still identifies
-the release. No test in this matrix proves a live external client's UI accepted
-a result.
+revision identifies the contract family. The authenticated runtime SHA
+identifies the running release.
 
 | Agent combination | Gate / fallback |
 | --- | --- |

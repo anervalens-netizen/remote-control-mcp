@@ -66,6 +66,15 @@ A raw body is complete when the consumer receives all declared `Content-Length` 
 | usage_report series page | Default 0, maximum 32 |
 | usage_report daily page | Default 7, maximum 14; newest date first |
 
+Run `node scripts/measure-ingress-pressure.mjs` with the pinned Node runtime
+and installed dependencies for an isolated pressure check. The fixture
+generates 90,000 requests over 90 simulated UTC days. It checks series and
+detail saturation, saves and reloads the aggregate, and confirms an unrelated
+uncertain receipt retains identical bytes and refuses a second execution.
+The report measures collection, flush and reconciliation separately. These
+timings depend on the test machine. The synthetic calendar exercises retention
+logic without measuring continuous deployed coverage.
+
 The controller retains one shared dispatch-sample ring across all targets and filters it by device/identity afterward. Traffic to another target can evict a selected target's dispatch while the corresponding agent event is still retained. Quieting only the selected agent does not protect the controller ring. Preserve bounded original matching metadata promptly when it is needed as evidence; counters and retained daily aggregates do not recreate an evicted dispatch. A missing live sample states a coverage limit, not failed execution, and does not authorize a replacement job.
 
 Daily aggregates use the UTC arrival day. A late completion updates that arrival cohort while it is retained. Older completions are reported outside retention. Received minus completed means missing completion evidence, not proof of a currently running command. Daily route, execution outcome, effect verification and client acceptance dimensions remain explicitly unsupported.

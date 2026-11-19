@@ -157,11 +157,15 @@ describe("RC26-MCP-04 lost-response no-replay transport evidence", () => {
     });
     expect(obsolete.status).toBe(404);
 
-    const recovered = await second.callTool({ name: "job_status", arguments: {
+    const concurrent = await sdk(f.url);
+    const lookup = { name: "job_status", arguments: {
       device: "synthetic", identity: "owner", idempotencyKey: key,
-    } });
-    expect(recovered.isError).not.toBe(true);
-    expect(recovered.structuredContent).toMatchObject({ state: "resolved", jobId: f.id });
+    } };
+    const recovered = await Promise.all([second.callTool(lookup), concurrent.callTool(lookup)]);
+    for (const result of recovered) {
+      expect(result.isError).not.toBe(true);
+      expect(result.structuredContent).toMatchObject({ state: "resolved", jobId: f.id });
+    }
     expect(f.startRequests).toHaveLength(1);
     expect(f.effects).toHaveLength(1);
   }, 20_000);

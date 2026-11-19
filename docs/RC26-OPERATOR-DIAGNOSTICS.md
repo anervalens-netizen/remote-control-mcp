@@ -43,11 +43,37 @@ Supported roles: `primary`, `backup`, `intermittent`, `retired`, `test`. Roles d
 
 `job_status`, `job_wait` and `job_output_since` retain their durable identities and existing output schemas. An additive `progressGuidance` contains the observed state, whether a terminal record exists, a truthful cancellation/termination status, a recommended next read, and the original job's retry interval when still active. `inputWaitEvidence` stays unverified unless a future agent supplies explicit typed evidence. `completionPercent` is deliberately `null`: silence and elapsed time do not prove a hang or progress fraction. Exit code 0 is not independently verified application effect.
 
-No new polling daemon, duplicate job-start or additional MCP tool was introduced.
+| Operator intent | First call and follow-up |
+| --- | --- |
+| Read a file or inspect the endpoint | Use `fs_read` or `diagnostic_doctor`. Use owner for an owner-readable file and root only when the target requires that identity. Keep the original identity on continuation reads. |
+| Inspect a graphical session | Use `diagnostic_doctor` with graphical collection enabled. Choose the configured interactive route, or the owner route when it advertises desktop capability. |
+| Run a short effect whose response must survive disconnect | Reserve through `exec_prepare` and retain the execution ID before the call. After lost delivery, use `exec_recover` on that identity. The receipt can recover evidence of the initial execution. |
+| Run variable-duration work | Use a keyed `job_start`, retain its identity, then use `job_wait`, `job_status` and `job_output_since`. A wait can end while the original job continues. |
+| Inspect a fenced repository operation | Use `inspect_recovery` with the original reference. A failed checkpoint receipt describes the diagnostic and the held fence. |
+
+Controller-memory result recovery pages retained data. Agent-disk foreground
+receipts retain execution evidence. A durable background job owns execution
+independently of the request. Recover uncertain operations through their
+original handles and keep the same device and identity.
 
 ## 4. Bounded timing (OBS-05)
 
-The existing `ToolDiagnostics.snapshot()` now adds `stageMeasurements`, aggregated from its retained controller trace ring. Measurements include observed/missing trace counts, stage call counts and p50/p95 measured durations. Queue time remains `null`, and stages can overlap. Missing spans are not silently interpreted as 0 ms; controller agent-request duration may include remote execution and waiting. No OpenTelemetry export or standard-version claim is introduced without verified need.
+The existing `ToolDiagnostics.snapshot()` exposes `stageMeasurements` over
+the retained controller trace ring. Each stage reports observed and missing
+trace counts, calls and measured p50/p95. Missing stages have null percentiles.
+Queue time remains null. Agent request includes remote handling and may overlap
+execution wait. Result preparation and final validation are local stages.
+Remote serialization and client receipt remain unobserved.
+
+For an optional future mapping, use the
+[OpenTelemetry MCP development convention at revision 76e0c19](https://github.com/open-telemetry/semantic-conventions-genai/blob/76e0c19e7fe11dc693fe258642363a438af4d3aa/docs/gen-ai/mcp.md).
+A server operation for a tool call would carry `mcp.method.name=tools/call`
+and `gen_ai.tool.name`. Attach `mcp.protocol.version` only when the transport
+actually observed it. The internal stages are separate timings. In particular,
+the controller handler timer cannot substitute for end-to-end MCP server
+operation duration. Optional trace export is deferred until an operator needs
+cross-service tracing beyond the existing diagnostics. The current path has
+no exporter dependency.
 
 ## 5. Read batching (UX-04, BASE-03)
 
@@ -73,6 +99,8 @@ catalogue if an existing panel cannot reach the doctor.
 
 ## Remaining acceptance
 
-Native paired Linux evidence, installed/startup sourcing, history under
-pressure, B01–B07 benchmarks and real-host protocol and UI acceptance remain
+Selected native Linux pairs and the selected authenticated ChatGPT console
+have qualified. The [client matrix](RELIABILITY.md#mcp-sdk-compatibility-matrix-r11)
+records the remaining transport and host gaps. Automatic installed/startup
+evidence, history under pressure and equivalent B01–B07 comparisons remain
 open. Review, CI, merge and deployment each require their own evidence.
