@@ -22,7 +22,12 @@ export function createModernMcpHandler(registry: () => Record<string, unknown>) 
   return createMcpHandler(() => {
     const server = new McpServer(
       { name: "remote-control-mcp", version: "0.1.0" },
-      { instructions: agentInstructions, supportedProtocolVersions: ["2026-07-28"] },
+      {
+        instructions: agentInstructions,
+        supportedProtocolVersions: ["2026-07-28"],
+        // Catalogs are immutable until the controller release changes.
+        capabilities: { tools: { listChanged: false }, resources: { listChanged: false } },
+      },
     );
     server.registerResource(consoleResource.name, consoleResource.uri, consoleResource.metadata, consoleResource.read);
   for (const resource of legacyConsoleResources) server.registerResource(resource.name, resource.uri, resource.metadata, resource.read);

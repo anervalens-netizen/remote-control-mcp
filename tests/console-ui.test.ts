@@ -25,7 +25,7 @@ it.skipIf(!executablePath)("isolates panels, pages text output and recovers stal
   }));
   const host = await build({ stdin: { contents: `
     import {AppBridge, PostMessageTransport} from '@modelcontextprotocol/ext-apps/app-bridge';
-    window.calls=[]; window.fail=false; window.failDoctor=false;
+    window.calls=[]; window.fail=false; window.failDoctor=false; window.partialWindow=false;
     const fixtures=${JSON.stringify(data)};
     (async()=>{for(let i=0;i<2;i++){
       const frame=document.createElement('iframe');frame.id='panel-'+i;document.body.append(frame);
@@ -41,6 +41,20 @@ it.skipIf(!executablePath)("isolates panels, pages text output and recovers stal
             {name:'agent',identity:'root',state:'ready',cause:'agent_reports_ready',source:'agent:/v1/info',observedAt:new Date().toISOString()},
             {name:'agent',identity:'owner',state:'not_configured',cause:'endpoint_not_configured_no_request',source:'configuration',observedAt:new Date().toISOString()},
           ],nextCheck:'Configure an owner endpoint only if owner operations are required.',coverage:{caveat:'Physical power and job effects are unverified.'}};
+        }
+        else if(params.name==='usage_report'){
+          const {device,identity}=params.arguments;
+          value={device,identity,agentStatus:{state:'available'},agent:{totals:{received:42},sampleCoverage:{retained:32},history:{
+            collectionStartedAt:'2026-01-02T00:00:00Z',retentionDays:90,partial:true,legacyCoverageUnknown:true,
+            page:{total:1},days:[{date:'2026-01-02',received:42,completed:39}],
+          }}};
+        }
+        else if(params.name==='usage_window'){
+          const {device,identity,windowId}=params.arguments;
+          value={report:{device,identity,windowId,start:{observedAt:'2026-01-02T00:00:00Z'},end:{observedAt:'2026-01-02T00:00:01Z'},
+            complete:!window.partialWindow,denominatorExact:true,agentDenominator:7,collectionResidual:window.partialWindow?2:0,
+            missingEventDetail:window.partialWindow?2:0,reconciliation:{attributed:3,unmatchedObserved:window.partialWindow?2:4},
+          }};
         }
         else if(params.arguments.reference.traceId)value={observedAt:new Date().toISOString(),reference:params.arguments.reference,observation:{state:'returned',executionOutcome:'exit_nonzero',exitCode:23,events:[],jobs:[{device:'lab-fixture',identity:'root',jobId:'fixture-job'}]},output:null,coverage:'Observed metadata only'};
         else value={observedAt:new Date().toISOString(),reference:params.arguments.reference,observation:{id:'fixture-job',state:'completed',code:7,progressGuidance:{terminationEvidence:'verified',effectVerification:'unknown',lastOutputAt:'2026-01-01T00:00:00Z',outputBytes:{stdout:45,stderr:0},nextCheck:'job_output_since'}},output:params.arguments.output?{stream:'stdout',data:params.arguments.output.offset===0?'<img src=x onerror="window.__injected=true">':'second page: end',nextOffset:params.arguments.output.offset===0?45:61,eof:params.arguments.output.offset!==0}:null,coverage:'Fresh agent observation'};
@@ -110,6 +124,31 @@ it.skipIf(!executablePath)("isolates panels, pages text output and recovers stal
   await first.getByText("endpoint not configured no request").waitFor();
   await first.getByText("Configure an owner endpoint only if owner operations are required.").waitFor();
   expect(await second.getByRole("heading", { name: "Device diagnosis" }).count()).toBe(0);
+  const coverage = first.locator(".usage-coverage");
+  await coverage.getByText("Usage coverage", { exact: true }).click();
+  const usageCalls = () => page.evaluate(() => (window as any).calls.filter((call: any) => call.name.startsWith("usage_")));
+  expect(await usageCalls()).toHaveLength(0);
+  await coverage.getByRole("button", { name: "Read daily history" }).click();
+  await coverage.getByText("90 UTC days").waitFor();
+  await coverage.getByText("Retained history is partial.", { exact: false }).waitFor();
+  await coverage.getByText("Coverage before collection began is unknown.").waitFor();
+  const windowId = "55555555-5555-4555-8555-555555555555";
+  await coverage.getByRole("textbox", { name: "Existing usage window ID" }).fill(windowId);
+  await coverage.getByRole("button", { name: "Read usage window" }).click();
+  await coverage.getByText("Complete window", { exact: true }).waitFor();
+  await coverage.getByText("7 · exact denominator").waitFor();
+  await page.evaluate(() => { (window as any).partialWindow = true; });
+  await coverage.getByRole("button", { name: "Read usage window" }).click();
+  await coverage.getByText("Window coverage is incomplete", { exact: true }).waitFor();
+  expect(await coverage.getByText("Retained history is partial.", { exact: false }).count()).toBe(1);
+  expect((await usageCalls()).map((call: any) => [call.panel, call.name, call.arguments])).toEqual([
+    [0, "usage_report", { device: "lab-fixture", identity: "root", sampleLimit: 0, seriesLimit: 0, historyLimit: 7 }],
+    ...[1, 2].map(() => [0, "usage_window", { device: "lab-fixture", identity: "root", action: "read", windowId, detailLimit: 0 }]),
+  ]);
+  expect(await second.locator(".usage-coverage").count()).toBe(0);
+  await first.getByRole("combobox", { name: "Job execution identity" }).selectOption("owner");
+  expect(await coverage.getByText("Window coverage is incomplete", { exact: true }).count()).toBe(0);
+  await first.getByRole("combobox", { name: "Job execution identity" }).selectOption("root");
   await page.evaluate(() => { (window as any).failDoctor = true; });
   await first.getByRole("button", { name: "Refresh diagnosis" }).click();
   await first.getByText(/previous results are cached/).waitFor();
@@ -131,7 +170,7 @@ it.skipIf(!executablePath)("isolates panels, pages text output and recovers stal
   expect(await first.locator(".device-title .badge").innerText()).toBe("REACHABLE");
   expect(await second.getByText(scopes[1]!, { exact: true }).count()).toBe(1);
   const calls = await page.evaluate(() => (window as any).calls);
-  expect(calls.every((call: any) => ["dashboard_snapshot", "dashboard_doctor", "operation_inspect"].includes(call.name))).toBe(true);
+  expect(calls.every((call: any) => ["dashboard_snapshot", "dashboard_doctor", "operation_inspect", "usage_report", "usage_window"].includes(call.name))).toBe(true);
   expect(calls.filter((call: any) => call.name === "dashboard_snapshot").every((call: any) => (call.panel === 0 && !call.arguments.diagnosticScopeId) || call.arguments.diagnosticScopeId === scopes[call.panel])).toBe(true);
   await page.screenshot({ path: path.join(evidence, "recovered.png"), fullPage: true });
   expect(errors).toEqual([]);

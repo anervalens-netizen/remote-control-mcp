@@ -44,7 +44,7 @@ export function registerUsageTools(server: McpServer, client: AgentClient) {
   if (!windows) { windows = new UsageWindows(dispatchesFor(client)); windowStores.set(client, windows); }
   const store = windows;
   server.registerTool("usage_window", {
-    description: "Read-only bounded same-agent-instance ingress measurement for ONE explicit canonical device and identity. Open, periodically collect, close, then read retained evidence. Process memory only: 8 windows, 15-minute TTL, 256 events/dispatches each. Preserves original dispatch envelopes before global ring eviction. Missing/late detail, overflow and restarts remain explicit. Shared bearer/correlation are not source attestation, authorization or effect proof. No workload execution/replay; console integration unsupported.",
+    description: "Read-only bounded same-agent-instance ingress measurement for ONE explicit canonical device and identity. Open, periodically collect, close, then read retained evidence. Process memory only: 8 windows, 15-minute TTL, 256 events/dispatches each. Preserves original dispatch envelopes before global ring eviction. Missing/late detail, overflow and restarts remain explicit. Shared bearer/correlation are not source attestation, authorization or effect proof. No workload execution/replay.",
     inputSchema: z.object({ device: z.string().min(1), identity: z.enum(["owner", "root", "interactive"]),
       action: z.enum(["open", "collect", "close", "read"]), windowId: z.string().uuid().optional(),
       detailOffset: z.number().int().min(0).max(256).default(0), detailLimit: z.number().int().min(0).max(16).default(0),

@@ -35,6 +35,8 @@ describe("modern MCP alongside legacy sessions", () => {
     expect(discovery.id).toBe("same-request-id");
     expect(discovery.result.supportedVersions).toContain("2026-07-28");
     expect(discovery.result.resultType).toBe("complete");
+    expect(discovery.result.capabilities.tools.listChanged).not.toBe(true);
+    expect(discovery.result.capabilities.resources.listChanged).not.toBe(true);
     const call = await modern("tools/call", { name: "devices_list", arguments: {} });
     expect(call.status).toBe(200);
     const result = await call.json();
