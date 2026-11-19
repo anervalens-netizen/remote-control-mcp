@@ -113,6 +113,7 @@ def recover(directory, expected):
 
         # The writer protocol will not create a new claim while this one exists.
         # The flock serializes recoverers until the old path has been removed.
+        os.fsync(fd)
         archive = CLAIM + ".recovered-" + fingerprint
         try:
             os.link(CLAIM, archive, src_dir_fd=root, dst_dir_fd=root, follow_symlinks=False)

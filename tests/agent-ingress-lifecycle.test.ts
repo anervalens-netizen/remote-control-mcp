@@ -107,8 +107,25 @@ it.skipIf(process.platform !== "linux")("recovers one exact orphan claim and pre
     const receipt = JSON.parse(run().stdout);
     expect(receipt.state).toBe("recoverable");
     expect(JSON.parse(run("--apply", present.fingerprint).stdout).state).toBe("claim_changed");
-    // Simulate a recovery process dying after it preserved the old inode.
     const archive = key + ".recovered-" + receipt.fingerprint;
+    const failClaimSync = [
+      "import errno, os, runpy, stat, sys",
+      "original_fsync = os.fsync",
+      "def fsync(fd):",
+      "    if stat.S_ISREG(os.fstat(fd).st_mode):",
+      "        raise OSError(errno.EIO, 'injected claim sync failure')",
+      "    original_fsync(fd)",
+      "os.fsync = fsync",
+      "sys.argv = sys.argv[1:]",
+      "runpy.run_path(sys.argv[0], run_name='__main__')",
+    ].join("\n");
+    const failed = spawnSync("python3", ["-B", "-c", failClaimSync, recoveryTool, root, "--apply", receipt.fingerprint],
+      { encoding: "utf8", timeout: 5000 });
+    expect(failed.status, failed.stderr).toBe(1);
+    expect(JSON.parse(failed.stdout).state).toBe("filesystem_error");
+    expect(await readFile(key)).toEqual(beforeClaim);
+    await expect(readFile(archive)).rejects.toMatchObject({ code: "ENOENT" });
+    // Simulate a recovery process dying after it preserved the old inode.
     await link(key, archive);
     const apply = () => execFileAsync("python3", [recoveryTool, root, "--apply", receipt.fingerprint], { timeout: 5000 })
       .then(({ stdout }) => JSON.parse(stdout), error => JSON.parse(error.stdout));
