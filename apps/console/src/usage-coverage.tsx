@@ -39,11 +39,16 @@ function UsageHistory({ value }: { value: Json }) {
   if (!history) return <p role="status">{statusMessage(value.agentStatus ?? {})}.</p>;
   const rows: Json[] = history.days ?? [];
   const gaps: Json[] = history.gaps ?? [];
+  const offset = history.page?.offset;
+  const retainedCount = count(history.page?.total);
+  const pageLabel = Number.isSafeInteger(offset) && offset >= 0 && rows.length > 0
+    ? rows.length === 1 ? `cohort ${offset + 1}` : `cohorts ${offset + 1}–${offset + rows.length}`
+    : `${rows.length} shown`;
   return <>
     <dl className="observation-facts">
       <dt>Collection started (UTC)</dt><dd>{utc(history.collectionStartedAt)}</dd>
       <dt>Configured retention</dt><dd>{count(history.retentionDays)} UTC days</dd>
-      <dt>Retained daily cohorts</dt><dd>{count(history.page?.total)} · showing {rows.length} newest</dd>
+      <dt>Retained daily cohorts</dt><dd>{retainedCount} · {pageLabel}</dd>
       <dt>Current process</dt><dd>{count(agent.totals?.received)} admitted requests · {count(agent.sampleCoverage?.retained)} retained samples</dd>
       <dt>Sample limits</dt><dd>{count(agent.sampleCoverage?.omitted)} omitted · {count(agent.sampleCoverage?.limit)} retained maximum</dd>
     </dl>

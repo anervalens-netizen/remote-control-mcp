@@ -135,11 +135,13 @@ it.skipIf(!executablePath)("isolates panels, pages text output and recovers stal
   await coverage.getByText("90 UTC days").waitFor();
   await coverage.getByText("Retained history is partial.", { exact: false }).waitFor();
   await coverage.getByText("Coverage before collection began is unknown.").waitFor();
+  await coverage.getByText("8 · cohort 1", { exact: true }).waitFor();
   await coverage.getByText("10 omitted · 128 retained maximum").waitFor();
   await coverage.getByText("Coverage gaps · 1 retained · 1 omitted").waitFor();
   await coverage.getByText(/Unclean restart/).waitFor();
   await coverage.getByRole("button", { name: "Read older days" }).click();
   await coverage.getByRole("rowheader", { name: "2026-01-02" }).waitFor();
+  await coverage.getByText("8 · cohort 8", { exact: true }).waitFor();
   const windowId = "55555555-5555-4555-8555-555555555555";
   await coverage.getByRole("textbox", { name: "Existing usage window ID" }).fill(windowId);
   await coverage.getByRole("button", { name: "Read usage window" }).click();
