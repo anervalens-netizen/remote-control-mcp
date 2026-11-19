@@ -17,10 +17,10 @@ The public tracker records engineering status and sanitized evidence only. Opera
 
 ## Current inventory — 2026-11-19
 
-**61 items — 42 verified, 3 implemented, 2 blocked, 8 planned,
+**61 items — 45 verified, 1 implemented, 2 blocked, 7 planned,
 5 conditional, 1 deferred, 0 active.** The [work-item table](#work-items)
-is the source for this count. REC-05 and DEL-01 remain blocked. The
-three implemented items retain their listed acceptance requirements.
+is the source for this count. REC-05 and DEL-01 remain blocked. HIS-01
+retains its elapsed-retention and orphan-claim acceptance requirements.
 
 ## Historical implementation and release checkpoints
 
@@ -124,6 +124,25 @@ remain explicit in coverage reports. Mandatory automated review isolation
 remains deferred under INV-05. REC-05 and DEL-01 retain their original evidence
 requirements and protection.
 
+### Operator workflow qualification
+
+[PR #74](https://github.com/anervalens-netizen/remote-control-mcp/pull/74)
+merged as `ec417ea` with the reviewed source tree. Both exact-head reviews
+and Linux, Windows compatibility and public-source checks passed. The selected
+controller activated with matched startup manifest integrity and a verified
+rollback snapshot. An authenticated connector check returned a nonterminal
+wait and resumed the same durable job with exact late stdout and stderr. The
+console opener kept the original device, identity and job selection. Browser
+coverage exercises stale observations, retained output and terminal polling
+stop. The configured error receiver verified a mapped application frame.
+
+For this review, the selected DSH profile used a qualified alternative provider
+after quota failure and reevaluated the original GitHub trigger. The exact-head
+report was published through the existing reviewer. Automatic quota diagnosis
+and fallback, historical review dispositions and mandatory worker isolation
+remain tracked under [#59](https://github.com/anervalens-netizen/remote-control-mcp/issues/59)
+and [#64](https://github.com/anervalens-netizen/remote-control-mcp/issues/64).
+
 ## How to execute and update
 
 1. Read the linked acceptance contract, current source and corresponding private evidence/task. Confirm that the item is still applicable.
@@ -191,8 +210,8 @@ Lots: 0 baseline; 1 recovery/desktop/effect semantics; 2 observation/history/inv
 | [RC26-UX-03](2026-11-16-improvement-plan.md#rc26-ux-03) | Keep default results compact with exact recovery | 3 | P2 | verified | BASE-03 | Implementation agent | [Paired compactness checks](2026-11-16-implementation-evidence.md#paired-qualification) retain actionable metadata, explicit truncation and byte cursors. An oversized read recovered the exact original payload with one producer read and no new dispatch during recovery. The measured routine fixture sizes were comparable across releases. |
 | [RC26-UX-04](2026-11-16-improvement-plan.md#rc26-ux-04) | Batch independent reads using existing facilities | 3 | P2 | verified | BASE-03 | Implementation agent | A paired native Linux sample compared separate authenticated SDK reads with one bounded batch. Per-item identity, bytes and the missing-file error matched. The batch needed fewer MCP calls. Broader B01–B07 qualification remains open. |
 | [RC26-UX-05](2026-11-16-improvement-plan.md#rc26-ux-05) | Select durable jobs and receipts according to the operation | 3 | P2 | verified | REC-04, BASE-03 | Implementation agent | The [eligible short and long fixtures](2026-11-16-implementation-evidence.md#paired-qualification) select the correct receipt or keyed job and recover exactly one original effect after withheld delivery or client interruption. The installed Linux producer case passed under MCP-04. Fleet adoption is unmeasured until eligible live operations have a denominator. |
-| [RC26-UX-06](2026-11-16-improvement-plan.md#rc26-ux-06) | Expose actionable job progress without invented certainty | 3 | P2 | implemented | OBS-03, UX-05 | Implementation agent | PR #70 projects observed job metadata and actionable next checks without inferring effects or completion percent. Readback returned the same terminal job and advertised 20-second wait cap. Broader waiting, interruption and client cases remain open. |
-| [RC26-UX-07](2026-11-16-improvement-plan.md#rc26-ux-07) | Extend the existing MCP Apps console with the same contracts | 3 | P2 | implemented | UX-01, UX-06, HIS-02 | Implementation agent | PR #70 delivers console doctor/progress, the published App resource and text fallback. Selected controller parity and console identity passed. Scoped readback preserved the selection. Full host and interaction coverage remains open. |
+| [RC26-UX-06](2026-11-16-improvement-plan.md#rc26-ux-06) | Expose actionable job progress without invented certainty | 3 | P2 | verified | OBS-03, UX-05 | Implementation agent | PR #74 console and SDK checks separate running, wait expiry, failed reads and terminal state. The deployed connector resumed the same job and cursor, returning exact late output. Input waiting and effect verification remain unknown without independent evidence. |
+| [RC26-UX-07](2026-11-16-improvement-plan.md#rc26-ux-07) | Extend the existing MCP Apps console with the same contracts | 3 | P2 | verified | UX-01, UX-06, HIS-02 | Implementation agent | PR #74 retained the timestamped observation and output page when the Apps bridge lost a read, resumed the selected job and stopped polling on terminal status in Chromium. The deployed opener returned the original job and route. Console source and mapped error receiver were verified for this release. |
 | [RC26-GOV-01](2026-11-16-improvement-plan.md#rc26-gov-01) | Reconcile review evidence against the exact repository head | 3 | P2 | planned | BASE-01 | — | — |
 | [RC26-GOV-02](2026-11-16-improvement-plan.md#rc26-gov-02) | Preserve complementary Codex and DSH review workflow | 3 | P2 | planned | BASE-01 | — | — |
 | [RC26-GOV-03](2026-11-16-improvement-plan.md#rc26-gov-03) | Keep tracker state and private handoffs synchronized | 0 | P1 | verified | — | Implementation agent | The canonical IDs, public release/checkpoint and task-scoped proposed ContextKeep readback were synchronized. Prior run verification remains separately bound to the original execution. Deferred DSH and incomplete platform/operational evidence have explicit reopening conditions; historical uncertainty remains in REC-05 and DEL-01. |
@@ -201,7 +220,7 @@ Lots: 0 baseline; 1 recovery/desktop/effect semantics; 2 observation/history/inv
 | [RC26-MCP-03](2026-11-16-improvement-plan.md#rc26-mcp-03) | Verify modern discovery and catalog/result parity | 3 | P2 | verified | MCP-01 | Implementation agent | Modern discovery, malformed-envelope rejection and typed tool catalog parity pass in isolated HTTP tests. Authenticated modern and legacy reconnect read the same console asset and terminal job. The selected ChatGPT host recovered the app doctor through Refresh tools. Automatic invalidation and other host behavior remain unverified in MCP-05; no universal discovery capability is claimed. |
 | [RC26-MCP-04](2026-11-16-improvement-plan.md#rc26-mcp-04) | Verify cancellation, reconnection and durable effect continuity | 3 | P1 | verified | MCP-01, REC-04 | Implementation agent | Selected installed Linux controller/agent accepted a single synthetic keyed start with withheld response. Fresh legacy and modern clients independently resolved the same job, read terminal success and complete output, and the separately observed marker had one write. Existing native wait/explicit cancellation and [isolated response-loss and official SSE scopes](../MCP04-TRANSPORT-FAILURE-EVIDENCE.md) qualify the scoped continuity contract. Broader installed-client coverage remains with MCP-05. |
 | [RC26-MCP-05](2026-11-16-improvement-plan.md#rc26-mcp-05) | Qualify the supported real hosts and document the limits | 3 | P2 | verified | MCP-02, MCP-03, MCP-04 | Implementation agent | [Real-host matrix](../RELIABILITY.md#physical-host-qualification) records selected Linux, Windows, Android, ChatGPT and Codex paths separately from SDK fixtures. Physical Windows qualified a targeted background fixture change and same-command recovery. Both physical Android companions qualified synthetic file publication and original receipt readback, and the tablet qualified coordinate input with independent accessibility-tree verification. Locked phone input and the unavailable Windows host remain unverified. |
-| [RC26-TMO-01](2026-11-16-improvement-plan.md#rc26-tmo-01) | Align wait budgets across client, controller, agent and process | 3 | P2 | planned | BASE-03, REC-04 | — | — |
+| [RC26-TMO-01](2026-11-16-improvement-plan.md#rc26-tmo-01) | Align wait budgets across client, controller, agent and process | 3 | P2 | verified | BASE-03, REC-04 | Implementation agent | Shared wait policy retains a 20-second agent wait and 5-second controller transport margin. The selected deployed connector returned a normal 20.001-second wait in 21.506 seconds end to end, then received the terminal response with the same cursor lineage and both output streams. SDK cancellation and delayed-child-output regression passed. The existing deadlines were sufficient. |
 | [RC26-TMO-02](2026-11-16-improvement-plan.md#rc26-tmo-02) | Qualify heartbeat and bounded UI collection | 3 | P2 | verified | DEP-04, UX-01 | Implementation agent | An isolated native Linux desktop application was suspended while its agent kept answering status, and the bounded UI read returned APP_UNRESPONSIVE without a transport failure. Two actual Android companions qualified reverse polling and metadata collection. A selected physical Windows session exposed read-only readiness and managed-engine status. Interactive Windows and Android remain in MCP-05. |
 | [RC26-EXP-01](2026-11-16-improvement-plan.md#rc26-exp-01) | Probe real client support for the Tasks extension | 4 | P3 | planned | MCP-01 | — | — |
 | [RC26-EXP-02](2026-11-16-improvement-plan.md#rc26-exp-02) | Pilot Tasks as an adapter over existing durable jobs | 4 | P3 | conditional | EXP-01, BASE-03 | — | — |
