@@ -85,8 +85,14 @@ def observe(unit, user):
         running = None
         if pid:
             try:
-                cmdline = read(Path(f"/proc/{pid}/cmdline"), 64 * 1024).decode().removesuffix("\0")
-                running = entry(cmdline.split("\0"))
+                proc = Path(f"/proc/{pid}")
+                active_executable = proc.joinpath("exe").readlink()
+                cmdline = read(proc / "cmdline", 64 * 1024).decode().removesuffix("\0")
+                active_argv = cmdline.split("\0")
+                active_first = Path(active_argv[0])
+                if (active_executable.name in {"node", "nodejs"} and active_first.is_absolute()
+                        and active_first.resolve(strict=True) == active_executable):
+                    running = entry(active_argv)
             except (OSError, ValueError):
                 pass
         running_proof = target_proof if target == running else manifest(running)

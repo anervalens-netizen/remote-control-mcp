@@ -29,11 +29,16 @@ class StartupEvidenceTests(unittest.TestCase):
 
             def file(path, size):
                 if str(path) == '/proc/123/cmdline':
-                    return f'/usr/bin/node\0{active}\0'.encode()
+                    return f'{node}\0{active}\0'.encode()
                 return real_read(path, size)
 
+            # The path only needs to exist so its exact identity can be
+            # matched. It is never executed by the test.
+            node = root / 'node'
+            node.touch()
             real_read = module.read
-            with patch.object(module, 'run', dbus), patch.object(module, 'read', file):
+            with (patch.object(module, 'run', dbus), patch.object(module, 'read', file),
+                  patch.object(Path, 'readlink', return_value=node)):
                 observed = module.observe('example.service', False)
             self.assertEqual(observed['startupEntryMatchesActive'], False)
             self.assertEqual(observed['startupClaim']['manifestCommit'], 'a' * 40)
@@ -53,6 +58,23 @@ class StartupEvidenceTests(unittest.TestCase):
             observed = module.observe('example.service', False)
         self.assertIsNone(observed['startupEntry'])
         self.assertEqual(observed['startupClaim'], {'state': 'unknown_entry'})
+
+    def test_active_shell_cannot_claim_a_node_argv(self):
+        def dbus(args):
+            values = {
+                'example.service': ['/org/freedesktop/systemd1/unit/example_2eservice'],
+                'ExecStart': [['/usr/bin/node', ['/usr/bin/node', '/fixture/apps/agent/src/index.ts']]],
+                'MainPID': 123,
+                'ExecMainStartTimestampMonotonic': 456,
+            }
+            return json.dumps({'data': values[args[-1]]}).encode()
+
+        with (patch.object(module, 'run', dbus),
+              patch.object(module, 'read', return_value=b'/usr/bin/node\0/fixture/apps/agent/src/index.ts\0'),
+              patch.object(Path, 'readlink', return_value=Path('/usr/bin/dash'))):
+            observed = module.observe('example.service', False)
+        self.assertIsNone(observed['activeEntry'])
+        self.assertIsNone(observed['startupEntryMatchesActive'])
 
     def test_missing_manifest_never_derives_identity_from_release_directory(self):
         with tempfile.TemporaryDirectory() as directory:
