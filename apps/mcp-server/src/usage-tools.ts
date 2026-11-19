@@ -24,6 +24,7 @@ const agentStatusSchema = z.object({
   timeoutMs: z.literal(agentReadTimeoutMs),
 });
 type AgentStatus = z.infer<typeof agentStatusSchema>;
+const lastWindowAgentStatuses = new WeakMap<ReturnType<UsageWindows["open"]>, AgentStatus>();
 
 function failedAgentStatus(error: unknown): AgentStatus {
   const failure = error as { kind?: unknown; name?: unknown; status?: unknown } | null;
@@ -90,7 +91,11 @@ export function registerUsageTools(server: McpServer, client: AgentClient) {
       } finally { w.busy = false; }
     }
     store.get(w.id, device, identity); // A read deadline must not extend retention.
-    const value = { report: store.report(w, detailOffset, detailLimit), agentStatus };
+    if (agentStatus) lastWindowAgentStatuses.set(w, agentStatus);
+    const value = {
+      report: { ...store.report(w, detailOffset, detailLimit), lastAgentStatus: lastWindowAgentStatuses.get(w) ?? null },
+      agentStatus,
+    };
     return { content: [{ type: "text" as const, text: JSON.stringify(value) }], structuredContent: value };
   });
   server.registerTool("usage_report", {

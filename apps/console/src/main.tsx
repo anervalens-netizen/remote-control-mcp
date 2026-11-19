@@ -50,6 +50,12 @@ function theme() {
 app.onhostcontextchanged = () => theme();
 async function call(name: string, args: Json) {
   const result = await app.callServerTool({ name, arguments: args });
+  if (result.isError && (name === "usage_report" || name === "usage_window")) {
+    const detail = result.content.find(item => item.type === "text")?.text;
+    const route = args.identity === "root" ? "system/root" : args.identity;
+    if (detail === `${args.device} ${route} identity is not configured`) throw new Error("unconfigured_usage_identity");
+    if (detail === "usage_window_unavailable") throw new Error(detail);
+  }
   if (result.isError || !result.structuredContent) throw new Error(String(result.structuredContent?.error ?? "Observation unavailable"));
   return result.structuredContent as Json;
 }

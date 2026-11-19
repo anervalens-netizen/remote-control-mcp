@@ -25,7 +25,7 @@ it.skipIf(!executablePath)("isolates panels, pages text output and recovers stal
   }));
   const host = await build({ stdin: { contents: `
     import {AppBridge, PostMessageTransport} from '@modelcontextprotocol/ext-apps/app-bridge';
-    window.calls=[]; window.fail=false; window.failDoctor=false; window.partialWindow=false; window.wrongProducer=false;
+    window.calls=[]; window.fail=false; window.failDoctor=false; window.partialWindow=false; window.wrongProducer=false; window.usageError='';
     const fixtures=${JSON.stringify(data)};
     (async()=>{for(let i=0;i<2;i++){
       const frame=document.createElement('iframe');frame.id='panel-'+i;document.body.append(frame);
@@ -43,17 +43,20 @@ it.skipIf(!executablePath)("isolates panels, pages text output and recovers stal
           ],nextCheck:'Configure an owner endpoint only if owner operations are required.',coverage:{caveat:'Physical power and job effects are unverified.'}};
         }
         else if(params.name==='usage_report'){
-          const {device,identity}=params.arguments;
-          value={device,identity,agentStatus:{state:'available'},agent:{identity:window.wrongProducer?'owner':identity,totals:{received:42},sampleCoverage:{retained:32},history:{
+          const {device,identity,historyOffset=0}=params.arguments;
+          value={device,identity,agentStatus:{state:'available'},agent:{identity:window.wrongProducer?'owner':identity,totals:{received:42},sampleCoverage:{retained:32,omitted:10,limit:128},history:{
             collectionStartedAt:'2026-01-02T00:00:00Z',retentionDays:90,partial:true,legacyCoverageUnknown:true,
-            page:{total:1},days:[{date:'2026-01-02',received:42,completed:39}],
+            omittedGaps:1,gaps:[{reason:'unclean_restart',from:'2026-01-02T00:00:00Z',to:'2026-01-02T00:00:10Z'}],
+            page:{total:8,offset:historyOffset,nextOffset:historyOffset?null:7},days:[{date:historyOffset?'2026-01-02':'2026-01-09',received:42,completed:39}],
           }}};
         }
         else if(params.name==='usage_window'){
           const {device,identity,windowId}=params.arguments;
+          if(window.usageError)return {isError:true,content:[{type:'text',text:window.usageError}]};
           value={report:{device,identity,windowId,start:{observedAt:'2026-01-02T00:00:00Z'},end:{observedAt:'2026-01-02T00:00:01Z'},
             complete:!window.partialWindow,denominatorExact:true,agentDenominator:7,collectionResidual:window.partialWindow?2:0,
             missingEventDetail:window.partialWindow?2:0,reconciliation:{attributed:3,unmatchedObserved:window.partialWindow?2:4},
+            lastAgentStatus:window.partialWindow?{state:'timeout',reason:'deadline_exceeded'}:{state:'available'},
           }};
         }
         else if(params.arguments.reference.traceId)value={observedAt:new Date().toISOString(),reference:params.arguments.reference,observation:{state:'returned',executionOutcome:'exit_nonzero',exitCode:23,events:[],jobs:[{device:'lab-fixture',identity:'root',jobId:'fixture-job'}]},output:null,coverage:'Observed metadata only'};
@@ -132,6 +135,11 @@ it.skipIf(!executablePath)("isolates panels, pages text output and recovers stal
   await coverage.getByText("90 UTC days").waitFor();
   await coverage.getByText("Retained history is partial.", { exact: false }).waitFor();
   await coverage.getByText("Coverage before collection began is unknown.").waitFor();
+  await coverage.getByText("10 omitted · 128 retained maximum").waitFor();
+  await coverage.getByText("Coverage gaps · 1 retained · 1 omitted").waitFor();
+  await coverage.getByText(/Unclean restart/).waitFor();
+  await coverage.getByRole("button", { name: "Read older days" }).click();
+  await coverage.getByRole("rowheader", { name: "2026-01-02" }).waitFor();
   const windowId = "55555555-5555-4555-8555-555555555555";
   await coverage.getByRole("textbox", { name: "Existing usage window ID" }).fill(windowId);
   await coverage.getByRole("button", { name: "Read usage window" }).click();
@@ -140,11 +148,23 @@ it.skipIf(!executablePath)("isolates panels, pages text output and recovers stal
   await page.evaluate(() => { (window as any).partialWindow = true; });
   await coverage.getByRole("button", { name: "Read usage window" }).click();
   await coverage.getByText("Window coverage is incomplete", { exact: true }).waitFor();
+  await coverage.getByText("Agent read exceeded its deadline", { exact: true }).waitFor();
   expect(await coverage.getByText("Retained history is partial.", { exact: false }).count()).toBe(1);
   expect((await usageCalls()).map((call: any) => [call.panel, call.name, call.arguments])).toEqual([
     [0, "usage_report", { device: "lab-fixture", identity: "root", sampleLimit: 0, seriesLimit: 0, historyLimit: 7 }],
+    [0, "usage_report", { device: "lab-fixture", identity: "root", sampleLimit: 0, seriesLimit: 0, historyLimit: 7, historyOffset: 7 }],
     ...[1, 2].map(() => [0, "usage_window", { device: "lab-fixture", identity: "root", action: "read", windowId, detailLimit: 0 }]),
   ]);
+  for (const [error, message] of [
+    ["lab-fixture system/root identity is not configured", "This device has no endpoint for the selected identity."],
+    ["usage_window_unavailable", "This window ID is unavailable on the selected route."],
+    ["private fixture error details", "Window observation could not be read."],
+  ] as const) {
+    await page.evaluate(value => { (window as any).usageError = value; }, error);
+    await coverage.getByRole("button", { name: "Read usage window" }).click();
+    await coverage.getByRole("status").filter({ hasText: message }).waitFor();
+    expect(await coverage.getByText(error, { exact: true }).count()).toBe(0);
+  }
   await page.evaluate(() => { (window as any).wrongProducer = true; });
   await coverage.getByRole("button", { name: "Read daily history" }).click();
   await coverage.getByText(/producer identity could not be verified/).waitFor();
