@@ -13,12 +13,22 @@ The test covers transport framing, actual controller routing, the keyed status c
 
 Selected earlier native HP tests independently confirmed that cancelling job_wait does not cancel its durable job, that a new authenticated SDK client can read its original ID and observe normal completion, and that an explicit job_cancel terminates its selected test job. Those are distinct from losing the first job_start result.
 
-## Still unverified
+## Selected installed-host acceptance
 
-- Deliberately losing the first job_start response on the actual installed host and recovering its durable identity without reading private service credentials.
-- A legacy initialized SDK session replacement is now covered synthetically (lost first result, session terminated, old session HTTP 404, new session retrieves the same keyed job). The complete SSE stream-closure/interruption and multi-client interleaving matrix remains unverified.
-- Cross-version and cross-host process/effect counting, restart durability, and concurrency under real client reconnects.
-- Actual ChatGPT-host catalog refresh and client compatibility for all newly implemented tools.
+A controlled native Linux canary intentionally withheld the completed HTTP
+start response from an authenticated legacy SDK client. A new legacy session
+and a modern SDK client independently resolved the same original durable key
+in parallel. The recovered job exited normally, its output read was complete,
+and a separate read of the synthetic marker found one write. The client sent
+one start. The earlier wait cancellation and explicit job cancellation checks
+remain distinct from this producer-side delivery-loss test.
+
+This completes selected Linux and supported synthetic HTTP transport acceptance
+for MCP-04. Other installed hosts, physical Windows and platform-wide reconnect
+coverage remain with MCP-05. The evidence supports inspection of the original
+execution and gives no basis to replay or release a historical uncertain effect.
+The [official multiple-stream check](RELIABILITY.md#official-http-conformance-sample)
+passed on both supported HTTP protocol revisions in the isolated controller.
 
 ## CI dependency provenance
 
@@ -31,5 +41,3 @@ checks the archive before extraction, and exposes only the verified rg.exe
 directory to subsequent steps. The archive hash and ZIP path were verified
 independently against upstream GitHub release metadata and a downloaded copy.
 This is CI dependency hardening, not a change to installed agent behavior.
-
-Therefore **MCP-04 remains active**, not verified. These test-only changes add no workload retry or production behavior and do not authorize clearing historical uncertain coordinator operations.

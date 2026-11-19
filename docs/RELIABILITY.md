@@ -564,6 +564,23 @@ Catalog definitions are immutable for a running controller. Reconnect and call
 revision identifies the contract family. The authenticated runtime SHA
 identifies the running release.
 
+### Official HTTP conformance sample
+
+The [MCP conformance suite at revision 96a6f947](https://github.com/modelcontextprotocol/conformance/tree/96a6f9478b7f2e125cf0360a213383cf57533893)
+ran selected scenarios against an isolated authenticated controller with no
+configured device endpoints. Legacy initialization, ping, tool and resource
+catalogues and the multiple SSE stream scenario passed at 2025-11-25. Tool
+and resource catalogues and the multiple stream scenario also passed at
+2026-07-28. Modern discovery, version and required metadata errors, HTTP
+status/headers and transport framing passed their applicable checks.
+
+Modern stateless and caching scenarios did not pass in full. Some checks
+require the suite's dedicated elicitation, logging and tool mutation hooks,
+which this server does not ship. The caching suite also calls the unadvertised
+prompt catalogue. Tool and resource cache hints passed. Exact supported
+capability coverage, including the SDK's default list-change advertisement
+against our immutable catalogue, is tracked as MCP-02.
+
 | Agent combination | Gate / fallback |
 | --- | --- |
 | Current controller + current agent | `high-level-coordination-v1`, `utf8-byte-pages-v1`, `job-key-recovery-v1` advertised and checked for their operations |
