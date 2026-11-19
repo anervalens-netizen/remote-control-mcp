@@ -62,7 +62,9 @@ reads no unit environment or credentials, runs no service actions, and supports
 direct Node and simple `/usr/bin/env` entry points. A wrapper, overridden
 argument-zero, missing manifest or unreadable process yields unknown evidence
 for the affected layer. The active entry requires read access to both
-`/proc/<pid>/exe` and `/proc/<pid>/cmdline`. An unprivileged inspection can still
+`/proc/<pid>/exe` and `/proc/<pid>/cmdline`. Absolute arguments must resolve to
+that executable. For simple `env node` launches, the bare executable name
+must match the kernel-reported Node executable's name. An unprivileged inspection can still
 report a loaded startup entry if process access is restricted. The entry
 checksum covers one file. For source and full listed-file verification, use the
 [release workflow](WORKSPACE-AND-RELEASES.md#verify-and-activate-a-release).

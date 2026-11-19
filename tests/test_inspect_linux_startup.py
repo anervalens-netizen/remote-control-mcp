@@ -76,6 +76,37 @@ class StartupEvidenceTests(unittest.TestCase):
         self.assertIsNone(observed['activeEntry'])
         self.assertIsNone(observed['startupEntryMatchesActive'])
 
+    def test_env_launcher_can_leave_a_bare_node_argv(self):
+        target = '/fixture/apps/agent/src/index.ts'
+
+        def dbus(args):
+            values = {
+                'example.service': ['/org/freedesktop/systemd1/unit/example_2eservice'],
+                'ExecStart': [['/usr/bin/env', ['/usr/bin/env', 'node', target]]],
+                'MainPID': 123,
+                'ExecMainStartTimestampMonotonic': 456,
+            }
+            return json.dumps({'data': values[args[-1]]}).encode()
+
+        with (patch.object(module, 'run', dbus),
+              patch.object(module, 'read', return_value=f'node\0{target}\0'.encode()),
+              patch.object(Path, 'readlink', return_value=Path('/usr/bin/node'))):
+            observed = module.observe('example.service', False)
+        self.assertEqual(observed['activeEntry'], target)
+        self.assertTrue(observed['startupEntryMatchesActive'])
+
+    def test_active_node_argv_must_agree_with_the_kernel_executable(self):
+        target = '/fixture/apps/agent/src/index.ts'
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            node = root / 'node'
+            alternate = root / 'old' / 'node'
+            alternate.parent.mkdir()
+            alternate.touch()
+            self.assertIsNone(module.active_entry(node, [str(alternate), target]))
+            self.assertIsNone(module.active_entry(node, ['nodejs', target]))
+            self.assertIsNone(module.active_entry(node, ['./node', target]))
+
     def test_missing_manifest_never_derives_identity_from_release_directory(self):
         with tempfile.TemporaryDirectory() as directory:
             target = Path(directory) / ('a' * 40) / 'apps/agent/src/index.ts'

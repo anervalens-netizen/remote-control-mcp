@@ -17,6 +17,7 @@ ENTRY = re.compile(r"/apps/(?:agent|mcp-server)/src/index\.ts$")
 SHA = re.compile(r"^[0-9a-f]{40}(?:[0-9a-f]{24})?$")
 UNIT = re.compile(r"(?:user:)?[A-Za-z0-9_.@-]{1,200}\.service")
 MAX_MANIFEST_BYTES = 8 * 1024 * 1024
+NODE_EXECUTABLES = {"node", "nodejs"}
 
 def run(args):
     return subprocess.run(args, check=True, capture_output=True, timeout=4).stdout
@@ -36,9 +37,20 @@ def entry(argv):
         argv = argv[1:]
         while argv and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", argv[0]):
             argv = argv[1:]
-    if len(argv) != 2 or Path(argv[0]).name not in {"node", "nodejs"}:
+    if len(argv) != 2 or Path(argv[0]).name not in NODE_EXECUTABLES:
         return None
     return Path(argv[1]) if argv[1].startswith("/") and ENTRY.search(argv[1]) else None
+
+def active_entry(executable, argv):
+    if not executable.is_absolute() or executable.name not in NODE_EXECUTABLES or not argv:
+        return None
+    first = Path(argv[0])
+    if first.is_absolute():
+        if first.resolve(strict=True) != executable:
+            return None
+    elif argv[0] != executable.name:
+        return None
+    return entry(argv)
 
 def manifest(target):
     if not target:
@@ -88,11 +100,7 @@ def observe(unit, user):
                 proc = Path(f"/proc/{pid}")
                 active_executable = proc.joinpath("exe").readlink()
                 cmdline = read(proc / "cmdline", 64 * 1024).decode().removesuffix("\0")
-                active_argv = cmdline.split("\0")
-                active_first = Path(active_argv[0])
-                if (active_executable.name in {"node", "nodejs"} and active_first.is_absolute()
-                        and active_first.resolve(strict=True) == active_executable):
-                    running = entry(active_argv)
+                running = active_entry(active_executable, cmdline.split("\0"))
             except (OSError, ValueError):
                 pass
         running_proof = target_proof if target == running else manifest(running)
