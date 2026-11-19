@@ -104,16 +104,13 @@ selected controller changed. Original job readback, release identity, scoped
 operator history and window views, and reverse companion polling passed after
 activation. Both agent identities and the retained inventory were preserved.
 
-The next Linux and Android batch shares a single review of canonical roles and
-desired version declarations with per-identity installed, startup and
-runtime proof. Record real history coverage as it accumulates, and qualify
-interactive observation on an owner-controlled Android fixture. This covers
-INV-01, INV-02, MCP-05 and DEL-02 where the necessary inputs are available.
-
-Continue physical Windows as a separate scope. The reachable host has
-read-only session and engine evidence. Controlled input requires a dedicated
-session and fixture. An unavailable host is eligible for qualification after
-an authenticated endpoint responds. Mandatory automated review isolation
+The [fleet startup and version checks](../RC26-OPERATOR-DIAGNOSTICS.md#capture-linux-startup-and-installed-evidence)
+and [physical host matrix](../RELIABILITY.md#physical-host-qualification) record
+the supported Linux, Windows and Android routes, including missing manifests
+and unavailable physical input. The [ingress delivery qualification](../INGRESS-OBSERVABILITY.md#delivery-qualification)
+records the intended route classes and the selected deployed collection cohort.
+Historical coverage continues to accumulate and unsupported endpoint builds
+remain explicit in coverage reports. Mandatory automated review isolation
 remains deferred under INV-05. REC-05 and DEL-01 retain their original evidence
 requirements and protection.
 
@@ -206,7 +203,7 @@ Lots: 0 baseline; 1 recovery/desktop/effect semantics; 2 observation/history/inv
 | [RC26-PERF-03](2026-11-16-improvement-plan.md#rc26-perf-03) | Set measured regression budgets | 4 | P3 | planned | PERF-01, BASE-03 | — | — |
 | [RC26-DOC-01](2026-11-16-improvement-plan.md#rc26-doc-01) | Reconcile version claims and operational documentation | 3 | P2 | verified | BASE-01, MCP-01, INV-02 | Batch A implementation | Cross-checked the [SDK/host compatibility matrix](../RELIABILITY.md#mcp-sdk-compatibility-matrix-r11) against pinned package/transport versions and selected live results. Corrected the stale legacy SDK claim and linked archive identity, managed desktop and recovery contracts. Loaded and running target evidence remains explicitly independent from source documentation and automatic inventory work in INV-02. |
 | [RC26-DEL-01](2026-11-16-improvement-plan.md#rc26-del-01) | Close the recovery and desktop lot with behavior evidence | 1 | P1 | blocked | REC-05, DEP-05, EFF-03 | Implementation agent | Supported new-operation recovery and failed-read semantics passed actual MCP qualification; actual desktop behavior was qualified before and after a controlled owner relaunch. Historical REC-05 quiescence remains unresolved, so this lot remains blocked. The merged PR, deployed behavior and completed desktop acceptance do not establish the effect of the historical operation or authorize retiring its writer. |
-| [RC26-DEL-02](2026-11-16-improvement-plan.md#rc26-del-02) | Close the telemetry, history and inventory lot | 2 | P2 | active | OBS-04, OBS-05, OBS-06, HIS-04, INV-02, INV-03, INV-04 | Implementation agent | [PR #72](https://github.com/anervalens-netizen/remote-control-mcp/pull/72) qualified selected native and ChatGPT accounting with visible coverage and exact Linux windows. Original ContextKeep association, independent pressure/rollover retention, startup evidence and fleet availability qualified at their recorded scope. Fresh installed readback found three ingress-capable Linux identities with three observed UTC cohorts under the 90-day retention setting. Seven reachable older HTTP identities returned unsupported, and the two Android reverse routes do not supply HTTP agent ingress. The current 90-day mechanism is tested synthetically. Further live coverage requires adoption and elapsed collection where coverage is intended. |
+| [RC26-DEL-02](2026-11-16-improvement-plan.md#rc26-del-02) | Close the telemetry, history and inventory lot | 2 | P2 | verified | OBS-04, OBS-05, OBS-06, HIS-04, INV-02, INV-03, INV-04 | Implementation agent | [Ingress delivery qualification](../INGRESS-OBSERVABILITY.md#delivery-qualification) maps all intended route classes. Selected live controller, connector and Linux agent windows, direct binary GET/HEAD and controller raw streaming qualified with exact accounting. Stdio qualified in isolation, and separate Android journals qualified physical command receipts. Bounded history, pressure and independent retention qualified synthetically. Three live UTC cohorts under 90-day retention, gaps and seven older HTTP endpoint identities without ingress support are explicit. Current fleet/startup evidence and original ContextKeep association remain separately documented. |
 | [RC26-DEL-03](2026-11-16-improvement-plan.md#rc26-del-03) | Close usability and compatibility with real workflows | 3 | P2 | planned | UX-02, UX-03, UX-04, UX-07, GOV-01, GOV-02, MCP-05, TMO-01, TMO-02, DOC-01 | — | — |
 | [RC26-DEL-04](2026-11-16-improvement-plan.md#rc26-del-04) | Record a decision for every experiment and the remaining backlog | 4 | P3 | planned | EXP-01, EXP-02, EXP-03, EXP-04, EXP-05, PERF-02, PERF-03 | — | — |
 
@@ -259,7 +256,7 @@ The original DSHv4 report misstated the `7504ac4` comparison. Its record correct
 
 - [ ] **Lot 0:** BASE-01–03 have a current baseline and comparable scenarios; GOV-03 establishes the ongoing evidence/checkpoint practice.
 - [ ] **Lot 1 / DEL-01:** supported recovery without replay, protected active writers, verified managed desktop integration after relaunch, and correct read/effect classification.
-- [ ] **Lot 2 / DEL-02:** ingress accounting, independent history with coverage, bounded recovery reconciliation, and current inventory/startup identities.
+- [x] **Lot 2 / DEL-02:** ingress accounting, independent history with coverage, bounded recovery reconciliation, and current inventory/startup identities.
 - [ ] **Lot 3 / DEL-03:** measured workflow benefit, actual-client protocol/recovery checks, clear console/doctor behavior, and exact-head review/task reconciliation.
 - [ ] **Lot 4 / DEL-04:** every experiment and potential optimization has an explicit evidence-backed adoption, deferral or non-adoption decision.
 
