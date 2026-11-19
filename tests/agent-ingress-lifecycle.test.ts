@@ -1,11 +1,13 @@
 import { randomUUID } from "node:crypto";
-import { spawn, spawnSync } from "node:child_process";
+import { execFile, spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
-import { mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { link, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { request } from "node:http";
 import { createServer } from "node:net";
 import os from "node:os";
 import path from "node:path";
+import { promisify } from "node:util";
+import { fileURLToPath } from "node:url";
 import Fastify from "fastify";
 import { expect, it } from "vitest";
 import { registerAgentIngress } from "../apps/agent/src/ingress-http.ts";
@@ -14,6 +16,8 @@ import { IngressObserver } from "../apps/agent/src/ingress-observer.ts";
 const start = { route: "/health", method: "GET", entryPoint: "unattributed", authentication: "bearer_verified" } as const;
 const nodeModule = new URL("../apps/agent/src/ingress-observer.ts", import.meta.url).href;
 const count = (value: IngressObserver) => value.finish(value.begin(start), { statusCode: 200 });
+const recoveryTool = fileURLToPath(new URL("../scripts/recover-ingress-writer.py", import.meta.url));
+const execFileAsync = promisify(execFile);
 const childSource = [
   "import { IngressObserver } from " + JSON.stringify(nodeModule) + ";",
   "const value = new IngressObserver({ identity: 'owner', stateDirectory: process.argv[1], knownRoutes: ['/health'] });",
@@ -77,6 +81,76 @@ it.skipIf(process.platform === "win32")("preserves an orphan writer claim after 
     expect(await readFile(file + ".writer", "utf8")).toBe(beforeClaim);
   } finally {
     second?.close();
+    await rm(root, { recursive: true, force: true });
+  }
+}, 10000);
+
+it.skipIf(process.platform !== "linux")("recovers one exact orphan claim and preserves the aggregate across independent agent processes", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "ingress-recover-"));
+  const key = path.join(root, "aggregate.json.writer");
+  const aggregate = path.join(root, "aggregate.json");
+  const writer = new IngressObserver({ identity: "owner", stateDirectory: root });
+  let resumed: IngressObserver | undefined;
+  const run = (...args: string[]) => spawnSync("python3", [recoveryTool, root, ...args], { encoding: "utf8", timeout: 5000 });
+  try {
+    const present = JSON.parse(run().stdout);
+    expect(present.state).toBe("owner_present");
+    expect(JSON.parse(run("--apply", present.fingerprint).stdout).state).toBe("owner_present");
+    writer.close();
+    const child = spawnSync(process.execPath, ["--input-type=module", "-e",
+      [...childSource, "value.flush(); process.kill(process.pid, 'SIGKILL');"].join("\n"), root],
+      { encoding: "utf8", timeout: 5000, killSignal: "SIGKILL" });
+    expect(child.error).toBeUndefined();
+    expect(child.signal).toBe("SIGKILL");
+    const beforeAggregate = await readFile(aggregate);
+    const beforeClaim = await readFile(key);
+    const receipt = JSON.parse(run().stdout);
+    expect(receipt.state).toBe("recoverable");
+    expect(JSON.parse(run("--apply", present.fingerprint).stdout).state).toBe("claim_changed");
+    // Simulate a recovery process dying after it preserved the old inode.
+    const archive = key + ".recovered-" + receipt.fingerprint;
+    await link(key, archive);
+    const apply = () => execFileAsync("python3", [recoveryTool, root, "--apply", receipt.fingerprint], { timeout: 5000 })
+      .then(({ stdout }) => JSON.parse(stdout), error => JSON.parse(error.stdout));
+    const results = await Promise.all([apply(), apply()]);
+    expect(results.filter(({ state }) => state === "recovered")).toHaveLength(1);
+    expect(results.map(({ state }) => state)).toEqual(expect.arrayContaining([expect.stringMatching(/^(no_claim|recovery_in_progress)$/)]));
+    expect(await readFile(archive)).toEqual(beforeClaim);
+    expect(await readFile(aggregate)).toEqual(beforeAggregate);
+    expect(JSON.parse(run().stdout).state).toBe("no_claim");
+    resumed = new IngressObserver({ identity: "owner", stateDirectory: root });
+    expect(resumed.snapshot().coverage).toMatchObject({ persistence: "confirmed", repairRequired: false });
+    expect(resumed.snapshot().history.gaps).toContainEqual(expect.objectContaining({ reason: "unclean_restart" }));
+    count(resumed); resumed.flush();
+    const days = resumed.snapshot().history.days;
+    expect(days.reduce((total, day) => total + day.received, 0)).toBe(2);
+    expect(days.reduce((total, day) => total + day.completed, 0)).toBe(2);
+    expect(JSON.parse(run("--apply", receipt.fingerprint).stdout).state).toBe("claim_changed");
+    expect(JSON.parse(run().stdout).state).toBe("owner_present");
+  } finally {
+    writer.close(); resumed?.close();
+    await rm(root, { recursive: true, force: true });
+  }
+}, 10000);
+
+it.skipIf(process.platform !== "linux")("leaves legacy, malformed and foreign telemetry claims fenced", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "ingress-recover-legacy-"));
+  const key = path.join(root, "aggregate.json.writer");
+  try {
+    for (const [payload, expected] of [
+      [{ version: 1, pid: process.pid }, "legacy_claim"],
+      [{ version: 2, pid: 0 }, "invalid_claim"],
+      [{ version: 2, pid: 1, instanceId: randomUUID(), bootId: randomUUID(), pidNamespace: "pid:[1]" }, "different_boot_or_namespace"],
+    ] as const) {
+      const text = JSON.stringify(payload);
+      await writeFile(key, text, { mode: 0o600 });
+      const run = (...args: string[]) => spawnSync("python3", [recoveryTool, root, ...args], { encoding: "utf8", timeout: 5000 });
+      const result = JSON.parse(run().stdout);
+      expect(result.state).toBe(expected);
+      expect(run("--apply", result.fingerprint ?? "0".repeat(64)).status).toBe(1);
+      expect(await readFile(key, "utf8")).toBe(text);
+    }
+  } finally {
     await rm(root, { recursive: true, force: true });
   }
 }, 10000);
