@@ -1,4 +1,4 @@
-import { closeSync, constants, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, constants, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readlinkSync, readSync, unlinkSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
@@ -18,6 +18,18 @@ export type IngressStart = {
 export type IngressHandle = Readonly<{ eventId: string; instanceId: string; sequence: number; startedAt: string }>;
 export type IngressCompletion = { statusCode?: number; outcome?: "response" | "disconnected" | "timeout" };
 type Outcome = NonNullable<IngressCompletion["outcome"]>;
+function writerScope() {
+  if (process.platform === "linux") {
+    try {
+      const bootId = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
+      const pidNamespace = readlinkSync("/proc/self/ns/pid");
+      if (uuid.safeParse(bootId).success && /^pid:\[\d+\]$/.test(pidNamespace)) {
+        return { version: 2, bootId, pidNamespace };
+      }
+    } catch { /* The claim still works without a recovery identity. */ }
+  }
+  return { version: 1 };
+}
 type StatusClass = "informational" | "success" | "redirect" | "clientError" | "serverError" | "unknown";
 type Fault = "state_unavailable" | "state_corrupt" | "state_identity_mismatch" | "persistence_failed" |
   "state_over_budget" | "clock_regressed" | "counter_saturated" | "invalid_duration" | "closed_with_inflight" |
@@ -188,7 +200,7 @@ export class IngressObserver {
       const owned = fstatSync(this.writerFd);
       this.writerIdentity = { dev: owned.dev, ino: owned.ino };
       writeFileSync(this.writerFd, JSON.stringify({
-        version: 1, instanceId: this.instanceId, pid: process.pid, createdAt: this.processStartedAt,
+        ...writerScope(), instanceId: this.instanceId, pid: process.pid, createdAt: this.processStartedAt,
       }) + "\n");
       fsyncSync(this.writerFd);
     } catch {
