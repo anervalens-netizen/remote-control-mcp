@@ -15,7 +15,14 @@ This is the single implementation checklist for the improvement plan. It covers 
 
 The public tracker records engineering status and sanitized evidence only. Operational measurements, real device details, private task/execution IDs and deployment/rollback receipts stay in private project memory under the same stable work-item ID. Do not copy the operational audit into this repository.
 
-## Current implementation checkpoint
+## Current inventory — 2026-11-19
+
+**61 items — 41 verified, 4 implemented, 2 blocked, 8 planned,
+5 conditional, 1 deferred, 0 active.** The [work-item table](#work-items)
+is the source for this count. REC-05 and DEL-01 remain blocked. The
+four implemented items retain their listed acceptance requirements.
+
+## Historical implementation and release checkpoints
 
 PR #57 was merged as [`18e273e`](https://github.com/anervalens-netizen/remote-control-mcp/pull/57)
 with the same source tree as the reviewed `046d5d1` candidate. Required Linux,
@@ -41,13 +48,15 @@ The earlier lot1 checkpoint remains historical evidence for source `9682af5`: PR
 
 [Earlier evidence index, metric definitions and finite scenarios](2026-11-16-implementation-evidence.md).
 
-The tracker retains its original 61 work-item IDs. Two additional
-live-discovered follow-ups remain tracked in GitHub without silently deleting
-or relabeling existing items:
+The tracker retains its original 61 work-item IDs. Three additional
+follow-ups remain open in GitHub:
 [issue #58 — coordination-capacity diagnostics](https://github.com/anervalens-netizen/remote-control-mcp/issues/58)
 and [issue #59 — DSH provider-capacity and deferred-review continuity](https://github.com/anervalens-netizen/remote-control-mcp/issues/59).
 The REC-07 follow-up is tracked in
 [issue #62 — evidence-bound reconciliation after a failed Git pre-commit hook](https://github.com/anervalens-netizen/remote-control-mcp/issues/62).
+[Issue #64 — isolated review-probe dispatch](https://github.com/anervalens-netizen/remote-control-mcp/issues/64)
+tracks the deferred INV-05 item already counted in the table. Its reopening
+condition remains qualified DSH capacity and an isolated owner-scoped profile.
 [PR #63](https://github.com/anervalens-netizen/remote-control-mcp/pull/63) retains an invocation-bound failed commit observation:
 the Git command exit code, bounded before/after metadata and its containment
 limitation. The original generation remains uncertain and read-only inspection
@@ -84,8 +93,9 @@ merged as `e469c6229a3f232d7bbde308348af0598bfbb503`. The selected controller
 reported the matching pinned runtime and passed authenticated read-only doctor,
 version, latency and existing-job checks. [Batch A/B qualification](2026-11-18-consolidated-delivery.md#pr-70-merge-and-controller-qualification)
 records the verification scope and remaining limits. DSH exact-head review
-remains deferred due to quota. Current inventory: **61 items — 36 verified, 4 active, 2 blocked, 5 implemented, 8 planned, 5 conditional, 1 deferred**.
-The older counts and release evidence above describe their respective checkpoints.
+remains deferred due to quota. Historical PR #70 inventory: **61 items —
+36 verified, 4 active, 2 blocked, 5 implemented, 8 planned, 5 conditional,
+1 deferred.** This count describes that release checkpoint.
 
 [PR #71](https://github.com/anervalens-netizen/remote-control-mcp/pull/71)
 merged as `85124e0fc94eed0b926a8aab4b524b214c47ca0e` and was verified on the
