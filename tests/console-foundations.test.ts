@@ -74,6 +74,23 @@ describe("console foundation contracts", () => {
     expect(JSON.stringify(result.structuredContent)).not.toContain("budget");
   });
 
+  it("preserves intermittent availability and unknown connectivity when a configured route fails", async () => {
+    const agent = new AgentClient(inventory);
+    const unavailable = new TypeError("fixture network unavailable");
+    const info = vi.spyOn(agent, "info").mockRejectedValue(unavailable);
+    vi.spyOn(agent, "requestRoute").mockRejectedValue(unavailable);
+    const client = await harness(agent);
+
+    const implicit = await client.callTool({ name: "fleet_status", arguments: {} });
+    expect(implicit.structuredContent).toMatchObject({ devices: [{
+      device: "lab-primary", identityConfigured: true, expectedAvailability: "intermittent",
+      connectivity: "unknown", online: false, metricsStatus: "unavailable",
+    }] });
+
+    await client.callTool({ name: "fleet_status", arguments: { devices: ["LAB"] } });
+    expect(info).toHaveBeenCalledTimes(2);
+  });
+
   it("uses the shared bounded doctor contract for the selected console device", async () => {
     const agent = new AgentClient(inventory);
     const info = vi.spyOn(agent, "info").mockResolvedValue({ runtime: { ready: true } });

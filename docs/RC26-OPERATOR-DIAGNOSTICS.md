@@ -37,7 +37,45 @@ The optional private `RCMCP_VERSION_EVIDENCE_FILE` contains operator-supplied re
 }
 ```
 
-Supported roles: `primary`, `backup`, `intermittent`, `retired`, `test`. Roles do not automatically change fleet routing, probing or power-state conclusions. Genuine installed/startup verification must be added from an explicitly bounded native service/manifest inspection before INV-02 can be marked verified.
+Supported roles are `primary`, `backup`, `intermittent`, `retired`, and
+`test`. Roles are separate from automatic probe policy, physical power state,
+and readiness. Use the native checks below when deciding whether a declared
+version is still current.
+
+### Capture Linux startup and installed evidence
+
+Run [the bounded systemd inspection](../scripts/inspect-linux-startup.py)
+locally on an explicitly selected Linux host. Pass the loaded unit names and use
+the `user:` prefix for a unit managed by the current user's service manager.
+
+```bash
+umask 077
+python3 scripts/inspect-linux-startup.py example-agent.service user:example-owner-agent.service > startup-observation.json
+```
+
+The command records the loaded direct Node entry point and separately reads the
+current main process entry point. It also verifies the selected entry bytes
+against their checksum in the local manifest. A loaded and a running entry point
+can differ even while the agent reports ready. Compare this snapshot with the
+authenticated running identity and the approved release separately. The command
+reads no unit environment or credentials, runs no service actions, and supports
+direct Node and simple `/usr/bin/env` entry points. A wrapper, overridden
+argument-zero, missing manifest or unreadable process yields unknown evidence
+for the affected layer. The active entry requires read access to both
+`/proc/<pid>/exe` and `/proc/<pid>/cmdline`. Absolute arguments must resolve to
+that executable. For simple `env node` launches, the bare executable name
+must match the kernel-reported Node executable's name. An unprivileged inspection can still
+report a loaded startup entry if process access is restricted. The entry
+checksum covers one file. For source and full listed-file verification, use the
+[release workflow](WORKSPACE-AND-RELEASES.md#verify-and-activate-a-release).
+
+On Windows, compare task and logon launchers with process evidence. A scheduled
+task can be loaded while its wrapper's effective entry point remains unknown.
+Use the Android status tool for the authenticated running companion's reported
+application version. Desired build, installed APK identity and future startup
+remain separate and require their own evidence. Keep native output and fleet
+mappings private. This command runs on demand without adding remote probes or
+service polling.
 
 ## 3. Job status guidance with existing tools (UX-05/06)
 

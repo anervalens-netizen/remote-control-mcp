@@ -17,6 +17,37 @@ This contract separates HTTP requests, controller tool calls, durable executions
 
 Keep the actual route map, credentials, proxy configuration and coverage gaps private. A difference between controller tool calls and agent requests is not proof of direct traffic: one tool can dispatch multiple requests, probes can be unobserved at tool level, and retained traces can omit detail.
 
+## Delivery qualification
+
+The intended entry points for this lot are the route classes above. The live
+HTTP-agent rollout covers the selected ingress-capable Linux identities. Modern
+and legacy MCP HTTP and selected connector and relay paths were qualified live.
+Stdio was exercised as an isolated subprocess, where the boundary is the
+controller tool lifecycle and outbound dispatch. Proxy or bearer evidence alone
+does not identify the original caller.
+
+Paired live windows around a synthetic direct binary transfer and an isolated
+controller raw stream had exact counts and zero residual or missing detail.
+The source window counted six requests: three attributed dispatches and three
+unmatched raw requests. The destination window counted four attributed
+requests. The source route recorded HEAD and GET. The fixture confirmed source
+stream and destination bytes independently. Existing controller/agent windows
+also exercised direct client traffic and report filtering.
+
+Two physical Android companions qualified reverse polling, original command and
+effect receipts. The reverse command and connection journals are the evidence
+for that route. Their counters are separate from the HTTP agent denominator.
+Older HTTP endpoints returned explicit unsupported coverage. Qualifying this
+rollout does not make those endpoints part of its deployed collection cohort.
+
+The deployed agents reported three retained daily cohorts under a configured
+90-day retention and explicit coverage gaps. Synthetic 90-day rollover,
+independent retention and pressure tests exercised the capacity and persistence
+contract. In a single isolated run, collection took 18.565 ms p95 per
+1,000-request synthetic day, flush took 0.496 ms p95, and reconciliation took
+0.953 ms p95. These timings measure the tested components on one machine.
+A long calendar configuration cannot establish elapsed observation.
+
 ## Correlation and trust
 
 A controller-to-agent HTTP request sends bounded version-1 correlation in `x-rcmcp-correlation`. Only UUID fields are accepted: controller instance, dispatch, optional operation trace, optional controller HTTP request, optional diagnostic scope, and optional ContextKeep project/task/run. Unknown fields, oversized headers and noncanonical encodings are rejected as diagnostic metadata. They do not cause workload replay.
