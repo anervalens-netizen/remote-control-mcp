@@ -16,6 +16,15 @@ server-side merge action to select that identity. Preserve concurrent work and
 verify the exact remote head before correcting published metadata. Keep recovery
 bundles and deployment records in private operator storage.
 
+## Security review with Daybreak
+
+Assess the security impact of every change. For changes to execution identity,
+privileged operations, secrets or device routing, review the affected code.
+Reuse an existing Daybreak result when it covers the exact commit and concern.
+For an unresolved concrete concern, use Codex Security's source-only `validate`
+on that revision. Record the commit, scope and disposition in the private
+project task, or explain why further validation did not apply.
+
 <!-- portfolio-review:start -->
 ## Development review
 
