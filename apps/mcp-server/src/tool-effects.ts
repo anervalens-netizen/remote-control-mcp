@@ -15,6 +15,7 @@ export const readOnlyTools: ReadonlySet<string> = new Set([
   "desktop_screenshot", "desktop_session_status", "desktop_windows",
   "device_info", "device_contexts", "devices_list", "diagnostic_doctor", "fleet_status", "usage_report", "usage_window",
   "docker_snapshot", "docker_summary", "exec_recover", "fs_read", "fs_list",
+  "github_event_status", "github_pr_snapshot", "github_pr_events", "github_pr_wait",
   "gpu_snapshot", "host_inventory", "network_snapshot", "package_managers", "storage_snapshot", "system_metrics",
   "job_input_hash", "job_status", "job_output", "job_output_since", "job_wait", "job_list", "job_history", "job_lineage",
   "process_find", "process_list", "pty_list", "pty_output",
