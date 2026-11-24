@@ -48,6 +48,14 @@ node --env-file=/home/operator/.config/rcmcp/controller.env apps/mcp-server/src/
 
 Connect an MCP client to the configured controller's `/mcp` endpoint using the configured bearer token. `deploy/` contains generic service/install templates, not a live inventory. Preserve existing Android application identifiers during upgrades. Android baseline control and optional Shizuku shell have different capabilities; the companion interface documents that distinction.
 
+## Optional GitHub Event Streams gateway
+
+For a Linux device with an operator-installed owner-local gateway executable at `$HOME/.local/bin/github-event-gateway`, the controller exposes `github_event_status`, `github_pr_snapshot`, `github_pr_events`, `github_pr_wait`, and `github_pr_track`. Select the actual gateway device explicitly. These tools use its owner endpoint and never elevate or transfer GitHub credentials. The controller does not install the collector or assume preview access.
+
+The collector CLI must implement `status`, `snapshot URL`, `events --after N --limit N [--pr URL]`, `wait --after N --limit N [--pr URL] --timeout N`, and `track URL`. It returns JSON on stdout and exit 8 for an empty wait timeout. Results include the device, timeout flag and decoded data. Use bounded cursors and pages; incomplete output fails rather than silently presenting partial evidence.
+
+The cursor is gateway-local. Treat delivered GitHub events and REST-reconciled observations separately. Reconcile after connect/reconnect and inspect the current head's required checks before taking any action; an individual successful check suite is not a merge verdict. Keep normal fallback and uncovered event intake. Tracking is a subscription-management effect, not permission to merge or deploy.
+
 ## Result and recovery contracts
 
 Journal recovery keeps a durable directory-preparation intent in the journal's

@@ -1,3 +1,4 @@
+import { registerGithubEventTools } from "./github-event-tools.ts";
 import { registerCoordinationTools } from "./coordination-tools.ts";
 import { diagnosticsFor, registerWaitDiagnostics } from "./tool-diagnostics.ts";
 import { registerBrowserTools } from "./browser-tools.ts";
@@ -39,6 +40,7 @@ export function registerTools(server: McpServer, client: AgentClient): void {
   registerCapabilityTools(server, client);
   registerDiagnosticDoctor(server, client);
   registerRepoTools(server, client);
+  registerGithubEventTools(server, client);
   registerAndroidTools(server, client);
   registerConsoleTools(server, client);
   server.registerResource(consoleResource.name, consoleResource.uri, consoleResource.metadata, consoleResource.read);
