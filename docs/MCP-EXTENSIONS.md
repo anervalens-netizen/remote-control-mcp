@@ -13,7 +13,7 @@ job, filesystem, transfer and recovery tools retain their contracts.
 
 Sources: [Skills](https://modelcontextprotocol.io/extensions/skills/overview),
 [Tasks](https://modelcontextprotocol.io/extensions/tasks/overview),
-[Files draft](https://github.com/modelcontextprotocol/ext-files/blob/8a859b8f268926fe4beb84d78565e7cc6f9fa617/specification/draft/files.md),
+[Files draft](https://github.com/modelcontextprotocol/experimental-ext-file-uploads/blob/8a859b8f268926fe4beb84d78565e7cc6f9fa617/specification/draft/file-uploads.md),
 [OpenAI file APIs](https://developers.openai.com/plugins/reference#file-apis).
 Files is experimental. Product availability and protocol maturity are separate;
 server support does not establish that a particular host imports skills,
