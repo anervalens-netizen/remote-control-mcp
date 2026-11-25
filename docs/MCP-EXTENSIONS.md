@@ -69,6 +69,21 @@ states fail; a retry never issues a second upload target. The server confirms
 length and digest on a sealed copy before atomically consuming the state and
 publishing the immutable artifact. Concurrent retries can finalize only once.
 
+Native uploads use the same output validation, observation and retained-result
+wrapper as other tools. For inline uploads, `resultRecoveryId` is consumed once
+before writing. For out-of-band uploads, that explicit reservation is held for
+the exact-arguments finalization call; the preparatory `upload_required` uses a
+separate automatic staging receipt. Its reference appears in
+`_meta["io.remote-control-mcp/resultRecovery"]`. If that response is lost, list
+`result_recover` receipts and use the request correlation to read the retained
+`requestState` and transfer target. Recover the original finalized artifact by
+the explicit ID if the final response is lost. Do not replay either step to
+discover its outcome. Recovery receipts remain controller-memory data with the
+existing bounded retention; upload state itself persists across restarts.
+An explicit final reservation must be finalized within its fifteen-minute
+retention and the same controller process. Persistent upload bytes do not make
+an expired or pre-restart recovery ID valid, and never authorize a replay.
+
 `file_receive` is the practical OpenAI attachment path. The controller fetches
 the host-supplied URL over HTTPS, pins a checked public DNS answer, refuses
 redirects and private/special network targets, sends no cookies or MCP bearer,
@@ -90,8 +105,12 @@ synchronization. Keep this directory and its handle key stable across releases;
 do not point test servers at it. File artifacts expire after seven days;
 upload staging expires after one hour. Cleanup is opportunistic every minute,
 with a grace period for transfers. Corrupt metadata is retained for inspection.
-The store limits metadata counts and reserves a one-GiB byte budget plus at most
-four in-flight downloads. At most four binary transfers run concurrently.
+The store serializes admission and limits metadata counts. The one-GiB byte
+budget reserves both the retained staging file and its future finalized copy;
+completed artifacts and crash-orphaned bytes are also charged. HTTPS pulls
+reserve their maximum size before fetching. At most four binary transfers run
+concurrently; racing finalization copies can temporarily add up to 600 MiB and
+losing copies are removed before the operation returns.
 
 The binary transfer does not put its contents in the model context. Pass the
 returned path to an explicitly authorized processing or transfer operation.
@@ -117,6 +136,7 @@ immutable artifact to a Files-capable client.
 files and executor receipts: catalog manifests, native negotiation, the legacy
 fallback, restart-bound handles, cancellation and error semantics, token/header
 isolation, inline/empty files, upload/finalize/download, changed requests, bad
-digests, premature completion and racing retries. The existing modern HTTP and
+digests, premature completion, racing retries, concurrent quota admission,
+interactive identity routing and staging/final result recovery. The existing modern HTTP and
 legacy session suites cover unchanged cancellation, recovery and tool schemas.
 Live client end-to-end behavior and deployment receipts are recorded privately.

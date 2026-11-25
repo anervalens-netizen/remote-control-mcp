@@ -8,7 +8,8 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
-import { ARTIFACT_TTL_MS, CLIENT_CAPABILITIES, ExtensionError, ExtensionStore, FILES_EXTENSION, MAX_FILE_BYTES, MAX_INLINE_BYTES, UPLOAD_TTL_MS, canonicalJson, extensionSettings, opaqueId, sha256, validOpaqueId } from "./mcp-extension-store.ts";
+import { ARTIFACT_TTL_MS, ExtensionError, ExtensionStore, FILES_EXTENSION, MAX_FILE_BYTES, MAX_INLINE_BYTES, UPLOAD_TTL_MS, WIRE_RESULT, canonicalJson, extensionSettings, opaqueId, validOpaqueId } from "./mcp-extension-store.ts";
+import type { ResultRecoveryStore } from "./result-recovery.ts";
 
 const digestSchema = z.object({ algorithm: z.literal("sha-256"), value: z.string().regex(/^[A-Za-z0-9_-]{43}$/) }).strict();
 export const fileInputSchema = z.object({
@@ -23,9 +24,12 @@ const receiveSchema = z.object({ file: z.object({
 }).strict(), sha256: z.string().regex(/^[a-fA-F0-9]{64}$/).optional() }).strict();
 const artifactSchema = z.object({ artifactId: z.string().regex(/^[A-Za-z0-9_-]{43}$/), name: z.string(), mimeType: z.string(), size: z.number().int().nonnegative(), digest: digestSchema,
   createdAt: z.string(), expiresAt: z.string(), controllerPath: z.string() }).passthrough();
-const uploadOutputSchema = z.union([artifactSchema, z.object({ uploadPending: z.literal(true) })]);
+const uploadOutputSchema = z.union([artifactSchema, z.object({ uploadPending: z.literal(true), requestState: z.string(), uploads: z.array(z.record(z.string(), z.unknown())) }).passthrough()]);
 export type FileInput = z.infer<typeof fileInputSchema>;
-type UploadState = { tool: "file_upload"; arguments: { file: FileInput }; principal: string; expiresAt: string; createdAt: string };
+type UploadArguments = z.infer<typeof uploadSchema> & { resultRecoveryId?: string };
+type UploadBinding = { arguments: UploadArguments; recoveryId?: string };
+type UploadState = UploadBinding & { tool: "file_upload"; principal: string; expiresAt: string; createdAt: string };
+type UploadContext = UploadBinding & { meta?: Record<string, unknown>; requestState?: string; staging: boolean; conflictingRecovery: boolean };
 type Artifact = { artifactId: string; name: string; mimeType: string; size: number; digest: { algorithm: "sha-256"; value: string }; principal: string; createdAt: string; expiresAt: string; controllerPath: string };
 const result = (value: Record<string, unknown>, extra: Partial<CallToolResult> = {}): CallToolResult => ({ content: [{ type: "text", text: JSON.stringify(value) }], structuredContent: value, ...extra });
 const safeName = (value?: string) => { const name = (value ?? "file").split(/[\\/]/).at(-1)!.replace(/[\x00-\x1f\x7f]/g, "_"); return (!name || name === "." || name === ".." ? "file" : name).slice(0, 240); };
@@ -76,23 +80,78 @@ export function isPublicAddress(address: string): boolean {
 
 export class McpFiles {
   private transfers = 0;
+  private admissionTail = Promise.resolve();
+  private receiveReservations = 0;
+  private readonly contexts = new WeakMap<object, UploadContext>();
   readonly store: ExtensionStore;
   readonly principal: string;
   private readonly fetchSource: FileSourceFetcher;
-  constructor(store: ExtensionStore, principal: string, fetchSource: FileSourceFetcher = publicFileSource) { this.store = store; this.principal = principal; this.fetchSource = fetchSource; }
+  private readonly recovery?: ResultRecoveryStore;
+  constructor(store: ExtensionStore, principal: string, fetchSource: FileSourceFetcher = publicFileSource, recovery?: ResultRecoveryStore) { this.store = store; this.principal = principal; this.fetchSource = fetchSource; this.recovery = recovery; }
+  private async admit<T>(operation: () => Promise<T>): Promise<T> {
+    const previous = this.admissionTail; let release!: () => void;
+    this.admissionTail = new Promise<void>(resolve => { release = resolve; });
+    await previous;
+    try { return await operation(); } finally { release(); }
+  }
   private async budget(requestedSize = MAX_FILE_BYTES): Promise<void> {
     await this.store.ready();
     const uploadRows = await readdir(path.join(this.store.root, "uploads"));
     const artifactRows = await readdir(path.join(this.store.root, "artifacts"));
     if (uploadRows.filter(x => x.endsWith(".json")).length >= 64 || artifactRows.filter(x => x.endsWith(".json")).length >= 512) throw new Error("Transfer store capacity reached; expire or remove previous transfers before adding files");
-    let reserved = 0;
+    let reserved = this.receiveReservations, pendingArtifacts = this.receiveReservations / MAX_FILE_BYTES;
     for (const [kind, rows] of [["uploads", uploadRows], ["artifacts", artifactRows]] as const) for (const file of rows.filter(x => x.endsWith(".json"))) {
       const item = await this.store.read<{ size?: number; arguments?: { file?: { size?: number } } }>(kind, file.slice(0, -5));
-      reserved += item.size ?? item.arguments?.file?.size ?? MAX_FILE_BYTES;
+      const size = item.size ?? item.arguments?.file?.size ?? MAX_FILE_BYTES;
+      // A pending upload reserves its staged bytes and one finalized copy.
+      // Consuming and publishing metadata share the admission lock, so another
+      // call cannot observe a consumed row before its artifact is charged.
+      const pending = kind === "uploads" && !await this.store.isConsumed(file.slice(0, -5));
+      if (pending) pendingArtifacts++;
+      reserved += size * (pending ? 2 : 1);
     }
-    // Includes retained upload bytes and finalized artifacts. Four active
-    // downloads can add at most 600 MiB before their metadata is committed.
+    if (artifactRows.filter(x => x.endsWith(".json")).length + pendingArtifacts >= 512) throw new Error("Transfer store artifact reservations are full");
+    // Count crash-orphaned binary files conservatively as well. Normal pending
+    // upload bytes have metadata; receive reservations cover live pull writes.
+    for (const [kind, rows] of [["uploads", uploadRows], ["artifacts", artifactRows]] as const) for (const file of rows.filter(x => /\.(bin|part)$/.test(x))) {
+      if (rows.includes(file.replace(/\.(bin|part)$/, ".json"))) continue;
+      try { reserved += (await stat(path.join(this.store.root, kind, file))).size; }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+    }
+    // Racing finalization copies are transient and bounded by the four-transfer
+    // admission limit; each losing copy is removed without publishing metadata.
     if (reserved + requestedSize > 1024 * 1024 * 1024) throw new Error("Transfer store byte budget reached; retained artifacts expire after seven days");
+  }
+  /** Invoke the existing registered wrapper exactly once. A preparatory
+   * upload_required has its own automatic receipt; the caller's single-use
+   * reservation remains available for the exact-arguments final retry. */
+  async invokeUpload<T extends { _meta?: Record<string, unknown> }>(handler: (args: unknown, extra: T) => Promise<CallToolResult>, args: UploadArguments, extra: T, requestState?: string): Promise<CallToolResult> {
+    const explicit = args.resultRecoveryId, metadataId = extra._meta?.resultRecoveryId;
+    const recoveryId = explicit ?? metadataId;
+    const staging = requestState === undefined && args.file.data === undefined && args.file.size > 0;
+    const { resultRecoveryId: _argumentId, ...stagingArguments } = args;
+    const { resultRecoveryId: _metadataId, ...stagingMeta } = extra._meta ?? {};
+    const callbackExtra = { ...extra, ...(staging ? { _meta: stagingMeta } : {}) };
+    this.contexts.set(callbackExtra, { arguments: args, recoveryId: recoveryId as string | undefined, meta: extra._meta, requestState, staging,
+      conflictingRecovery: explicit !== undefined && metadataId !== undefined && explicit !== metadataId });
+    try { return await handler(staging ? stagingArguments : args, callbackExtra); }
+    finally { this.contexts.delete(callbackExtra); }
+  }
+  async toolUpload(args: z.infer<typeof uploadSchema>, extra: object): Promise<CallToolResult> {
+    const context = this.contexts.get(extra);
+    try {
+      if (context?.staging && context.recoveryId !== undefined) {
+        if (context.conflictingRecovery || !z.string().uuid().safeParse(context.recoveryId).success || !this.recovery || this.recovery.read(context.recoveryId).state !== "reserved") throw new ExtensionError(-32602, "Invalid or used final result recovery reservation; no upload was prepared");
+      }
+      const native = await this.upload(args, context?.meta, context?.requestState, context);
+      if (native.resultType === "complete") { const { resultType: _type, ...complete } = native; return complete as unknown as CallToolResult; }
+      return { content: [{ type: "text", text: "File transfer is pending; recover this staging receipt if delivery is interrupted" }],
+        structuredContent: { uploadPending: true, requestState: native.requestState, uploads: native.uploads }, _meta: { [WIRE_RESULT]: { result: native } } };
+    } catch (error) {
+      if (context && error instanceof ExtensionError) return { content: [{ type: "text", text: error.message }], structuredContent: { ok: false, error: error.message }, isError: true,
+        _meta: { [WIRE_RESULT]: { error: { code: error.code, message: error.message, ...(error.data ? { data: error.data } : {}) } } } };
+      throw error;
+    }
   }
   async metadata(id: string): Promise<Artifact> {
     const value = await this.store.read<Artifact>("artifacts", id);
@@ -113,54 +172,70 @@ export class McpFiles {
       requiredArguments: ["sourceDevice", "sourceContext", "destinationDevice", "destinationContext", "destinationPath"],
       sourceRequirement: "Select the configured agent and identity on the controller host that can read sourcePath. Use the original name for the destination filename when appropriate. File bytes stay outside model context." } };
   }
-  async upload(args: z.infer<typeof uploadSchema>, meta?: Record<string, unknown>, requestState?: string): Promise<Record<string, unknown>> {
+  async upload(args: z.infer<typeof uploadSchema>, meta?: Record<string, unknown>, requestState?: string, binding: UploadBinding = { arguments: args }): Promise<Record<string, unknown>> {
     if (this.transfers >= 4) throw new Error("Four file transfers are already active");
     this.transfers++;
-    try { return await this.uploadAdmitted(args, meta, requestState); }
+    try { return await this.uploadAdmitted(args, meta, requestState, binding); }
     finally { this.transfers--; }
   }
-  private async uploadAdmitted(args: z.infer<typeof uploadSchema>, meta?: Record<string, unknown>, requestState?: string): Promise<Record<string, unknown>> {
+  private async uploadAdmitted(args: z.infer<typeof uploadSchema>, meta: Record<string, unknown> | undefined, requestState: string | undefined, binding: UploadBinding): Promise<Record<string, unknown>> {
     const file = args.file;
     if (requestState !== undefined) {
       if (!validOpaqueId(requestState)) throw new ExtensionError(-32602, "Invalid upload state");
       const state = await this.store.read<UploadState>("uploads", requestState);
-      if (!expiry(state.expiresAt) || state.principal !== this.principal || state.tool !== "file_upload" || canonicalJson(state.arguments) !== canonicalJson(args) || await this.store.isConsumed(requestState)) throw new ExtensionError(-32602, "Invalid, changed, expired or consumed upload state; do not retry automatically");
+      if (!expiry(state.expiresAt) || state.principal !== this.principal || state.tool !== "file_upload" || canonicalJson(state.arguments) !== canonicalJson(binding.arguments) || state.recoveryId !== binding.recoveryId || await this.store.isConsumed(requestState)) throw new ExtensionError(-32602, "Invalid, changed, expired or consumed upload state; do not retry automatically");
       const content = this.store.stream("uploads", requestState);
       const artifactId = opaqueId();
       const sealed = await this.store.writeBytes("artifacts", artifactId, content, file.size, file.digest?.value);
       try {
-        await this.store.consume(requestState);
-        const artifact = await this.record(artifactId, file.name, file.mimeType, sealed.size, sealed.digest);
+        const artifact = await this.admit(async () => {
+          await this.store.consume(requestState);
+          return this.record(artifactId, file.name, file.mimeType, sealed.size, sealed.digest);
+        });
         return { resultType: "complete", ...result(this.visible(artifact)) };
       } catch (error) { await unlink(sealed.path).catch(() => {}); throw error; }
     }
-    await this.budget(file.size);
-    if (file.data !== undefined || file.size === 0) {
-      if (file.data !== undefined && !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(file.data)) throw new Error("File data is not canonical base64");
-      const bytes = Buffer.from(file.data ?? "", "base64");
-      if (bytes.length > MAX_INLINE_BYTES) throw new Error("Inline file exceeds the 1 MiB limit");
-      const id = opaqueId();
-      const sealed = await this.store.writeBytes("artifacts", id, [bytes], file.size, file.digest?.value);
-      const artifact = await this.record(id, file.name, file.mimeType, sealed.size, sealed.digest);
-      return { resultType: "complete", ...result(this.visible(artifact)) };
-    }
-    if (!extensionSettings(meta, FILES_EXTENSION)?.upload) throw new ExtensionError(-32021, "Out-of-band upload needs the Files extension; use file_receive for a ChatGPT attachment or inline data", { requiredExtensions: [FILES_EXTENSION] });
-    const id = opaqueId(), expiresAt = new Date(Date.now() + UPLOAD_TTL_MS).toISOString();
-    await this.store.write("uploads", id, { tool: "file_upload", arguments: args, principal: this.principal, expiresAt, createdAt: new Date().toISOString() } satisfies UploadState);
-    return { resultType: "upload_required", requestState: id, uploads: [{ fileId: file.id, path: "/files/uploads/" + id, method: "PUT", credentials: "include", expiresAt }] };
+    return this.admit(async () => {
+      await this.budget(file.data !== undefined || file.size === 0 ? file.size : 2 * file.size);
+      if (file.data !== undefined || file.size === 0) {
+        if (file.data !== undefined && !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(file.data)) throw new Error("File data is not canonical base64");
+        const bytes = Buffer.from(file.data ?? "", "base64");
+        if (bytes.length > MAX_INLINE_BYTES) throw new Error("Inline file exceeds the 1 MiB limit");
+        const id = opaqueId();
+        const sealed = await this.store.writeBytes("artifacts", id, [bytes], file.size, file.digest?.value);
+        try {
+          const artifact = await this.record(id, file.name, file.mimeType, sealed.size, sealed.digest);
+          return { resultType: "complete", ...result(this.visible(artifact)) };
+        } catch (error) { await unlink(sealed.path).catch(() => {}); throw error; }
+      }
+      if (!extensionSettings(meta, FILES_EXTENSION)?.upload) throw new ExtensionError(-32021, "Out-of-band upload needs the Files extension; use file_receive for a ChatGPT attachment or inline data", { requiredExtensions: [FILES_EXTENSION] });
+      const id = opaqueId(), expiresAt = new Date(Date.now() + UPLOAD_TTL_MS).toISOString();
+      await this.store.write("uploads", id, { tool: "file_upload", arguments: binding.arguments, recoveryId: binding.recoveryId, principal: this.principal, expiresAt, createdAt: new Date().toISOString() } satisfies UploadState);
+      return { resultType: "upload_required", requestState: id, uploads: [{ fileId: file.id, path: "/files/uploads/" + id, method: "PUT", credentials: "include", expiresAt }] };
+    });
   }
   async receive(args: z.infer<typeof receiveSchema>): Promise<CallToolResult> {
-    await this.budget();
     if (this.transfers >= 4) throw new Error("Four file transfers are already active");
     this.transfers++;
+    let reserved = false, sealedPath: string | undefined;
     try {
+      await this.admit(async () => { await this.budget(); this.receiveReservations += MAX_FILE_BYTES; reserved = true; });
       const id = opaqueId();
       const source = await this.fetchSource(args.file.download_url);
       const digest = args.sha256 ? Buffer.from(args.sha256, "hex").toString("base64url") : undefined;
       const sealed = await this.store.writeBytes("artifacts", id, source, undefined, digest);
-      const artifact = await this.record(id, args.file.file_name, args.file.mime_type ?? "application/octet-stream", sealed.size, sealed.digest);
+      sealedPath = sealed.path;
+      const artifact = await this.admit(async () => {
+        const artifact = await this.record(id, args.file.file_name, args.file.mime_type ?? "application/octet-stream", sealed.size, sealed.digest);
+        this.receiveReservations -= MAX_FILE_BYTES; reserved = false; return artifact;
+      });
+      sealedPath = undefined;
       return result(this.visible(artifact));
-    } finally { this.transfers--; }
+    } finally {
+      if (sealedPath) await unlink(sealedPath).catch(() => {});
+      if (reserved) await this.admit(async () => { this.receiveReservations -= MAX_FILE_BYTES; });
+      this.transfers--;
+    }
   }
   async download(id: string, meta?: Record<string, unknown>): Promise<CallToolResult> {
     const artifact = await this.metadata(id);
@@ -203,18 +278,20 @@ export class McpFiles {
     return true;
   }
   async cleanup(): Promise<void> {
-    for (const kind of ["uploads", "artifacts"] as const) {
-      const dir = path.join(this.store.root, kind);
-      let names: string[]; try { names = await readdir(dir); } catch { continue; }
-      for (const name of names.filter(x => x.endsWith(".json")).slice(0, 1024)) {
-        const id = name.slice(0, -5); if (!validOpaqueId(id)) continue;
-        try {
-          const record = await this.store.read<{ expiresAt: string }>(kind, id);
-          if (Date.parse(record.expiresAt) + 120_000 >= Date.now()) continue;
-          for (const suffix of [".bin", ".part", ".consumed", ".json"]) await unlink(this.store.location(kind, id, suffix)).catch(() => {});
-        } catch { /* Corrupt metadata is retained for inspection, never replayed. */ }
+    await this.admit(async () => {
+      for (const kind of ["uploads", "artifacts"] as const) {
+        const dir = path.join(this.store.root, kind);
+        let names: string[]; try { names = await readdir(dir); } catch { continue; }
+        for (const name of names.filter(x => x.endsWith(".json")).slice(0, 1024)) {
+          const id = name.slice(0, -5); if (!validOpaqueId(id)) continue;
+          try {
+            const record = await this.store.read<{ expiresAt: string }>(kind, id);
+            if (Date.parse(record.expiresAt) + 120_000 >= Date.now()) continue;
+            for (const suffix of [".bin", ".part", ".consumed", ".json"]) await unlink(this.store.location(kind, id, suffix)).catch(() => {});
+          } catch { /* Corrupt metadata is retained for inspection, never replayed. */ }
+        }
       }
-    }
+    });
   }
 }
 
@@ -224,11 +301,7 @@ export function registerFileTools(server: McpServer, files: McpFiles): void {
   server.registerTool("file_receive", { description: "Receive one ChatGPT/Codex attachment into the private controller workspace. Downloads a public HTTPS file without forwarding credentials; verifies size and SHA-256, retains an immutable artifact for seven days. No import, execution or overwrite occurs.", inputSchema: receiveSchema, outputSchema: artifactSchema,
     _meta: { "openai/fileParams": ["file"] }, annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true } }, async args => files.receive(args));
   server.registerTool("file_upload", { description: "Stage one file as an immutable controller artifact for seven days. Inline base64 is limited to 1 MiB; modern Files clients may upload up to 150 MiB out of band then retry with requestState. Returns controllerPath for explicit subsequent file_transfer or processing. Does not import or execute.", inputSchema: uploadSchema, outputSchema: uploadOutputSchema,
-    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false } }, async args => {
-      const response = await files.upload(args);
-      const { resultType: _type, ...complete } = response;
-      return complete as unknown as CallToolResult;
-    });
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false } }, async (args, extra) => files.toolUpload(args, extra));
   server.registerTool("file_download", { description: "Read an existing artifact receipt and, for Files-capable clients, an authenticated download target. No execution or new source download occurs.", inputSchema: z.object({ artifactId: z.string().regex(/^[A-Za-z0-9_-]{43}$/) }).strict(), outputSchema: artifactSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false } }, async (args, extra) => files.download(args.artifactId, extra._meta));
 }

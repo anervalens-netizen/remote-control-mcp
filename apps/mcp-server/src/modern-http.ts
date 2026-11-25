@@ -7,7 +7,7 @@ import { legacyConsoleResources, consoleResource, consoleIcon } from "./console-
 import { attachRemoteControlSkills } from "./mcp-skills.ts";
 import { ExtensionError, FILES_EXTENSION, MAX_INLINE_BYTES, TASKS_EXTENSION, WIRE_RESULT, extensionSettings } from "./mcp-extension-store.ts";
 import { McpTasks } from "./mcp-tasks.ts";
-import { McpFiles, uploadSchema } from "./mcp-files.ts";
+import { McpFiles } from "./mcp-files.ts";
 
 type HandlerContext = {
   signal: AbortSignal;
@@ -70,14 +70,7 @@ export function createModernMcpHandler(registry: () => Record<string, unknown>, 
           sendNotification: notification => ctx.mcpReq.notify(notification),
         };
         if (name === "file_upload") {
-          try {
-            const native = await extensions.files.upload(uploadSchema.parse(args), metadata(ctx), ctx.mcpReq.requestState<string>());
-            if (native.resultType === "complete") { const { resultType: _type, ...complete } = native; return complete as unknown as CallToolResult; }
-            return { content: [{ type: "text" as const, text: "File transfer is pending" }], structuredContent: { uploadPending: true }, _meta: { [WIRE_RESULT]: { result: native } } };
-          } catch (error) {
-            if (error instanceof ExtensionError) return { content: [{ type: "text" as const, text: error.message }], isError: true, _meta: { [WIRE_RESULT]: { error: { code: error.code, message: error.message, ...(error.data ? { data: error.data } : {}) } } } };
-            throw error;
-          }
+          return extensions.files.invokeUpload(handler, args as Parameters<McpFiles["invokeUpload"]>[1], extra, ctx.mcpReq.requestState<string>());
         }
         const asTask = name === "job_start" && extensionSettings(metadata(ctx), TASKS_EXTENSION) !== undefined;
         // Key persistence is prepared before dispatch; losing the response
@@ -109,10 +102,11 @@ export function createModernMcpHandler(registry: () => Record<string, unknown>, 
       if (!extensionCall) return handler.fetch(request, options);
       const response = await extensionHandler.fetch(request, options);
       if (!response.headers.get("content-type")?.includes("application/json")) return response;
-      const payload = await response.json() as { result?: { _meta?: Record<string, unknown> }; [key: string]: unknown };
+      const payload = await response.json() as { result?: { _meta?: Record<string, unknown>; structuredContent?: Record<string, unknown> }; [key: string]: unknown };
       const wire = payload.result?._meta?.[WIRE_RESULT] as { result?: Record<string, unknown>; error?: Record<string, unknown> } | undefined;
       if (wire) {
         const meta = { ...payload.result?._meta }; delete meta[WIRE_RESULT];
+        if (payload.result?.structuredContent?.resultRecovery) meta["io.remote-control-mcp/resultRecovery"] = payload.result.structuredContent.resultRecovery;
         delete payload.result;
         if (wire.error) payload.error = wire.error;
         else if (wire.result) payload.result = { ...wire.result, _meta: { ...meta, ...(wire.result._meta as Record<string, unknown> ?? {}) } };

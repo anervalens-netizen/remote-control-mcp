@@ -98,11 +98,12 @@ export function createMcpHttpServer(client: AgentClient, options: {
   const compatibility = new SdkCompatibilityDiagnostics();
   const extensionStore = new ExtensionStore(options.extensionStateDirectory);
   const principal = sha256(options.token ?? "explicit-unauthenticated-controller");
-  const files = new McpFiles(extensionStore, principal, options.fileSourceFetcher);
+  const files = new McpFiles(extensionStore, principal, options.fileSourceFetcher, recoveryFor(client));
   const tasks = new McpTasks(client, extensionStore, principal, async (device, context, id) => {
     if (sharedToolRegistry === undefined) build();
     const tool = sharedToolRegistry!.job_output_since as { handler: (args: unknown, extra: unknown) => Promise<CallToolResult> };
-    return tool.handler({ device, context, id, waitMs: 0, maxBytes: 32 * 1024, encoding: "utf8" }, {
+    const identity = context === "desktop" ? "interactive" : context === "user" ? "owner" : "root";
+    return tool.handler({ device, identity, id, waitMs: 0, maxBytes: 32 * 1024, encoding: "utf8" }, {
       signal: AbortSignal.timeout(30_000), requestId: "task-output-" + id, sendNotification: async () => {},
     });
   });

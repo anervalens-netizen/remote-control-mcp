@@ -5,7 +5,7 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 import { AgentClient } from "../apps/mcp-server/src/agent-client.ts";
 import { createMcpHttpServer } from "../apps/mcp-server/src/http-server.ts";
-import { CLIENT_CAPABILITIES, ExtensionStore, FILES_EXTENSION, TASKS_EXTENSION, sha256 } from "../apps/mcp-server/src/mcp-extension-store.ts";
+import { CLIENT_CAPABILITIES, ExtensionStore, FILES_EXTENSION, MAX_FILE_BYTES, TASKS_EXTENSION, opaqueId, sha256 } from "../apps/mcp-server/src/mcp-extension-store.ts";
 import { McpFiles, isPublicAddress, publicFileSource } from "../apps/mcp-server/src/mcp-files.ts";
 import { REMOTE_CONTROL_SKILLS, REMOTE_CONTROL_SKILL_MARKDOWN } from "../apps/mcp-server/src/mcp-skills.ts";
 import { toolResultSchemas } from "../apps/mcp-server/src/semantic-result-schemas.ts";
@@ -38,7 +38,7 @@ async function harness(options: { client?: AgentClient; root?: string; token?: s
 }
 function input(data = syntheticBytes) { return { id: "fixture-file", name: "folder/report.txt", mimeType: "text/plain", size: data.length, digest: { algorithm: "sha-256", value: sha256(data) } }; }
 function fakeClient() {
-  const client = new AgentClient([{ name: "fixture", url: "https://agent.invalid", userUrl: "https://owner.invalid" }]);
+  const client = new AgentClient([{ name: "fixture", url: "https://agent.invalid", userUrl: "https://owner.invalid", desktopUrl: "https://interactive.invalid" }]);
   const job = { id: "e6b2cd00-4135-428b-b83f-ae0e2bfa3b66", command: "printf synthetic", state: "running", startedAt: new Date().toISOString(), stdoutBytes: 0, stderrBytes: 0, exitCode: null as number | null };
   const start = vi.spyOn(client, "jobStart").mockImplementation(async () => ({ ...job }));
   vi.spyOn(client, "jobStatus").mockImplementation(async () => ({ ...job }));
@@ -104,6 +104,70 @@ describe("standard MCP extensions and legacy compatibility", () => {
     const foreign = await harness({ client: fixture.client, root: h.root, token: "other-owner" });
     expect((await foreign.rpc("tasks/get", { taskId: task.taskId })).data.error.code).toBe(-32602);
     expect((await h.rpc("tasks/get", { taskId: task.taskId }, both, { "Mcp-Name": "wrong" })).data.error.code).toBe(-32020);
+  });
+  it("reads interactive task status and terminal output on the same desktop endpoint", async () => {
+    const fixture = fakeClient(); const h = await harness({ client: fixture.client });
+    const started = (await h.rpc("tools/call", { name: "job_start", arguments: { device: "fixture", identity: "interactive", command: "printf synthetic" } })).data.result;
+    expect(started.resultType).toBe("task");
+    fixture.job.state = "completed"; fixture.job.exitCode = 0;
+    const completed = (await h.rpc("tasks/get", { taskId: started.taskId })).data.result;
+    expect(completed.result.isError).not.toBe(true);
+    expect(completed.result.structuredContent).toMatchObject({ id: fixture.job.id, identity: "interactive", context: "desktop" });
+    expect(fixture.client.jobStatus).toHaveBeenLastCalledWith("fixture", fixture.job.id, "desktop");
+    expect(fixture.client.jobFollow).toHaveBeenLastCalledWith("fixture", expect.objectContaining({ id: fixture.job.id }), "desktop", expect.any(AbortSignal));
+  });
+  it("retains native upload staging and final receipts without consuming the final reservation early", async () => {
+    const h = await harness();
+    const prepare = async () => (await h.rpc("tools/call", { name: "result_recovery_prepare", arguments: {} })).data.result.structuredContent.id;
+    const read = async (id: string) => (await h.rpc("tools/call", { name: "result_recover", arguments: { id } })).data.result.structuredContent;
+    const original = (page: { data: string }) => JSON.parse(Buffer.from(page.data, "base64").toString("utf8"));
+    const inlineId = await prepare();
+    const inline = (await h.rpc("tools/call", { name: "file_upload", arguments: { resultRecoveryId: inlineId, file: { ...input(), data: syntheticBytes.toString("base64") } } })).data.result;
+    expect(inline.isError).not.toBe(true);
+    expect(inline.structuredContent.resultRecovery.id).toBe(inlineId);
+    expect(inline.structuredContent.operationTrace.traceId).toBeDefined();
+    expect(original(await read(inlineId)).structuredContent.artifactId).toBe(inline.structuredContent.artifactId);
+    const usedReservation = (await h.rpc("tools/call", { name: "file_upload", arguments: { file: input(), resultRecoveryId: inlineId } })).data;
+    expect(usedReservation.error.code).toBe(-32602);
+    expect((await readdir(path.join(h.root, "uploads"))).filter(x => x.endsWith(".json"))).toHaveLength(0);
+
+    const finalId = await prepare(); const args = { file: input(), resultRecoveryId: finalId };
+    const pending = (await h.rpc("tools/call", { name: "file_upload", arguments: args })).data.result;
+    expect(pending.resultType).toBe("upload_required");
+    expect((await read(finalId)).state).toBe("reserved");
+    const index = (await h.rpc("tools/call", { name: "result_recover", arguments: {} })).data.result.structuredContent;
+    const stagingId = pending._meta["io.remote-control-mcp/resultRecovery"].id;
+    expect(index.items.find((x: any) => x.id === stagingId).invocation.tool).toBe("file_upload");
+    const recoveredPending = original(await read(stagingId)).structuredContent;
+    expect(recoveredPending.requestState).toBe(pending.requestState);
+    expect(recoveredPending.uploads).toEqual(pending.uploads);
+    expect(stagingId).not.toBe(finalId);
+    expect((await fetch(h.url + recoveredPending.uploads[0].path, { method: "PUT", headers: { Authorization: "Bearer " + h.token }, body: syntheticBytes })).status).toBe(204);
+    const changedId = await prepare();
+    const changed = (await h.rpc("tools/call", { name: "file_upload", arguments: { ...args, resultRecoveryId: changedId }, requestState: recoveredPending.requestState })).data;
+    expect(changed.error.code).toBe(-32602); expect((await read(finalId)).state).toBe("reserved");
+    const ready = (await h.rpc("tools/call", { name: "file_upload", arguments: args, requestState: recoveredPending.requestState })).data.result;
+    expect(ready.isError).not.toBe(true); expect(ready.structuredContent.resultRecovery.id).toBe(finalId);
+    expect(original(await read(finalId)).structuredContent.artifactId).toBe(ready.structuredContent.artifactId);
+    const before = await readdir(path.join(h.root, "artifacts"));
+    const duplicate = (await h.rpc("tools/call", { name: "file_upload", arguments: args, requestState: pending.requestState })).data;
+    expect(duplicate.error !== undefined || duplicate.result.isError === true).toBe(true);
+    expect(await readdir(path.join(h.root, "artifacts"))).toEqual(before);
+  });
+  it("reserves both retained copies at admission and serializes concurrent byte-budget checks", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "rc-files-budget-")); close.push(() => rm(root, { recursive: true, force: true }));
+    const store = new ExtensionStore(root), files = new McpFiles(store, "principal");
+    const args = { file: { id: "large", mimeType: "application/octet-stream", size: MAX_FILE_BYTES } };
+    const caps = { [CLIENT_CAPABILITIES]: both };
+    const outcomes = await Promise.allSettled(Array.from({ length: 4 }, () => files.upload(args, caps)));
+    expect(outcomes.filter(x => x.status === "fulfilled")).toHaveLength(3);
+    expect(outcomes.filter(x => x.status === "rejected")).toHaveLength(1);
+    // Metadata-only capacity fixtures avoid allocating hundreds of MiB. A
+    // consumed upload retains its staged copy and the separately charged artifact.
+    const first = outcomes.find(x => x.status === "fulfilled") as PromiseFulfilledResult<Record<string, unknown>>;
+    await store.consume(first.value.requestState as string);
+    await store.write("artifacts", opaqueId(), { size: MAX_FILE_BYTES });
+    await expect(files.upload(args, caps)).rejects.toThrow("byte budget");
   });
   it("uploads out of band, confirms exact bytes once, and downloads through an authenticated target", async () => {
     const h = await harness(); const args = { file: input() };

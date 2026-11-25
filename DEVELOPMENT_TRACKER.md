@@ -63,6 +63,7 @@ Implementation, review, CI and deployment state are tracked outside this public 
 - Negotiate native Tasks per request and reuse durable job execution. Keep signed handles bound to the principal, endpoint, device and identity across controller restarts.
 - Return terminal Tasks through the normal tool output validation, bounds and recovery contract. A shell marker alone is not a terminal executor receipt.
 - Bind upload state to exact arguments, principal, transfer and expiry. Verify size and digest before one-time consumption and immutable publication.
+- Preserve recovery for native inline and out-of-band file calls. Keep explicit finalization reservations separate from recoverable preparatory receipts, and charge both retained file copies before concurrent admission.
 - Retain a compatible OpenAI attachment path. Fetch only pinned public HTTPS targets, without redirected or forwarded credentials, within byte and time budgets.
 - Preserve the original safe name and a bounded next step for existing device-to-device transfer. Binary file contents stay outside the model context.
 - Verify transfer-to-target, final hash and authenticated download with synthetic files in the deployed producer/consumer path. Keep those private receipts outside this repository.
