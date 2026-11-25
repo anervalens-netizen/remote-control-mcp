@@ -48,6 +48,12 @@ node --env-file=/home/operator/.config/rcmcp/controller.env apps/mcp-server/src/
 
 Connect an MCP client to the configured controller's `/mcp` endpoint using the configured bearer token. `deploy/` contains generic service/install templates, not a live inventory. Preserve existing Android application identifiers during upgrades. Android baseline control and optional Shizuku shell have different capabilities; the companion interface documents that distinction.
 
+The HTTP controller also serves [Skills, durable Tasks and file exchange](docs/MCP-EXTENSIONS.md).
+Modern extensions are negotiated per request. Existing job tools remain available;
+ChatGPT/Codex attachment input uses the OpenAI file schema. Keep the private
+`RCMCP_MCP_EXTENSIONS_DIR` outside releases so task handles and staged files
+survive controller updates.
+
 ## Optional GitHub Event Streams gateway
 
 For a Linux device with an operator-installed owner-local gateway executable at `$HOME/.local/bin/github-event-gateway`, the controller exposes `github_event_status`, `github_pr_snapshot`, `github_pr_events`, `github_pr_wait`, and `github_pr_track`. Select the actual gateway device explicitly. These tools use its owner endpoint and never elevate or transfer GitHub credentials. The controller does not install the collector or assume preview access.

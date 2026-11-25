@@ -8,6 +8,10 @@ import { captureError } from "./error-reporting.ts";
 import { isLegacyRequest } from "@modelcontextprotocol/server";
 import { toNodeHandler, toWebRequest } from "@modelcontextprotocol/node";
 import { createModernMcpHandler } from "./modern-http.ts";
+import { ExtensionStore, sha256 } from "./mcp-extension-store.ts";
+import { McpTasks } from "./mcp-tasks.ts";
+import { McpFiles, registerFileTools, type FileSourceFetcher } from "./mcp-files.ts";
+import { registerLegacyRemoteControlSkillResources } from "./mcp-skills.ts";
 import { SdkCompatibilityDiagnostics } from "./sdk-compatibility.ts";
 import { monitorEventLoopDelay } from "node:perf_hooks";
 import { diagnosticsFor } from "./tool-diagnostics.ts";
@@ -22,6 +26,7 @@ import type { AgentClient } from "./agent-client.ts";
 import { registerTools } from "./all-tools.ts";
 import { readToolRegistry, installToolRegistry } from "./sdk-tool-registry.ts";
 import { legacyConsoleResources, consoleResource } from "./console-resource.ts";
+import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 
 type Session = { server: McpServer; transport: StreamableHTTPServerTransport; lastUsed: number; active: number };
 
@@ -86,9 +91,22 @@ export function createMcpHttpServer(client: AgentClient, options: {
   maxBodyBytes?: number | null;
   sessionMode?: "stateful" | "stateless";
   enableJsonResponse?: boolean;
+  extensionStateDirectory?: string;
+  fileSourceFetcher?: FileSourceFetcher;
 } = {}) {
   const startedAt = new Date().toISOString();
   const compatibility = new SdkCompatibilityDiagnostics();
+  const extensionStore = new ExtensionStore(options.extensionStateDirectory);
+  const principal = sha256(options.token ?? "explicit-unauthenticated-controller");
+  const files = new McpFiles(extensionStore, principal, options.fileSourceFetcher, recoveryFor(client));
+  const tasks = new McpTasks(client, extensionStore, principal, async (device, context, id) => {
+    if (sharedToolRegistry === undefined) build();
+    const tool = sharedToolRegistry!.job_output_since as { handler: (args: unknown, extra: unknown) => Promise<CallToolResult> };
+    const identity = context === "desktop" ? "interactive" : context === "user" ? "owner" : "root";
+    return tool.handler({ device, identity, id, waitMs: 0, maxBytes: 32 * 1024, encoding: "utf8" }, {
+      signal: AbortSignal.timeout(30_000), requestId: "task-output-" + id, sendNotification: async () => {},
+    });
+  });
   const eventLoop = monitorEventLoopDelay({ resolution: 20 });
   const instanceId = randomUUID();
   const sessions = new Map<string, Session>();
@@ -112,6 +130,7 @@ export function createMcpHttpServer(client: AgentClient, options: {
     const server = new McpServer({ name: "remote-control-mcp", version: "0.1.0" }, { instructions: agentInstructions });
     if (sharedToolRegistry === undefined) {
       registerTools(server, client);
+      registerFileTools(server, files);
       sharedToolRegistry = readToolRegistry(server);
       toolRegistryBuilds += 1;
     } else {
@@ -122,6 +141,7 @@ export function createMcpHttpServer(client: AgentClient, options: {
       server.registerResource(consoleResource.name, consoleResource.uri, consoleResource.metadata, consoleResource.read);
   for (const resource of legacyConsoleResources) server.registerResource(resource.name, resource.uri, resource.metadata, resource.read);
     }
+    registerLegacyRemoteControlSkillResources(server);
     // The legacy SDK enables change notifications during registration.
     server.server.registerCapabilities({ tools: { listChanged: false }, resources: { listChanged: false } });
     return server;
@@ -130,7 +150,7 @@ export function createMcpHttpServer(client: AgentClient, options: {
   const modern = createModernMcpHandler(() => {
     if (sharedToolRegistry === undefined) build();
     return sharedToolRegistry!;
-  });
+  }, { tasks, files });
   const handleModern = toNodeHandler(modern);
 
   const cleanup = setInterval(() => {
@@ -142,6 +162,8 @@ export function createMcpHttpServer(client: AgentClient, options: {
     }
   }, Math.min(60_000, Math.max(100, sessionIdleMs)));
   cleanup.unref();
+  const fileCleanup = setInterval(() => { void files.cleanup().catch(() => {}); }, 60_000);
+  fileCleanup.unref();
 
   const http = createServer(async (req: IncomingMessage, res: ServerResponse) => {
     const deliveryObserver = httpDeliveryFor(client);
@@ -223,7 +245,8 @@ export function createMcpHttpServer(client: AgentClient, options: {
         return;
       }
 
-      if (req.url !== "/mcp") { res.writeHead(404).end("not found"); return; }
+      const fileRoute = req.url?.startsWith("/mcp/files/") === true;
+      if (req.url !== "/mcp" && !fileRoute) { res.writeHead(404).end("not found"); return; }
       if (!originAllowed(req, allowedOrigins)) {
         res.writeHead(403, { "content-type": "application/json" }).end(JSON.stringify({
           error: "invalid_origin", message: "Origin is not allowed for this MCP endpoint", requestId,
@@ -234,6 +257,7 @@ export function createMcpHttpServer(client: AgentClient, options: {
         res.writeHead(401, { "content-type": "application/json" }).end(JSON.stringify({ error: "unauthorized", requestId }));
         return;
       }
+      if (fileRoute) { if (!await files.route(req, res)) res.writeHead(404).end("not found"); return; }
       if (!["POST", "GET", "DELETE"].includes(req.method ?? "")) { res.writeHead(405).end("method_not_allowed"); return; }
 
       const body = req.method === "POST" ? await readBody(req, maxBodyBytes) : undefined;
@@ -308,6 +332,7 @@ export function createMcpHttpServer(client: AgentClient, options: {
   eventLoop.enable();
   http.once("close", () => {
     clearInterval(cleanup);
+    clearInterval(fileCleanup);
     void modern.close();
     eventLoop.disable();
     for (const session of sessions.values()) void session.server.close();
