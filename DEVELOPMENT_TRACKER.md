@@ -57,6 +57,16 @@ Implementation, review, CI and deployment state are tracked outside this public 
 - Classify modern validation failures with the SDK; never bypass authentication or downgrade malformed envelopes.
 - Verify real connector traffic separately from synthetic protocol tests.
 
+## Skills, Tasks and file exchange
+
+- Publish verified immutable skill bytes through the official Skills extension and a legacy resource.
+- Negotiate native Tasks per request and reuse durable job execution. Keep signed handles bound to the principal, endpoint, device and identity across controller restarts.
+- Return terminal Tasks through the normal tool output validation, bounds and recovery contract. A shell marker alone is not a terminal executor receipt.
+- Bind upload state to exact arguments, principal, transfer and expiry. Verify size and digest before one-time consumption and immutable publication.
+- Retain a compatible OpenAI attachment path. Fetch only pinned public HTTPS targets, without redirected or forwarded credentials, within byte and time budgets.
+- Preserve the original safe name and a bounded next step for existing device-to-device transfer. Binary file contents stay outside the model context.
+- Verify transfer-to-target, final hash and authenticated download with synthetic files in the deployed producer/consumer path. Keep those private receipts outside this repository.
+
 ## Android secure Downloads push (issue #32)
 
 `android_file_push` accepts a stable command UUID, an online paired Android
